@@ -252,8 +252,8 @@ Both modes produce base64-encoded images that are analyzed by vision-capable LLM
 
 ```bash
 # Clone the repository
-git clone https://github.com/Ganador1/FenixAI_tradingBot.git
-cd FenixAI_tradingBot
+git clone https://github.com/DragonBtc93/FenixAI_tradingBot_mod.git
+cd FenixAI_tradingBot_mod
 
 # Create and activate virtual environment
 python -m venv .venv
