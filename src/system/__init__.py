@@ -1,7 +1,7 @@
 """
-Sistema Unificado Fenix Trading Bot
-Módulo centralizado para importaciones y configuración del sistema
-VERSIÓN SEGURA - Importaciones opcionales para evitar congelamiento
+Fenix Trading Bot Unified System
+Centralized module for system imports and configuration
+SAFE VERSION - Optional imports to prevent freezing
 """
 
 import os
@@ -9,23 +9,23 @@ from typing import Optional
 import warnings
 import logging
 
-# Desactivar TensorFlow por defecto para evitar errores de mutex en macOS
+# Disable TensorFlow by default to prevent mutex errors on macOS
 if os.environ.get('DISABLE_TENSORFLOW', '0') != '1':
     os.environ['DISABLE_TENSORFLOW'] = '1'
 
-# Configurar logging antes de usarlo en stubs
+# Configure logging before use in stubs
 import logging
 logger = logging.getLogger(__name__)
 
-# Si TensorFlow está deshabilitado, registrar stub ligero para evitar importaciones reales
+# If TensorFlow is disabled, register a lightweight stub to avoid real imports
 if os.environ.get('DISABLE_TENSORFLOW') == '1':
     import sys, types
     if 'tensorflow' not in sys.modules:
-        logger.warning('Registrando stub de TensorFlow: deshabilitado por DISABLE_TENSORFLOW=1')
+        logger.warning('Registering TensorFlow stub: disabled by DISABLE_TENSORFLOW=1')
         tf_stub = types.ModuleType('tensorflow')
         def _disabled(*args, **kwargs):
-            raise RuntimeError('TensorFlow está deshabilitado mediante DISABLE_TENSORFLOW=1')
-        # Proveer sub-módulos y atributos comúnmente usados
+            raise RuntimeError('TensorFlow is disabled via DISABLE_TENSORFLOW=1')
+        # Provide commonly used sub-modules and attributes
         tf_stub.config = types.SimpleNamespace(
             threading=types.SimpleNamespace(
                 set_intra_op_parallelism_threads=_disabled,
@@ -43,17 +43,17 @@ if os.environ.get('DISABLE_TENSORFLOW') == '1':
         tf_stub.Tensor = DummyTensor
         sys.modules['tensorflow'] = tf_stub
 
-# Configurar logging para importaciones
+# Configure logging for imports
 logger = logging.getLogger(__name__)
 
-# Función auxiliar para importaciones seguras
+# Helper function for safe imports
 def safe_import(module_name, class_name=None, fallback=None):
-    """Importar módulo de manera segura con fallback.
+    """Safely import a module with a fallback.
 
-    Se intenta importar usando importlib.import_module con soporte tanto relativo
-    (por ejemplo, cuando este paquete se importa como 'src.system') como absoluto
-    (por ejemplo 'system'). Esto cubre ambos entornos: ejecución desde tests o
-    como paquete instalado.
+    It tries to import using importlib.import_module with both relative
+    (e.g., when this package is imported as 'src.system') and absolute
+    (e.g., 'system') support. This covers both execution environments:
+    from tests or as an installed package.
     """
     from importlib import import_module
     candidates = []
@@ -61,7 +61,7 @@ def safe_import(module_name, class_name=None, fallback=None):
         pkg = __package__ or ''
     except Exception:
         pkg = ''
-    # Intentamos formas relativas y absolutas
+    # We try relative and absolute forms
     if pkg:
         candidates.append(f"{pkg}.{module_name}")
         candidates.append(f".{module_name}")
@@ -85,20 +85,20 @@ def safe_import(module_name, class_name=None, fallback=None):
             continue
 
     if fallback is None:
-        logger.warning("No se pudo importar %s.%s: %s", module_name, class_name or '', last_exc)
+        logger.warning("Could not import %s.%s: %s", module_name, class_name or '', last_exc)
     else:
         logger.debug("safe_import: returning fallback for %s.%s due to: %s", module_name, class_name or '', last_exc)
     return fallback
 
 
 def should_load_legacy() -> bool:
-    """Determina si se deben cargar módulos legacy; chequea ENV o config."""
-    # Primero revisar la variable de entorno FENIX_LOAD_LEGACY_SYSTEM
+    """Determines if legacy modules should be loaded; checks ENV or config."""
+    # First, check the FENIX_LOAD_LEGACY_SYSTEM environment variable
     env_val = os.getenv("FENIX_LOAD_LEGACY_SYSTEM", "0").lower()
     if env_val in ("1", "true", "yes"):
         return True
 
-    # Evitar importar settings si no es necesario (reduce circular imports)
+    # Avoid importing settings if not necessary (reduces circular imports)
     try:
         from src.config.settings import get_config
         cfg = get_config()
@@ -106,11 +106,11 @@ def should_load_legacy() -> bool:
     except Exception:
         return False
 
-# Core System Components (SEGUROS)
+# Core System Components (SAFE)
 try:
     from .intelligent_cache import IntelligentCache, get_cache, clear_all_caches, cached
 except ImportError as e:
-    logger.warning(f"Cache no disponible: {e}")
+    logger.warning(f"Cache not available: {e}")
     IntelligentCache = None
     get_cache = lambda *args, **kwargs: None
     clear_all_caches = lambda: None
@@ -119,12 +119,12 @@ except ImportError as e:
 try:
     from .advanced_memory_manager import AdvancedMemoryManager, get_memory_manager, init_memory_management
 except ImportError as e:
-    logger.warning(f"Memory manager no disponible: {e}")
+    logger.warning(f"Memory manager not available: {e}")
     AdvancedMemoryManager = None
     get_memory_manager = lambda: None
     init_memory_management = lambda: None
 
-# Risk Management (SEGUROS) - Importación diferida para reducir ruido en logs
+# Risk Management (SAFE) - deferred import to reduce log noise
 AdvancedRiskManager = None
 PortfolioRiskEngine = None
 AdvancedPortfolioRiskManager = None
@@ -134,7 +134,7 @@ def get_advanced_risk_manager():
     if AdvancedRiskManager is None:
         AdvancedRiskManager = safe_import("advanced_risk_manager", "AdvancedRiskManager")
         if AdvancedRiskManager is None:
-            # Preferir la versión en agentes si existe (pipeline actual)
+            # Prefer the version in agents if it exists (current pipeline)
             try:
                 from src.agents.risk import AdvancedRiskManager as AgentsAdvancedRiskManager
                 AdvancedRiskManager = AgentsAdvancedRiskManager
@@ -165,7 +165,7 @@ def get_advanced_portfolio_risk_manager():
     AdvancedPortfolioRiskManager = safe_import("advanced_portfolio_risk_manager", "AdvancedPortfolioRiskManager")
     return AdvancedPortfolioRiskManager
 
-# Processing & Performance (SEGUROS) - diferido
+# Processing & Performance (SAFE) - deferred
 AdvancedParallelProcessor = None
 def get_advanced_parallel_processor():
     global AdvancedParallelProcessor
@@ -175,10 +175,10 @@ def get_advanced_parallel_processor():
 try:
     from .performance_optimizer import PerformanceCache, MemoryManager, PerformanceMonitor, TimeoutManager, CircuitBreaker
 except ImportError as e:
-    logger.warning(f"Performance optimizer no disponible: {e}")
+    logger.warning(f"Performance optimizer not available: {e}")
     PerformanceCache = MemoryManager = PerformanceMonitor = TimeoutManager = CircuitBreaker = None
 
-# Realtime performance and monitoring - diferido
+# Realtime performance and monitoring - deferred
 RealtimePerformanceAnalyzer = None
 AdvancedMetricsSystem = None
 RealTimeMonitor = None
@@ -209,7 +209,7 @@ def get_comprehensive_health_monitor():
         ComprehensiveHealthMonitor = safe_import("comprehensive_health_monitor", "ComprehensiveHealthMonitor")
     return ComprehensiveHealthMonitor
 
-# Data & Quality (SEGUROS) - diferido
+# Data & Quality (SAFE) - deferred
 AdvancedDataQualityEngine = None
 DataValidationEngine = None
 
@@ -225,13 +225,13 @@ def get_data_validation_engine():
         DataValidationEngine = safe_import("data_validation_engine", "DataValidationEngine")
     return DataValidationEngine
 
-# Learning & Optimization (PROBLEMÁTICOS - IMPORTACIÓN OPCIONAL)
-logger.warning("⚠️  Importando componentes de ML/AI - pueden causar congelamiento")
+# Learning & Optimization (PROBLEMATIC - OPTIONAL IMPORT)
+logger.warning("⚠️  Importing ML/AI components - may cause freezing")
 ContinuousLearningEngine = None
 BayesianStrategyOptimizer = None
 AdvancedMarketRegimeDetector = None
 
-# Intentar importar solo si se solicita explícitamente
+# Try to import only if explicitly requested
 def get_learning_engine():
     global ContinuousLearningEngine
     if ContinuousLearningEngine is None:
@@ -256,7 +256,7 @@ def get_market_regime_detector():
         AdvancedMarketRegimeDetector = None
         logger.debug("Legacy modules disabled: get_market_regime_detector will return None")
         return None
-    logger.warning("⚠️  CUIDADO: AdvancedMarketRegimeDetector puede causar congelamiento (mutex.cc error)")
+    logger.warning("⚠️  CAUTION: AdvancedMarketRegimeDetector may cause freezing (mutex.cc error)")
     AdvancedMarketRegimeDetector = safe_import("advanced_market_regime_detector", "AdvancedMarketRegimeDetector")
     return AdvancedMarketRegimeDetector
 
@@ -267,11 +267,11 @@ def _load_advanced_market_regime_detector():
         AdvancedMarketRegimeDetector = None
         return None
     # Reimport the legacy detector when requested
-    logger.warning("⚠️  CUIDADO: AdvancedMarketRegimeDetector puede ser pesado y provocar mutex.cc")
+    logger.warning("⚠️  CAUTION: AdvancedMarketRegimeDetector can be heavy and cause mutex.cc")
     AdvancedMarketRegimeDetector = safe_import("advanced_market_regime_detector", "AdvancedMarketRegimeDetector")
     return AdvancedMarketRegimeDetector
 
-# Signal Processing (PROBLEMÁTICOS - IMPORTACIÓN OPCIONAL)
+# Signal Processing (PROBLEMATIC - OPTIONAL IMPORT)
 AdaptiveSignalManager = None
 SignalEvolutionEngine = None
 
@@ -281,7 +281,7 @@ def get_adaptive_signal_manager():
         AdaptiveSignalManager = None
         logger.debug("Legacy modules disabled: get_adaptive_signal_manager will return None")
         return None
-    logger.warning("⚠️  CUIDADO: AdaptiveSignalManager puede usar librerías de ML pesadas")
+    logger.warning("⚠️  CAUTION: AdaptiveSignalManager may use heavy ML libraries")
     AdaptiveSignalManager = safe_import("adaptive_signal_manager", "AdaptiveSignalManager")
     return AdaptiveSignalManager
 
@@ -291,11 +291,11 @@ def get_signal_evolution_engine():
         SignalEvolutionEngine = None
         logger.debug("Legacy modules disabled: get_signal_evolution_engine will return None")
         return None
-    logger.warning("⚠️  CUIDADO: SignalEvolutionEngine puede usar librerías de ML pesadas")
+    logger.warning("⚠️  CAUTION: SignalEvolutionEngine may use heavy ML libraries")
     SignalEvolutionEngine = safe_import("signal_evolution_engine", "SignalEvolutionEngine")
     return SignalEvolutionEngine
 
-# MultiTimeframeAnalyzer puede tener TensorFlow
+# MultiTimeframeAnalyzer may have TensorFlow
 MultiTimeframeAnalyzer = None
 def get_multi_timeframe_analyzer():
     global MultiTimeframeAnalyzer
@@ -303,11 +303,11 @@ def get_multi_timeframe_analyzer():
         MultiTimeframeAnalyzer = None
         logger.debug("Legacy modules disabled: get_multi_timeframe_analyzer will return None")
         return None
-    logger.warning("⚠️  CUIDADO: MultiTimeframeAnalyzer puede usar TensorFlow")
+    logger.warning("⚠️  CAUTION: MultiTimeframeAnalyzer may use TensorFlow")
     MultiTimeframeAnalyzer = safe_import("multi_timeframe_analyzer", "MultiTimeframeAnalyzer")
     return MultiTimeframeAnalyzer
 
-# Configuration & Documentation (SEGUROS) - diferido
+# Configuration & Documentation (SAFE) - deferred
 DynamicConfigurationSystem = None
 AutomaticDocumentationSystem = None
 
@@ -323,7 +323,7 @@ def get_automatic_documentation_system():
         AutomaticDocumentationSystem = safe_import("automatic_documentation_system", "AutomaticDocumentationSystem")
     return AutomaticDocumentationSystem
 
-# Integration & Orchestration (SEGUROS) - diferido
+# Integration & Orchestration (SAFE) - deferred
 IntelligentDependencyManager = None
 ContainerOrchestrator = None
 MultiExchangeIntegration = None
@@ -346,7 +346,7 @@ def get_multi_exchange_integration():
         MultiExchangeIntegration = safe_import("multi_exchange_integration", "MultiExchangeIntegration")
     return MultiExchangeIntegration
 
-# Backtesting (SEGURO) - diferido
+# Backtesting (SAFE) - deferred
 AdvancedBacktestingEngine = None
 def get_advanced_backtesting_engine():
     global AdvancedBacktestingEngine
@@ -354,7 +354,7 @@ def get_advanced_backtesting_engine():
         AdvancedBacktestingEngine = safe_import("advanced_backtesting_engine", "AdvancedBacktestingEngine")
     return AdvancedBacktestingEngine
 
-# Logging (SEGURO) - diferido
+# Logging (SAFE) - deferred
 StructuredLoggingSystem = None
 def get_structured_logging_system():
     global StructuredLoggingSystem
@@ -362,16 +362,16 @@ def get_structured_logging_system():
         StructuredLoggingSystem = safe_import("structured_logging_system", "StructuredLoggingSystem")
     return StructuredLoggingSystem
 
-# Model Management (PROBLEMÁTICO - IMPORTACIÓN OPCIONAL)
+# Model Management (PROBLEMATIC - OPTIONAL IMPORT)
 OnDemandModelManager = None
 def get_model_manager():
     global OnDemandModelManager
     if OnDemandModelManager is None:
-        logger.warning("⚠️  CUIDADO: OnDemandModelManager puede usar ML libraries")
+        logger.warning("⚠️  CAUTION: OnDemandModelManager may use ML libraries")
         OnDemandModelManager = safe_import("on_demand_model_manager", "OnDemandModelManager")
     return OnDemandModelManager
 
-# Orchestrators (IMPORTACIÓN TARDÍA)
+# Orchestrators (LATE IMPORT)
 SystemImprovementsManager = None
 UnifiedSystemOrchestrator = None
 
@@ -390,9 +390,9 @@ def get_unified_orchestrator():
 __version__ = "2.0.0"
 __author__ = "Fenix Trading Bot Team"
 
-# Sistema principal unificado
+# Main unified system
 class FenixTradingSystem:
-    """Sistema principal unificado de Fenix Trading Bot - VERSIÓN SEGURA"""
+    """Main unified system of Fenix Trading Bot - SAFE VERSION"""
     
     def __init__(self):
         self.memory_manager = None
@@ -400,98 +400,98 @@ class FenixTradingSystem:
         self.improvements_manager = None
         self.cache = None
         self.initialized = False
-        self.safe_mode = True  # Modo seguro por defecto
+        self.safe_mode = True  # Safe mode by default
     
     async def initialize(self, safe_mode=True):
-        """Inicializar sistema completo"""
+        """Initialize the complete system"""
         if self.initialized:
             return
         
         self.safe_mode = safe_mode
-        logger.info(f"🚀 Inicializando Fenix Trading System (Modo seguro: {safe_mode})")
+        logger.info(f"🚀 Initializing Fenix Trading System (Safe mode: {safe_mode})")
         
-        # Inicializar gestión de memoria (SEGURO)
+        # Initialize memory management (SAFE)
         if init_memory_management:
             self.memory_manager = init_memory_management()
-            logger.info("✅ Memory manager inicializado")
+            logger.info("✅ Memory manager initialized")
         
-        # Inicializar cache principal (SEGURO)
+        # Initialize main cache (SAFE)
         if get_cache:
             self.cache = get_cache("main", max_size_mb=512)
-            logger.info("✅ Cache principal inicializado")
+            logger.info("✅ Main cache initialized")
         
-        # Inicializar componentes solo en modo no seguro
+        # Initialize components only in non-safe mode
         if not safe_mode:
-            logger.warning("⚠️  Modo no seguro - inicializando componentes problemáticos")
+            logger.warning("⚠️  Non-safe mode - initializing problematic components")
             
-            # Inicializar gestor de mejoras (PUEDE SER PROBLEMÁTICO)
+            # Initialize improvements manager (CAN BE PROBLEMATIC)
             improvements_manager_class = get_system_improvements_manager()
             if improvements_manager_class:
                 try:
                     self.improvements_manager = improvements_manager_class()
                     await self.improvements_manager.initialize()
-                    logger.info("✅ System improvements manager inicializado")
+                    logger.info("✅ System improvements manager initialized")
                 except Exception as e:
-                    logger.error(f"❌ Error inicializando improvements manager: {e}")
+                    logger.error(f"❌ Error initializing improvements manager: {e}")
             
-            # Inicializar orquestador (PUEDE SER PROBLEMÁTICO)
+            # Initialize orchestrator (CAN BE PROBLEMATIC)
             orchestrator_class = get_unified_orchestrator()
             if orchestrator_class:
                 try:
                     self.orchestrator = orchestrator_class()
                     await self.orchestrator.initialize()
-                    logger.info("✅ Unified orchestrator inicializado")
+                    logger.info("✅ Unified orchestrator initialized")
                 except Exception as e:
-                    logger.error(f"❌ Error inicializando orchestrator: {e}")
+                    logger.error(f"❌ Error initializing orchestrator: {e}")
         else:
-            logger.info("🛡️  Modo seguro - omitiendo componentes problemáticos")
+            logger.info("🛡️  Safe mode - skipping problematic components")
         
         self.initialized = True
         logger.info("🚀 Fenix Trading System initialized successfully")
     
     async def shutdown(self):
-        """Apagar sistema de manera ordenada"""
+        """Shutdown the system gracefully"""
         if not self.initialized:
             return
         
-        logger.info("🛑 Apagando Fenix Trading System...")
+        logger.info("🛑 Shutting down Fenix Trading System...")
         
         if self.orchestrator:
             try:
                 await self.orchestrator.shutdown()
-                logger.info("✅ Orchestrator apagado")
+                logger.info("✅ Orchestrator shut down")
             except Exception as e:
-                logger.error(f"❌ Error apagando orchestrator: {e}")
+                logger.error(f"❌ Error shutting down orchestrator: {e}")
         
         if self.improvements_manager:
             try:
                 await self.improvements_manager.shutdown()
-                logger.info("✅ Improvements manager apagado")
+                logger.info("✅ Improvements manager shut down")
             except Exception as e:
-                logger.error(f"❌ Error apagando improvements manager: {e}")
+                logger.error(f"❌ Error shutting down improvements manager: {e}")
         
         if self.memory_manager and hasattr(self.memory_manager, 'stop_monitoring'):
             try:
                 self.memory_manager.stop_monitoring()
-                logger.info("✅ Memory manager apagado")
+                logger.info("✅ Memory manager shut down")
             except Exception as e:
-                logger.error(f"❌ Error apagando memory manager: {e}")
+                logger.error(f"❌ Error shutting down memory manager: {e}")
         
         if clear_all_caches:
             try:
                 clear_all_caches()
-                logger.info("✅ Caches limpiados")
+                logger.info("✅ Caches cleared")
             except Exception as e:
-                logger.error(f"❌ Error limpiando caches: {e}")
+                logger.error(f"❌ Error clearing caches: {e}")
         
         self.initialized = False
         logger.info("🛑 Fenix Trading System shutdown complete")
     
     def enable_ml_components(self):
-        """Habilitar componentes de ML/AI (PELIGROSO)"""
-        logger.warning("⚠️  HABILITANDO COMPONENTES ML/AI - PUEDE CAUSAR CONGELAMIENTO")
+        """Enable ML/AI components (DANGEROUS)"""
+        logger.warning("⚠️  ENABLING ML/AI COMPONENTS - MAY CAUSE FREEZING")
         
-        # Cargar componentes problemáticos bajo demanda
+        # Load problematic components on demand
         learning_engine = get_learning_engine()
         market_detector = get_market_regime_detector()
         model_manager = get_model_manager()
@@ -502,73 +502,73 @@ class FenixTradingSystem:
             'model_manager': model_manager
         }
 
-# Instancia global del sistema
+# Global system instance
 _system_instance = None
 
 def get_system() -> FenixTradingSystem:
-    """Obtener instancia singleton del sistema"""
+    """Get the singleton instance of the system"""
     global _system_instance
     if _system_instance is None:
         _system_instance = FenixTradingSystem()
     return _system_instance
 
 async def init_system(safe_mode=True):
-    """Inicializar sistema global"""
+    """Initialize the global system"""
     system = get_system()
     await system.initialize(safe_mode=safe_mode)
     return system
 
 async def init_system_unsafe():
-    """Inicializar sistema en modo no seguro (PELIGROSO)"""
-    logger.warning("⚠️  INICIALIZANDO SISTEMA EN MODO NO SEGURO")
+    """Initialize the system in non-safe mode (DANGEROUS)"""
+    logger.warning("⚠️  INITIALIZING SYSTEM IN NON-SAFE MODE")
     return await init_system(safe_mode=False)
 
 async def shutdown_system():
-    """Apagar sistema global"""
+    """Shutdown the global system"""
     system = get_system()
     await system.shutdown()
 
-# Exportar componentes principales
+# Export main components
 __all__ = [
-    # Sistema principal
+    # Main system
     'FenixTradingSystem', 'get_system', 'init_system', 'init_system_unsafe', 'shutdown_system',
     
-    # Core (seguros)
+    # Core (safe)
     'AdvancedMemoryManager', 'get_memory_manager', 'init_memory_management',
     'IntelligentCache', 'get_cache', 'clear_all_caches', 'cached',
     
-    # Getters seguros para componentes problemáticos
+    # Safe getters for problematic components
     'get_system_improvements_manager', 'get_unified_orchestrator',
     'get_learning_engine', 'get_bayesian_optimizer', 'get_market_regime_detector',
     'get_multi_timeframe_analyzer', 'get_model_manager',
     
-    # Risk (seguros)
+    # Risk (safe)
     'AdvancedRiskManager', 'PortfolioRiskEngine', 'AdvancedPortfolioRiskManager',
     
-    # Processing (seguros)
+    # Processing (safe)
     'AdvancedParallelProcessor', 'PerformanceCache', 'MemoryManager', 'PerformanceMonitor', 'TimeoutManager', 'CircuitBreaker', 'RealtimePerformanceAnalyzer',
     
-    # Monitoring (seguros)
+    # Monitoring (safe)
     'AdvancedMetricsSystem', 'RealTimeMonitor', 'ComprehensiveHealthMonitor',
     
-    # Data (seguros)
+    # Data (safe)
     'AdvancedDataQualityEngine', 'DataValidationEngine',
     
-    # Signals (parcialmente seguros)
+    # Signals (partially safe)
     'AdaptiveSignalManager', 'SignalEvolutionEngine',
     
-    # Config (seguros)
+    # Config (safe)
     'DynamicConfigurationSystem', 'AutomaticDocumentationSystem',
     
-    # Integration (seguros)
+    # Integration (safe)
     'IntelligentDependencyManager', 'ContainerOrchestrator', 'MultiExchangeIntegration',
     
-    # Backtesting (seguro)
+    # Backtesting (safe)
     'AdvancedBacktestingEngine',
     
-    # Logging (seguro)
+    # Logging (safe)
     'StructuredLoggingSystem',
     
-    # Utilidades
+    # Utilities
     'safe_import',
 ]

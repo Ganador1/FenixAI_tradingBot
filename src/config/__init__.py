@@ -1,28 +1,28 @@
 """
-Módulo de configuración del sistema de trading.
+Configuration module for the trading system.
 """
 
 import yaml
 import os
 from pathlib import Path
 
-# Ruta al archivo de configuración
+# Path to the configuration file
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 def load_config():
-    """Carga la configuración desde el archivo YAML."""
+    """Loads the configuration from the YAML file."""
     try:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
             return yaml.safe_load(file)
     except FileNotFoundError:
-        print(f"Archivo de configuración no encontrado: {CONFIG_PATH}")
+        print(f"Configuration file not found: {CONFIG_PATH}")
         return {}
     except yaml.YAMLError as e:
-        print(f"Error al cargar configuración: {e}")
+        print(f"Error loading configuration: {e}")
         return {}
 
-# Cargar configuración al importar el módulo
+# Load configuration when the module is imported
 config = load_config()
 
-# Exportar la configuración
+# Export the configuration
 __all__ = ['config', 'load_config']

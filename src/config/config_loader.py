@@ -1,6 +1,6 @@
 # config/config_loader_simple.py
 """
-Configuración simplificada para evitar problemas con Pydantic
+Simplified configuration to avoid issues with Pydantic
 """
 from __future__ import annotations
 
@@ -20,14 +20,14 @@ from src.risk.runtime_feedback import RiskFeedbackLoopConfig
 
 logger = logging.getLogger(__name__)
 
-# Función para cargar .env de manera robusta
+# Function to robustly load .env
 def load_env_variables():
-    """Carga variables de entorno de manera robusta"""
-    # Intentar cargar desde múltiples ubicaciones
+    """Robustly loads environment variables"""
+    # Try to load from multiple locations
     possible_paths = [
-        Path(__file__).parent.parent / ".env",  # Desde config/
-        Path.cwd() / ".env",                    # Desde working directory
-        Path(".env")                            # Relativo actual
+        Path(__file__).parent.parent / ".env",  # From config/
+        Path.cwd() / ".env",                    # From working directory
+        Path(".env")                            # Relative to current
     ]
     
     for env_path in possible_paths:
@@ -37,17 +37,17 @@ def load_env_variables():
     
     return False
 
-# Cargar .env inmediatamente
+# Load .env immediately
 load_env_variables()
 
-# Claves placeholder seguras para entornos de prueba
+# Secure placeholder keys for test environments
 _PLACEHOLDER_KEY = "FENIX_TEST_KEY"
 _PLACEHOLDER_SECRET = "FENIX_TEST_SECRET"
 
 @dataclass
 class TradingConfig:
-    """Configuración de trading"""
-    mode: str = "paper"  # "paper" o "live"
+    """Trading configuration"""
+    mode: str = "paper"  # "paper" or "live"
     symbol: str = "BTCUSDT"
     base_asset: str = "BTC"
     quote_asset: str = "USDT"
@@ -66,10 +66,10 @@ class TradingConfig:
             self.active_timeframes = ["5m", "15m", "30m", "1h"]
         if self.tradingview_chart_urls is None:
             self.tradingview_chart_urls = {
-                "5m": "https://es.tradingview.com/chart/iERzAcI8/",
-                "15m": "https://es.tradingview.com/chart/iERzAcI8/?interval=15",
-                "30m": "https://es.tradingview.com/chart/iERzAcI8/?interval=30",
-                "1h": "https://es.tradingview.com/chart/iERzAcI8/?interval=60"
+                "5m": "https://www.tradingview.com/chart/iERzAcI8/",
+                "15m": "https://www.tradingview.com/chart/iERzAcI8/?interval=15",
+                "30m": "https://www.tradingview.com/chart/iERzAcI8/?interval=30",
+                "1h": "https://www.tradingview.com/chart/iERzAcI8/?interval=60"
             }
 
 class BinanceConfig(BaseModel):
@@ -77,31 +77,31 @@ class BinanceConfig(BaseModel):
     api_secret: str
 
 class RiskManagementConfig(BaseModel):
-    """Configuración base de riesgo.
+    """Base risk configuration.
 
-    Ahora actúa como "perfil efectivo" resultante. Los perfiles concretos se
-    definen en YAML bajo risk_profiles y se aplican en create_app_config.
+    Now acts as the resulting "effective profile". Concrete profiles are
+    defined in YAML under risk_profiles and applied in create_app_config.
     """
 
     base_risk_per_trade: float = 0.02
     max_risk_per_trade: float = 0.04
     min_risk_per_trade: float = 0.005
     atr_sl_multiplier: float = 1.5
-    atr_tp_multiplier: float = 3.0  # CORREGIDO: Cambiado de 2.0 a 3.0 para usar configuración YAML
+    atr_tp_multiplier: float = 3.0  # FIXED: Changed from 2.0 to 3.0 to use YAML configuration
     min_reward_risk_ratio: float = 1.5
     target_reward_risk_ratio: float = 2.0
     max_daily_loss_pct: float = 0.05
     max_consecutive_losses: int = 6
     max_trades_per_day: int = 60
 
-    # Factores dinámicos utilizados por AdvancedRiskManager
+    # Dynamic factors used by AdvancedRiskManager
     volatility_adjustment_factor: float = 1.0
     performance_adjustment_factor: float = 1.0
     market_condition_factor: float = 1.0
     time_of_day_factor: float = 1.0
     confidence_adjustment_factor: float = 1.0
 
-    # Perfil lógico aplicado (conservative, moderate, aggressive, etc.)
+    # Logical profile applied (conservative, moderate, aggressive, etc.)
     profile: str = "moderate"
     feedback_loop: RiskFeedbackLoopConfig = Field(default_factory=RiskFeedbackLoopConfig)
 
@@ -159,9 +159,9 @@ class AppConfig(BaseModel):
 
 def _resolve_api_credentials(use_testnet_flag: bool) -> Dict[str, str]:
     """
-    Devuelve credenciales para la API de Binance.
-    - Prioriza credenciales reales si existen.
-    - En su defecto, genera un par placeholder seguro para entornos de test.
+    Returns credentials for the Binance API.
+    - Prioritizes real credentials if they exist.
+    - Otherwise, generates a secure placeholder pair for test environments.
     """
     testnet_key = os.getenv("BINANCE_TESTNET_API_KEY")
     testnet_secret = os.getenv("BINANCE_TESTNET_API_SECRET")
@@ -188,7 +188,7 @@ def _resolve_api_credentials(use_testnet_flag: bool) -> Dict[str, str]:
 
 
 def _load_yaml_config(config_path: Path) -> Dict[str, Dict[str, object]]:
-    """Carga config.yaml si existe, devolviendo un dict seguro."""
+    """Loads config.yaml if it exists, returning a safe dict."""
     if not config_path.exists():
         return {}
 
@@ -197,7 +197,7 @@ def _load_yaml_config(config_path: Path) -> Dict[str, Dict[str, object]]:
 
 
 def _compute_use_testnet_flag(trading_cfg: Dict[str, object]) -> bool:
-    """Determina si se debe usar testnet considerando YAML y entorno."""
+    """Determines whether to use testnet, considering YAML and environment."""
     use_testnet_flag = False
     if isinstance(trading_cfg, dict):
         use_testnet_flag = bool(trading_cfg.get("use_testnet", False))
@@ -211,7 +211,7 @@ def _ensure_safe_trading_mode(
     trading_cfg: Dict[str, object],
     credentials: Dict[str, str]
 ) -> Dict[str, object]:
-    """Fuerza modo paper/testnet si solo hay credenciales placeholder."""
+    """Forces paper/testnet mode if only placeholder credentials are available."""
     if credentials["api_key"] == _PLACEHOLDER_KEY or credentials["api_secret"] == _PLACEHOLDER_SECRET:
         safe_cfg = dict(trading_cfg) if isinstance(trading_cfg, dict) else {}
         safe_cfg.setdefault("mode", "paper")
@@ -221,7 +221,7 @@ def _ensure_safe_trading_mode(
 
 
 def _determine_selected_profile(trading_cfg: Dict[str, object], raw_rm_cfg: Optional[Dict[str, object]]) -> str:
-    """Obtiene el perfil seleccionado explícito o deriva uno por modo."""
+    """Gets the explicit selected profile or derives one by mode."""
     if isinstance(raw_rm_cfg, dict):
         profile = str(raw_rm_cfg.get("profile", "")).strip()
         if profile:
@@ -234,7 +234,7 @@ def _determine_selected_profile(trading_cfg: Dict[str, object], raw_rm_cfg: Opti
 
 
 def _extract_base_risk_config(raw_rm_cfg: Optional[Dict[str, object]]) -> Dict[str, object]:
-    """Extrae claves base excluyendo metadatos de perfiles."""
+    """Extracts base keys, excluding profile metadata."""
     if not isinstance(raw_rm_cfg, dict):
         return {}
 
@@ -251,7 +251,7 @@ def _apply_profile_overrides(
     raw_profiles: Optional[Dict[str, object]],
     selected_profile: str,
 ) -> Dict[str, object]:
-    """Aplica overrides del perfil seleccionado si están definidos."""
+    """Applies overrides from the selected profile if defined."""
     if not isinstance(raw_profiles, dict):
         return effective_cfg
 
@@ -268,7 +268,7 @@ def _build_effective_risk_config(
     trading_cfg: Dict[str, object],
     raw_rm_cfg: Optional[Dict[str, object]]
 ) -> Dict[str, object]:
-    """Combina configuración base con el perfil de riesgo seleccionado."""
+    """Combines base configuration with the selected risk profile."""
     raw_rm_cfg = raw_rm_cfg or {}
     raw_profiles = raw_rm_cfg.get("risk_profiles", {}) if isinstance(raw_rm_cfg, dict) else {}
 
@@ -280,22 +280,22 @@ def _build_effective_risk_config(
 
 
 def create_app_config() -> AppConfig:
-    """Crea la configuración de la aplicación."""
+    """Creates the application configuration."""
     try:
-        # Cargar configuración YAML si existe
+        # Load YAML configuration if it exists
         config_path = Path(__file__).parent / "config.yaml"
         yaml_config = _load_yaml_config(config_path)
 
-        # Detectar si estamos en modo testnet/paper desde YAML o variables de entorno
+        # Detect if we are in testnet/paper mode from YAML or environment variables
         trading_cfg = yaml_config.get("trading", {}) if isinstance(yaml_config, dict) else {}
         use_testnet_flag = _compute_use_testnet_flag(trading_cfg)
 
         credentials = _resolve_api_credentials(use_testnet_flag)
 
-        # Forzar modo paper si usamos credenciales placeholder
+        # Force paper mode if using placeholder credentials
         trading_cfg = _ensure_safe_trading_mode(trading_cfg, credentials)
 
-        # Construir configuración de gestión de riesgo aplicando perfiles, si existen
+        # Build risk management configuration by applying profiles, if they exist
         raw_rm_cfg = yaml_config.get("risk_management", {}) if isinstance(yaml_config, dict) else {}
         effective_rm_cfg = _build_effective_risk_config(trading_cfg, raw_rm_cfg)
 
@@ -322,7 +322,7 @@ _APP_CONFIG: Optional[AppConfig] = None
 
 
 class _AppConfigProxy:
-    """Proxy perezoso para mantener compatibilidad con `APP_CONFIG` global."""
+    """Lazy proxy to maintain compatibility with global `APP_CONFIG`."""
 
     def __getattr__(self, item):
         return getattr(get_app_config(), item)
@@ -335,14 +335,14 @@ class _AppConfigProxy:
 
 
 def get_app_config(force_reload: bool = False) -> AppConfig:
-    """Devuelve la configuración de la aplicación, cargándola bajo demanda."""
+    """Returns the application configuration, loading it on demand."""
     global _APP_CONFIG
     if force_reload or _APP_CONFIG is None:
         _APP_CONFIG = create_app_config()
     return _APP_CONFIG
 
 
-# Crear proxy global compatible
+# Create a compatible global proxy
 APP_CONFIG = _AppConfigProxy()
 
 class ConfigWatcher:
@@ -366,28 +366,28 @@ class ConfigWatcher:
             global APP_CONFIG
             APP_CONFIG = create_app_config()
 
-# ConfigWatcher se inicializará explícitamente cuando sea necesario
+# ConfigWatcher will be explicitly initialized when needed
 _watcher_instance = None
 
 def start_config_watcher():
-    """Inicia el watcher de configuración de forma controlada"""
+    """Starts the configuration watcher in a controlled manner"""
     global _watcher_instance
     if _watcher_instance is None:
         _watcher_instance = ConfigWatcher(Path(__file__).parent / 'config.yaml')
         _watcher_instance.start()
-        logger.info("ConfigWatcher iniciado correctamente")
+        logger.info("ConfigWatcher started successfully")
     return _watcher_instance
 
 def stop_config_watcher():
-    """Detiene el watcher de configuración de forma controlada"""
+    """Stops the configuration watcher in a controlled manner"""
     global _watcher_instance
     if _watcher_instance is not None:
         _watcher_instance.stop()
         _watcher_instance = None
-        logger.info("ConfigWatcher detenido correctamente")
+        logger.info("ConfigWatcher stopped successfully")
 
 def get_config_watcher():
-    """Obtiene la instancia del watcher (puede ser None si no está iniciado)"""
+    """Gets the watcher instance (may be None if not started)"""
     return _watcher_instance
 
 if __name__ == "__main__":

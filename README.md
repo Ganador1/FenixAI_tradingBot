@@ -257,7 +257,7 @@ cd FenixAI_tradingBot
 
 # Create and activate virtual environment
 python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
+source .venv/bin/activate  # For Linux/Mac, including Debian-based systems like Pop!_OS
 
 # Install dependencies
 pip install -e ".[dev,vision,monitoring]"

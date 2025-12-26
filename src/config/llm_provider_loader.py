@@ -1,7 +1,7 @@
 # config/llm_provider_loader.py
 """
-Loader para configuración de providers LLM.
-Carga configuración desde YAML y crea instancias de providers.
+Loader for LLM provider configuration.
+Loads configuration from YAML and creates provider instances.
 """
 from __future__ import annotations
 
@@ -27,14 +27,14 @@ ProviderConfig = None
 
 logger = logging.getLogger(__name__)
 
-# Path al archivo de configuración
+# Path to the configuration file
 CONFIG_DIR = Path(__file__).parent
 # Prefer project-root `config/llm_providers.yaml` if it exists to support repo-level config
 ROOT_CONFIG_PATH = Path.cwd() / "config" / "llm_providers.yaml"
 PROVIDERS_CONFIG_PATH = ROOT_CONFIG_PATH if ROOT_CONFIG_PATH.exists() else CONFIG_DIR / "llm_providers.yaml"
 
 class LLMProviderLoader:
-    """Carga y gestiona la configuración de providers LLM."""
+    """Loads and manages LLM provider configuration."""
     
     def __init__(
         self,
@@ -42,11 +42,11 @@ class LLMProviderLoader:
         active_profile: Optional[str] = None,
     ):
         """
-        Inicializa el loader.
+        Initializes the loader.
         
         Args:
-            config_path: Path al archivo YAML de configuración. 
-                        Si es None, usa el path por defecto.
+            config_path: Path to the YAML configuration file.
+                        If None, uses the default path.
         """
         self.config_path = config_path or PROVIDERS_CONFIG_PATH
         self._config: Optional[LLMProvidersConfig] = None
@@ -56,11 +56,11 @@ class LLMProviderLoader:
         self._forced_profile: Optional[str] = active_profile or env_profile
         self._provider_cache: Dict[str, BaseLLMProvider] = {}
         
-        # Cargar configuración
+        # Load configuration
         self._load_config()
     
     def _load_config(self):
-        """Carga la configuración desde el archivo YAML."""
+        """Loads the configuration from the YAML file."""
         try:
             if not self.config_path.exists():
                 logger.warning(
@@ -97,12 +97,12 @@ class LLMProviderLoader:
                 self._config = EXAMPLE_ALL_LOCAL
                 return
             
-            # Obtener perfil activo
+            # Get active profile
             requested_profile = self._forced_profile or yaml_data.get('active_profile', 'all_local')
             self._active_profile = requested_profile
             logger.info(f"Loading LLM provider profile: {self._active_profile}")
             
-            # Obtener configuración del perfil
+            # Get profile configuration
             profile_data = yaml_data.get(self._active_profile)
             
             if not profile_data:
@@ -113,7 +113,7 @@ class LLMProviderLoader:
                 self._config = EXAMPLE_ALL_LOCAL
                 return
             
-            # Crear configuración desde YAML
+            # Create configuration from YAML
             self._config = self._parse_profile(profile_data)
             logger.info("Successfully loaded provider configuration: %s", self._active_profile)
             
@@ -124,13 +124,13 @@ class LLMProviderLoader:
     
     def _parse_profile(self, profile_data: Dict) -> LLMProvidersConfig:
         """
-        Parsea datos de perfil desde YAML a LLMProvidersConfig.
+        Parses profile data from YAML to LLMProvidersConfig.
         
         Args:
-            profile_data: Diccionario con la configuración del perfil
+            profile_data: Dictionary with the profile configuration
             
         Returns:
-            LLMProvidersConfig instanciada
+            Instantiated LLMProvidersConfig
         """
         agent_configs = {}
         
@@ -143,10 +143,10 @@ class LLMProviderLoader:
     
     def get_config(self) -> LLMProvidersConfig:
         """
-        Obtiene la configuración cargada.
+        Gets the loaded configuration.
         
         Returns:
-            LLMProvidersConfig con la configuración actual
+            LLMProvidersConfig with the current configuration
         """
         return self._config
 
@@ -156,18 +156,18 @@ class LLMProviderLoader:
     
     def get_agent_config(self, agent_type: str) -> AgentProviderConfig:
         """
-        Obtiene la configuración de provider para un agente específico.
+        Gets the provider configuration for a specific agent.
         
         Args:
-            agent_type: Tipo de agente ('sentiment', 'technical', 'visual', 'qabba', 'decision')
+            agent_type: Type of agent ('sentiment', 'technical', 'visual', 'qabba', 'decision')
             
         Returns:
-            AgentProviderConfig para el agente
+            AgentProviderConfig for the agent
         """
         return self._config.get_agent_config(agent_type)
     
     def _create_provider_config(self, agent_config: AgentProviderConfig) -> Optional['ProviderConfig']:
-        """Crea ProviderConfig desde AgentProviderConfig."""
+        """Creates ProviderConfig from AgentProviderConfig."""
         if ProviderConfig is None:
             return None
             
@@ -182,7 +182,7 @@ class LLMProviderLoader:
         )
     
     def _attempt_provider_creation(self, agent_type: str, agent_config: AgentProviderConfig, use_cache: bool) -> Optional[BaseLLMProvider]:
-        """Intenta crear provider con la configuración dada."""
+        """Attempts to create a provider with the given configuration."""
         provider_config = self._create_provider_config(agent_config)
         if not provider_config:
             return None
@@ -214,14 +214,14 @@ class LLMProviderLoader:
         use_cache: bool = True
     ) -> Optional[BaseLLMProvider]:
         """
-        Crea una instancia de provider para un agente específico.
+        Creates a provider instance for a specific agent.
         
         Args:
-            agent_type: Tipo de agente
-            use_cache: Si True, usa provider en caché si existe
+            agent_type: Type of agent
+            use_cache: If True, uses a cached provider if it exists
             
         Returns:
-            Instancia de BaseLLMProvider o None si falla
+            BaseLLMProvider instance or None if it fails
         """
         if create_provider is None:
             logger.error(
@@ -259,14 +259,14 @@ class LLMProviderLoader:
         agent_config: AgentProviderConfig
     ) -> Optional[BaseLLMProvider]:
         """
-        Crea provider de fallback cuando el principal falla.
+        Creates a fallback provider when the primary one fails.
         
         Args:
-            agent_type: Tipo de agente
-            agent_config: Configuración del agente
+            agent_type: Type of agent
+            agent_config: Agent configuration
             
         Returns:
-            Provider de fallback o None
+            Fallback provider or None
         """
         try:
             if not agent_config.fallback_provider_type:
@@ -299,29 +299,29 @@ class LLMProviderLoader:
             return None
     
     def reload_config(self):
-        """Recarga la configuración desde el archivo."""
+        """Reloads the configuration from the file."""
         logger.info("Reloading provider configuration...")
         self._provider_cache.clear()
         self._load_config()
     
     def clear_cache(self):
-        """Limpia el caché de providers."""
+        """Clears the provider cache."""
         logger.info("Clearing provider cache...")
         self._provider_cache.clear()
     
     @property
     def active_profile(self) -> str:
-        """Obtiene el nombre del perfil activo."""
+        """Gets the name of the active profile."""
         return self._active_profile
 
 
-# Singleton global
+# Global singleton
 _loader_instance: Optional[LLMProviderLoader] = None
 
 @lru_cache(maxsize=1)
 def get_provider_loader() -> LLMProviderLoader:
     """
-    Obtiene la instancia singleton del loader.
+    Gets the singleton instance of the loader.
     
     Returns:
         LLMProviderLoader singleton
@@ -333,23 +333,23 @@ def get_provider_loader() -> LLMProviderLoader:
 
 def get_provider_for_agent(agent_type: str) -> Optional[BaseLLMProvider]:
     """
-    Función de conveniencia para obtener un provider para un agente.
+    Convenience function to get a provider for an agent.
     
     Args:
-        agent_type: Tipo de agente
+        agent_type: Type of agent
         
     Returns:
-        Provider instanciado o None
+        Instantiated provider or None
     """
     loader = get_provider_loader()
     return loader.create_provider_for_agent(agent_type)
 
 def get_agent_provider_config(agent_type: str) -> AgentProviderConfig:
     """
-    Función de conveniencia para obtener configuración de un agente.
+    Convenience function to get the configuration for an agent.
     
     Args:
-        agent_type: Tipo de agente
+        agent_type: Type of agent
         
     Returns:
         AgentProviderConfig
@@ -359,7 +359,7 @@ def get_agent_provider_config(agent_type: str) -> AgentProviderConfig:
 
 
 if __name__ == "__main__":
-    # Test del loader
+    # Loader test
     logging.basicConfig(level=logging.INFO)
     
     print("=== Testing LLM Provider Loader ===\n")

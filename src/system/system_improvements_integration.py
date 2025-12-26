@@ -1,6 +1,6 @@
 """
-Integración central de todas las mejoras del sistema Fenix Trading Bot
-Este módulo coordina la inicialización y gestión de todos los componentes mejorados.
+Central integration of all improvements for the Fenix Trading Bot system.
+This module coordinates the initialization and management of all enhanced components.
 """
 
 import asyncio
@@ -12,7 +12,7 @@ from datetime import datetime
 import signal
 import sys
 
-# Importar componentes mejorados
+# Import enhanced components
 from src.config.secrets_manager import SecretsManager
 from src.utils.universal_circuit_breaker import CircuitBreakerManager, CircuitBreakerConfig
 from src.system.advanced_memory_manager import get_memory_manager, init_memory_management
@@ -23,14 +23,14 @@ from src.system.advanced_parallel_processor import get_processor, ProcessingMode
 logger = get_logger("system_integration")
 
 class SystemImprovementsManager:
-    """Gestor central de todas las mejoras del sistema"""
+    """Central manager for all system improvements"""
     def __init__(self):
         self.initialized = False
         self.components = {}
         self.startup_time = None
         self.shutdown_handlers = []
         
-        # Importar lazily los sistemas avanzados mediante getters del paquete `src.system`
+        # Lazily import advanced systems using getters from the `src.system` package
         try:
             from src.system import (
                 get_market_regime_detector,
@@ -80,15 +80,15 @@ class SystemImprovementsManager:
             logger.warning(f"Some advanced systems not available (or getters missing): {e}")
             self.advanced_systems = {}
         
-        # Cargar configuración desde archivo YAML
+        # Load configuration from YAML file
         self.config = self._load_config_from_file()
 
     def _load_config_from_file(self):
-        """Cargar configuración desde el archivo YAML"""
+        """Load configuration from the YAML file"""
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'system_improvements_config.yaml')
         logger.info(f"Attempting to load configuration from: {config_path}")
         
-        # Configuración por defecto
+        # Default configuration
         default_config = {
             'secrets_manager': {
                 'vault_path': 'security/secrets.vault',
@@ -133,11 +133,11 @@ class SystemImprovementsManager:
                 
                 logger.info(f"YAML config loaded: {yaml_config}")
                 if yaml_config:
-                    # Convertir configuración del procesador paralelo
+                    # Convert parallel processor configuration
                     if 'parallel_processing' in yaml_config:
                         pp_config = yaml_config['parallel_processing']
                         
-                        # Mapear modos válidos
+                        # Map valid modes
                         mode_mapping = {
                             'thread': ProcessingMode.THREAD,
                             'process': ProcessingMode.PROCESS,
@@ -155,7 +155,7 @@ class SystemImprovementsManager:
                         }
                         logger.info(f"Loaded parallel processing config: {pp_config.get('max_workers', 1)} workers, {mode_str} mode")
                     
-                    # Actualizar otras configuraciones si existen en el YAML
+                    # Update other configurations if they exist in the YAML
                     for section, values in yaml_config.items():
                         if section in default_config and isinstance(values, dict):
                             default_config[section].update(values)
@@ -170,7 +170,7 @@ class SystemImprovementsManager:
         return default_config
 
     async def initialize(self, custom_config: Optional[Dict[str, Any]] = None):
-        """Inicializar todas las mejoras del sistema"""
+        """Initialize all system improvements"""
         if self.initialized:
             logger.warning("System improvements already initialized")
             return
@@ -178,37 +178,37 @@ class SystemImprovementsManager:
         self.startup_time = datetime.now()
         
         try:
-            # Actualizar configuración si se proporciona
+            # Update configuration if provided
             if custom_config:
                 self._update_config(custom_config)
             
             logger.info("Starting Fenix Trading Bot system improvements initialization...")
             
-            # 1. Inicializar gestión de secretos
+            # 1. Initialize secrets management
             await self._init_secrets_manager()
             
-            # 2. Inicializar circuit breakers
+            # 2. Initialize circuit breakers
             await self._init_circuit_breakers()
             
-            # 3. Inicializar gestión de memoria
+            # 3. Initialize memory management
             await self._init_memory_manager()
             
-            # 4. Inicializar sistema de caché
+            # 4. Initialize cache system
             await self._init_cache_system()
             
-            # 5. Inicializar procesador paralelo
+            # 5. Initialize parallel processor
             await self._init_parallel_processor()
             
-            # 6. Configurar logging estructurado
+            # 6. Configure structured logging
             await self._init_structured_logging()
             
-            # 7. Inicializar sistemas avanzados
+            # 7. Initialize advanced systems
             await self._init_advanced_systems()
             
-            # 8. Configurar handlers de shutdown
+            # 8. Configure shutdown handlers
             self._setup_shutdown_handlers()
             
-            # 9. Ejecutar verificaciones de salud
+            # 9. Run health checks
             await self._health_checks()
             
             self.initialized = True
@@ -216,7 +216,7 @@ class SystemImprovementsManager:
             startup_duration = (datetime.now() - self.startup_time).total_seconds()
             logger.info(f"System improvements initialized successfully in {startup_duration:.2f} seconds")
             
-            # Log de configuración inicial
+            # Log initial configuration
             await self._log_system_status()
             
         except Exception as e:
@@ -225,7 +225,7 @@ class SystemImprovementsManager:
             raise
 
     def _update_config(self, custom_config: Dict[str, Any]):
-        """Actualizar configuración con valores personalizados"""
+        """Update configuration with custom values"""
         for component, config in custom_config.items():
             if component in self.config:
                 self.config[component].update(config)
@@ -233,24 +233,24 @@ class SystemImprovementsManager:
                 self.config[component] = config
 
     async def _init_secrets_manager(self):
-        """Inicializar gestor de secretos"""
+        """Initialize secrets manager"""
         logger.info("Initializing secure secrets manager...")
         
         config = self.config['secrets_manager']
-        # Usar el gestor unificado que delega en SecureSecretsManager si está disponible
+        # Use the unified manager which delegates to SecureSecretsManager if available
         secrets_manager = SecretsManager()
 
         self.components['secrets_manager'] = secrets_manager
         logger.info("Secure secrets manager initialized")
 
     async def _init_circuit_breakers(self):
-        """Inicializar circuit breakers"""
+        """Initialize circuit breakers"""
         logger.info("Initializing circuit breakers...")
         
         config = self.config['circuit_breaker']
         cb_manager = CircuitBreakerManager()
         
-        # Configurar circuit breakers para servicios críticos
+        # Configure circuit breakers for critical services
         services = [
             'binance_api',
             'llm_service',
@@ -273,31 +273,31 @@ class SystemImprovementsManager:
         logger.info(f"Circuit breakers initialized for {len(services)} services")
 
     async def _init_memory_manager(self):
-        """Inicializar gestor de memoria"""
+        """Initialize memory manager"""
         logger.info("Initializing advanced memory manager...")
         
         memory_manager = init_memory_management()
         
-        # Configurar umbrales personalizados
+        # Configure custom thresholds
         config = self.config['memory_manager']
         memory_manager.thresholds.warning = config['warning_threshold']
         memory_manager.thresholds.critical = config['critical_threshold']
         memory_manager.thresholds.emergency = config['emergency_threshold']
         memory_manager.monitoring_interval = config['monitoring_interval']
         
-        # Registrar callbacks de limpieza
+        # Register cleanup callbacks
         memory_manager.register_cleanup_callback(self._on_memory_cleanup)
         
         self.components['memory_manager'] = memory_manager
         logger.info("Advanced memory manager initialized")
 
     async def _init_cache_system(self):
-        """Inicializar sistema de caché"""
+        """Initialize cache system"""
         logger.info("Initializing intelligent cache system...")
         
         config = self.config['cache_system']
         
-        # Crear caches especializados
+        # Create specialized caches
         caches = {
             'market_data': get_cache('market_data', max_size_mb=config['default_cache_size_mb']),
             'api_responses': get_cache('api_responses', max_size_mb=50),
@@ -307,7 +307,7 @@ class SystemImprovementsManager:
             'user_sessions': get_cache('user_sessions', max_size_mb=10)
         }
         
-        # Configurar callbacks de caché
+        # Configure cache callbacks
         for cache_name, cache in caches.items():
             cache.register_eviction_callback(lambda key, value: 
                 logger.debug(f"Cache eviction in {cache_name}: {key}"))
@@ -316,29 +316,29 @@ class SystemImprovementsManager:
         logger.info(f"Intelligent cache system initialized with {len(caches)} specialized caches")
 
     async def _init_parallel_processor(self):
-        """Inicializar procesador paralelo"""
+        """Initialize parallel processor"""
         logger.info("Initializing advanced parallel processor...")
         
         config = self.config['parallel_processor']
         processor = await get_processor()
         
-        # El procesador ya se inicializa automáticamente en get_processor()
+        # The processor is already automatically initialized in get_processor()
         self.components['parallel_processor'] = processor
         
         stats = processor.get_stats()
         logger.info(f"Advanced parallel processor initialized: {stats['max_workers']} workers in {stats['mode']} mode")
 
     async def _init_structured_logging(self):
-        """Configurar logging estructurado"""
+        """Configure structured logging"""
         logger.info("Configuring structured logging...")
         
         config = self.config['logging']
         
-        # Configurar alertas críticas
+        # Configure critical alerts
         async def critical_alert_handler(severity: AlertSeverity, message: str, context: Dict[str, Any]):
             if severity in [AlertSeverity.HIGH, AlertSeverity.CRITICAL]:
-                # Aquí se podría integrar con sistemas de notificación externos
-                # Por ahora, solo log adicional
+                # Here you could integrate with external notification systems
+                # For now, just an additional log
                 logger.critical(f"ALERT [{severity.value}]: {message}", alert_context=context)
         
         system_logger.register_alert_callback(critical_alert_handler)
@@ -347,7 +347,7 @@ class SystemImprovementsManager:
         logger.info("Structured logging configured with alert system")
 
     async def _init_advanced_systems(self):
-        """Inicializar sistemas avanzados"""
+        """Initialize advanced systems"""
         logger.info("Initializing advanced systems...")
         
         initialized_systems = []
@@ -371,7 +371,7 @@ class SystemImprovementsManager:
         logger.info(f"Advanced systems initialized: {len(initialized_systems)} of {len(self.advanced_system_classes)} systems")
 
     def _setup_shutdown_handlers(self):
-        """Configurar handlers de shutdown"""
+        """Configure shutdown handlers"""
         def signal_handler(signum, frame):
             logger.info(f"Received signal {signum}, initiating graceful shutdown...")
             asyncio.create_task(self.shutdown())
@@ -391,12 +391,12 @@ class SystemImprovementsManager:
             logger.warning(f"Unexpected error setting up signal handlers: {e}")
 
     async def _health_checks(self):
-        """Ejecutar verificaciones de salud del sistema"""
+        """Run system health checks"""
         logger.info("Running system health checks...")
         
         health_status = {}
         
-        # Verificar memoria
+        # Check memory
         memory_manager = self.components.get('memory_manager')
         if memory_manager:
             stats = memory_manager.get_memory_stats()
@@ -406,7 +406,7 @@ class SystemImprovementsManager:
                 'available_gb': stats.available_gb
             }
         
-        # Verificar caches
+        # Check caches
         caches = self.components.get('caches', {})
         cache_health = {}
         for name, cache in caches.items():
@@ -418,7 +418,7 @@ class SystemImprovementsManager:
             }
         health_status['caches'] = cache_health
         
-        # Verificar procesador paralelo
+        # Check parallel processor
         processor = self.components.get('parallel_processor')
         if processor:
             proc_stats = processor.get_stats()
@@ -428,7 +428,7 @@ class SystemImprovementsManager:
                 'success_rate': proc_stats['success_rate']
             }
         
-        # Verificar circuit breakers
+        # Check circuit breakers
         cb_manager = self.components.get('circuit_breaker_manager')
         if cb_manager:
             cb_status = {}
@@ -442,10 +442,10 @@ class SystemImprovementsManager:
                     }
             health_status['circuit_breakers'] = cb_status
         
-        # Log estado de salud
+        # Log health status
         logger.info("System health check completed", health_status=health_status)
         
-        # Verificar si hay problemas críticos
+        # Check for critical issues
         critical_issues = []
         if health_status.get('memory', {}).get('status') == 'warning':
             critical_issues.append("High memory usage detected")
@@ -456,14 +456,14 @@ class SystemImprovementsManager:
             logger.info("All system health checks passed")
 
     async def _log_system_status(self):
-        """Log del estado inicial del sistema"""
-        # Crear una copia de la configuración con enums convertidos a strings
+        """Log the initial state of the system"""
+        # Create a copy of the configuration with enums converted to strings
         config_copy = {}
         for key, value in self.config.items():
             if isinstance(value, dict):
                 config_copy[key] = {}
                 for sub_key, sub_value in value.items():
-                    if hasattr(sub_value, 'value'):  # Es un enum
+                    if hasattr(sub_value, 'value'):  # It's an enum
                         config_copy[key][sub_key] = sub_value.value
                     else:
                         config_copy[key][sub_key] = sub_value
@@ -484,23 +484,23 @@ class SystemImprovementsManager:
         logger.info("System improvements status", system_status=status)
 
     async def _on_memory_cleanup(self, level: str):
-        """Callback para limpieza de memoria"""
+        """Callback for memory cleanup"""
         logger.info(f"Memory cleanup triggered: {level}")
         
         if level in ['critical', 'emergency']:
-            # Limpiar caches agresivamente
+            # Aggressively clear caches
             clear_all_caches()
             logger.info("All caches cleared due to memory pressure")
 
     async def get_system_metrics(self) -> Dict[str, Any]:
-        """Obtener métricas del sistema"""
+        """Get system metrics"""
         metrics = {
             'timestamp': datetime.now().isoformat(),
             'uptime_seconds': (datetime.now() - self.startup_time).total_seconds() if self.startup_time else 0,
             'initialized': self.initialized
         }
         
-        # Métricas de memoria
+        # Memory metrics
         memory_manager = self.components.get('memory_manager')
         if memory_manager:
             memory_stats = memory_manager.get_memory_stats()
@@ -510,10 +510,10 @@ class SystemImprovementsManager:
                 'available_gb': memory_stats.available_gb,
                 'mlx_memory_gb': memory_stats.mlx_memory_gb
             }
-            # Agregar al nivel superior para compatibilidad
+            # Add to the top level for compatibility
             metrics['memory_usage_gb'] = memory_stats.used_gb
         
-        # Métricas de caché
+        # Cache metrics
         caches = self.components.get('caches', {})
         cache_metrics = {}
         for name, cache in caches.items():
@@ -525,7 +525,7 @@ class SystemImprovementsManager:
             }
         metrics['caches'] = cache_metrics
         
-        # Métricas del procesador paralelo
+        # Parallel processor metrics
         processor = self.components.get('parallel_processor')
         if processor:
             proc_stats = processor.get_stats()
@@ -534,30 +534,30 @@ class SystemImprovementsManager:
         return metrics
 
     async def shutdown(self):
-        """Shutdown graceful de todas las mejoras"""
+        """Graceful shutdown of all improvements"""
         if not self.initialized:
             return
         
         logger.info("Starting graceful shutdown of system improvements...")
         
         try:
-            # Detener procesador paralelo
+            # Stop parallel processor
             processor = self.components.get('parallel_processor')
             if processor:
                 await processor.stop()
                 logger.info("Parallel processor stopped")
             
-            # Detener gestor de memoria
+            # Stop memory manager
             memory_manager = self.components.get('memory_manager')
             if memory_manager:
                 memory_manager.stop_monitoring()
                 logger.info("Memory manager stopped")
             
-            # Limpiar caches
+            # Clear caches
             clear_all_caches()
             logger.info("All caches cleared")
             
-            # Shutdown sistemas avanzados
+            # Shutdown advanced systems
             for system_name in list(self.components.keys()):
                 if system_name.startswith('advanced_'):
                     system_instance = self.components[system_name]
@@ -570,7 +570,7 @@ class SystemImprovementsManager:
                     except Exception as e:
                         logger.error(f"Error stopping advanced system '{system_name}': {e}")
             
-            # Cerrar gestor de secretos
+            # Lock down secrets manager
             secrets_manager = self.components.get('secrets_manager')
             if secrets_manager:
                 secrets_manager.emergency_lockdown()
@@ -585,19 +585,19 @@ class SystemImprovementsManager:
             logger.error(f"Error during shutdown: {e}", exception=e)
 
     def get_component(self, name: str) -> Any:
-        """Obtener componente por nombre"""
+        """Get a component by name"""
         return self.components.get(name)
 
     def is_healthy(self) -> bool:
-        """Verificar si el sistema está saludable"""
+        """Check if the system is healthy"""
         if not self.initialized:
             return False
         
-        # Verificaciones básicas
+        # Basic checks
         memory_manager = self.components.get('memory_manager')
         if memory_manager:
             stats = memory_manager.get_memory_stats()
-            if stats.usage_percent > 0.9:  # 90% de memoria
+            if stats.usage_percent > 0.9:  # 90% memory usage
                 return False
         
         processor = self.components.get('parallel_processor')
@@ -609,7 +609,7 @@ class SystemImprovementsManager:
         return True
 
     async def health_check(self) -> Dict[str, Any]:
-        """Realizar un health check completo del sistema"""
+        """Perform a full system health check"""
         health_status = {
             'status': 'healthy' if self.is_healthy() else 'unhealthy',
             'timestamp': datetime.now().isoformat(),
@@ -617,7 +617,7 @@ class SystemImprovementsManager:
             'uptime_seconds': (datetime.now() - self.startup_time).total_seconds() if self.startup_time else 0
         }
         
-        # Verificar componentes individuales
+        # Check individual components
         components_health = {}
         
         # Memory manager
@@ -666,7 +666,7 @@ class SystemImprovementsManager:
         
         health_status['components'] = components_health
         
-        # Determinar estado general
+        # Determine overall status
         unhealthy_components = [name for name, comp in components_health.items() 
                               if comp.get('status') == 'unhealthy']
         if unhealthy_components:
@@ -676,16 +676,16 @@ class SystemImprovementsManager:
         return health_status
 
     async def get_advanced_system(self, system_name: str) -> Any:
-        """Obtener sistema avanzado por nombre"""
+        """Get an advanced system by name"""
         return self.components.get(f'advanced_{system_name}')
 
     def list_advanced_systems(self) -> List[str]:
-        """Listar sistemas avanzados disponibles"""
+        """List available advanced systems"""
         return [name.replace('advanced_', '') for name in self.components.keys() 
                 if name.startswith('advanced_')]
 
     async def restart_advanced_system(self, system_name: str) -> bool:
-        """Reiniciar un sistema avanzado específico"""
+        """Restart a specific advanced system"""
         try:
             component_name = f'advanced_{system_name}'
             system_instance = self.components.get(component_name)
@@ -694,13 +694,13 @@ class SystemImprovementsManager:
                 logger.error(f"Advanced system '{system_name}' not found")
                 return False
             
-            # Detener el sistema
+            # Stop the system
             if hasattr(system_instance, 'shutdown'):
                 await system_instance.shutdown()
             elif hasattr(system_instance, 'stop'):
                 await system_instance.stop()
             
-            # Reiniciar el sistema
+            # Restart the system
             if hasattr(system_instance, 'initialize'):
                 await system_instance.initialize()
             elif hasattr(system_instance, 'start'):
@@ -716,7 +716,7 @@ class SystemImprovementsManager:
 _system_improvements_manager_instance: Optional[SystemImprovementsManager] = None
 
 def get_system_improvements_manager() -> SystemImprovementsManager:
-    """Devuelve la instancia única del gestor de mejoras del sistema (lazy)."""
+    """Returns the unique instance of the system improvements manager (lazy)."""
     global _system_improvements_manager_instance
     if _system_improvements_manager_instance is None:
         _system_improvements_manager_instance = SystemImprovementsManager()

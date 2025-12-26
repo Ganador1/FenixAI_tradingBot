@@ -1,7 +1,7 @@
 # config/llm_provider_config.py
 """
-Configuración de providers LLM para cada agente.
-Permite elegir diferentes providers (Ollama, HuggingFace, OpenAI, etc.) por agente.
+LLM provider configuration for each agent.
+Allows choosing different providers (Ollama, HuggingFace, OpenAI, etc.) per agent.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, SecretStr, validator
 from pathlib import Path
 
-# Tipos de providers disponibles
+# Available provider types
 ProviderType = Literal[
     "ollama_local",
     "ollama_cloud", 
@@ -22,23 +22,23 @@ ProviderType = Literal[
 ]
 
 class AgentProviderConfig(BaseModel):
-    """Configuración de provider para un agente específico."""
+    """Provider configuration for a specific agent."""
     
     # Provider configuration
     provider_type: ProviderType = "ollama_local"
     model_name: str = Field(
         default="qwen2.5:7b",
-        description="Nombre del modelo a usar (ej: 'qwen2.5:7b', 'gpt-4', 'claude-3-sonnet')"
+        description="Name of the model to use (e.g., 'qwen2.5:7b', 'gpt-4', 'claude-3-sonnet')"
     )
     
-    # Provider authentication (opcional, se usa env var si no se especifica)
+    # Provider authentication (optional, env var is used if not specified)
     api_key: Optional[SecretStr] = Field(
         default=None,
-        description="API key del provider (opcional, se lee de ENV si no se proporciona)"
+        description="Provider API key (optional, read from ENV if not provided)"
     )
     api_base: Optional[str] = Field(
         default=None,
-        description="URL base del API (para Ollama cloud o APIs custom)"
+        description="Base URL of the API (for Ollama cloud or custom APIs)"
     )
     
     # Model parameters
@@ -46,10 +46,10 @@ class AgentProviderConfig(BaseModel):
     max_tokens: int = Field(default=1500, ge=1)
     timeout: int = Field(default=90, ge=1)
     
-    # Vision support (para agentes que usan imágenes)
+    # Vision support (for agents that use images)
     supports_vision: bool = False
     
-    # Extra configuration (para parámetros específicos del provider)
+    # Extra configuration (for provider-specific parameters)
     extra_config: Dict[str, Any] = Field(default_factory=dict)
     
     # Fallback configuration
@@ -58,11 +58,11 @@ class AgentProviderConfig(BaseModel):
     
     @validator('api_key', pre=True, always=True)
     def load_api_key_from_env(cls, v, values):
-        """Carga la API key desde variables de entorno si no está configurada."""
+        """Loads the API key from environment variables if not configured."""
         if v is not None:
             return v
         
-        # Intentar cargar desde ENV según el provider type
+        # Try to load from ENV based on the provider type
         provider_type = values.get('provider_type')
         if provider_type == 'openai':
             env_key = os.getenv('OPENAI_API_KEY')
@@ -89,7 +89,7 @@ class AgentProviderConfig(BaseModel):
     
     @validator('api_base', pre=True, always=True)
     def set_default_api_base(cls, v, values):
-        """Establece la URL base por defecto según el provider."""
+        """Sets the default base URL according to the provider."""
         if v is not None:
             return v
         
@@ -104,14 +104,14 @@ class AgentProviderConfig(BaseModel):
         return None
 
 class LLMProvidersConfig(BaseModel):
-    """Configuración de providers para todos los agentes."""
+    """Provider configuration for all agents."""
     
-    # Configuración por agente - Optimizada SOTA con Diversificación de Providers
+    # Per-agent configuration - SOTA optimized with Provider Diversification
     
     sentiment: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
-            model_name="Qwen/Qwen2.5-72B-Instruct",  # SOTA para sentiment, mejor en análisis multilingual
+            model_name="Qwen/Qwen2.5-72B-Instruct",  # SOTA for sentiment, better in multilingual analysis
             temperature=0.5,
             max_tokens=1500,
             timeout=90,
@@ -124,7 +124,7 @@ class LLMProvidersConfig(BaseModel):
     technical: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
-            model_name="meta-llama/Llama-3.3-70B-Instruct",  # SOTA rápido para análisis técnico (163 tokens/s)
+            model_name="meta-llama/Llama-3.3-70B-Instruct",  # Fast SOTA for technical analysis (163 tokens/s)
             temperature=0.3,
             max_tokens=2000,
             timeout=90,
@@ -150,7 +150,7 @@ class LLMProvidersConfig(BaseModel):
     qabba: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
-            model_name="Qwen/Qwen2.5-72B-Instruct",  # Diversificación: Qwen vs Llama para perspectiva diferente
+            model_name="Qwen/Qwen2.5-72B-Instruct",  # Diversification: Qwen vs Llama for a different perspective
             temperature=0.4,
             max_tokens=800,
             timeout=60,
@@ -160,8 +160,8 @@ class LLMProvidersConfig(BaseModel):
         )
     )
     
-    # NOTA: Risk Manager NO USA LLM - Es pura lógica matemática y reglas de gestión de riesgo
-    # Esta configuración está aquí solo como fallback legacy, pero no se debe usar
+    # NOTE: Risk Manager DOES NOT USE LLM - It is pure mathematical logic and risk management rules
+    # This configuration is here only as a legacy fallback, but should not be used
     risk_manager: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="ollama_local",
@@ -173,15 +173,15 @@ class LLMProvidersConfig(BaseModel):
         )
     )
     
-    # Decision Agent - Síntesis final con DeepSeek-V3.1-Terminus
-    # Recibe análisis de Technical, Sentiment, Visual y QABBA y toma decisión final
+    # Decision Agent - Final synthesis with DeepSeek-V3.1-Terminus
+    # Receives analysis from Technical, Sentiment, Visual and QABBA and makes the final decision
     decision: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
-            model_name="deepseek-ai/DeepSeek-V3.1-Terminus",  # Mejor razonamiento estratégico
-            temperature=0.2,  # Balance entre creatividad y determinismo
-            max_tokens=1500,  # Suficiente para razonamiento comprehensivo
-            timeout=120,  # Tiempo extra para síntesis compleja
+            model_name="deepseek-ai/DeepSeek-V3.1-Terminus",  # Better strategic reasoning
+            temperature=0.2,  # Balance between creativity and determinism
+            max_tokens=1500,  # Enough for comprehensive reasoning
+            timeout=120,  # Extra time for complex synthesis
             supports_vision=False,
             fallback_provider_type="ollama_local",
             fallback_model_name="qwen2.5:7b-instruct-q5_k_m"
@@ -189,7 +189,7 @@ class LLMProvidersConfig(BaseModel):
     )
     
     def get_agent_config(self, agent_type: str) -> AgentProviderConfig:
-        """Obtiene la configuración de provider para un agente específico."""
+        """Gets the provider configuration for a specific agent."""
         agent_configs = {
             'sentiment': self.sentiment,
             'technical': self.technical,
@@ -205,9 +205,9 @@ class LLMProvidersConfig(BaseModel):
         
         return config
 
-# Ejemplo de configuración para diferentes escenarios
+# Example configurations for different scenarios
 
-# Configuración 1: Todo local con Ollama
+# Configuration 1: All local with Ollama
 EXAMPLE_ALL_LOCAL = LLMProvidersConfig(
     sentiment=AgentProviderConfig(
         provider_type="ollama_local",
@@ -232,7 +232,7 @@ EXAMPLE_ALL_LOCAL = LLMProvidersConfig(
     )
 )
 
-# Configuración 2: Mix de providers (producción con fallbacks)
+# Configuration 2: Mix of providers (production with fallbacks)
 EXAMPLE_MIXED_PROVIDERS = LLMProvidersConfig(
     sentiment=AgentProviderConfig(
         provider_type="ollama_local",
@@ -241,13 +241,13 @@ EXAMPLE_MIXED_PROVIDERS = LLMProvidersConfig(
         fallback_model_name="mixtral-8x7b-32768"
     ),
     technical=AgentProviderConfig(
-        provider_type="groq",  # Ultra rápido para análisis técnico
+        provider_type="groq",  # Ultra-fast for technical analysis
         model_name="mixtral-8x7b-32768",
         fallback_provider_type="ollama_local",
         fallback_model_name="deepseek-r1:7b-qwen-distill-q4_K_M"
     ),
     visual=AgentProviderConfig(
-        provider_type="openai",  # GPT-4 Vision para mejor análisis de gráficos
+        provider_type="openai",  # GPT-4 Vision for better chart analysis
         model_name="gpt-4-vision-preview",
         supports_vision=True,
         fallback_provider_type="ollama_local",
@@ -258,14 +258,14 @@ EXAMPLE_MIXED_PROVIDERS = LLMProvidersConfig(
         model_name="adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M",
     ),
     decision=AgentProviderConfig(
-        provider_type="anthropic",  # Claude para decisiones críticas
+        provider_type="anthropic",  # Claude for critical decisions
         model_name="claude-3-sonnet-20240229",
         fallback_provider_type="ollama_local",
         fallback_model_name="qwen2.5:7b-instruct-q5_k_m"
     )
 )
 
-# Configuración 3: HuggingFace MLX (optimizado para Mac M-series)
+# Configuration 3: HuggingFace MLX (optimized for Mac M-series)
 EXAMPLE_MLX_OPTIMIZED = LLMProvidersConfig(
     sentiment=AgentProviderConfig(
         provider_type="huggingface_mlx",
@@ -276,7 +276,7 @@ EXAMPLE_MLX_OPTIMIZED = LLMProvidersConfig(
         model_name="mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
     ),
     visual=AgentProviderConfig(
-        provider_type="ollama_local",  # MLX vision aún en desarrollo
+        provider_type="ollama_local",  # MLX vision still in development
         model_name="qwen2.5vl:7b-q4_K_M",
         supports_vision=True
     ),
@@ -290,7 +290,7 @@ EXAMPLE_MLX_OPTIMIZED = LLMProvidersConfig(
     )
 )
 
-# Configuración 4: Todo en la nube (APIs)
+# Configuration 4: All in the cloud (APIs)
 EXAMPLE_ALL_CLOUD = LLMProvidersConfig(
     sentiment=AgentProviderConfig(
         provider_type="groq",
@@ -316,8 +316,8 @@ EXAMPLE_ALL_CLOUD = LLMProvidersConfig(
 )
 
 if __name__ == "__main__":
-    # Test de configuración
-    print("=== Ejemplo: Configuración All Local ===")
+    # Configuration test
+    print("=== Example: All Local Configuration ===")
     config = EXAMPLE_ALL_LOCAL
     print(f"Sentiment: {config.sentiment.provider_type} - {config.sentiment.model_name}")
     print(f"Technical: {config.technical.provider_type} - {config.technical.model_name}")
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     print(f"QABBA: {config.qabba.provider_type} - {config.qabba.model_name}")
     print(f"Decision: {config.decision.provider_type} - {config.decision.model_name}")
     
-    print("\n=== Ejemplo: Configuración Mixed Providers ===")
+    print("\n=== Example: Mixed Providers Configuration ===")
     config = EXAMPLE_MIXED_PROVIDERS
     for agent_type in ['sentiment', 'technical', 'visual', 'qabba', 'decision']:
         agent_config = config.get_agent_config(agent_type)
