@@ -9,6 +9,7 @@ interface Trade {
   price: number;
   total: number;
   timestamp: string;
+  executed_at?: string;
   status: 'COMPLETED' | 'PENDING' | 'CANCELLED';
 }
 
@@ -47,61 +48,61 @@ export function RecentTrades() {
   const getStatusColor = (status: Trade['status']) => {
     switch (status) {
       case 'COMPLETED':
-        return 'text-green-600 bg-green-50';
+        return 'text-emerald-400 bg-emerald-500/20';
       case 'PENDING':
-        return 'text-yellow-600 bg-yellow-50';
+        return 'text-amber-400 bg-amber-500/20';
       case 'CANCELLED':
-        return 'text-red-600 bg-red-50';
+        return 'text-red-400 bg-red-500/20';
       default:
-        return 'text-gray-600 bg-gray-50';
+        return 'text-slate-400 bg-slate-500/20';
     }
   };
 
   return (
     <div className="space-y-3">
       {loading ? (
-        <div className="text-sm text-gray-500">Loading trades...</div>
+        <div className="text-sm text-slate-400">Loading trades...</div>
       ) : trades.length === 0 ? (
-        <div className="text-sm text-gray-500">No recent trades</div>
+        <div className="text-sm text-slate-400">No recent trades</div>
       ) : (
         trades.map((trade) => (
-          <div key={trade.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+          <div key={trade.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-white/5">
           <div className="flex items-center space-x-3">
             <div className={`p-2 rounded-lg ${
-              trade.side === 'BUY' ? 'bg-green-100' : 'bg-red-100'
+              trade.side === 'BUY' ? 'bg-emerald-500/20' : 'bg-red-500/20'
             }`}>
               {trade.side === 'BUY' ? (
-                <TrendingUp className="w-4 h-4 text-green-600" />
+                <TrendingUp className="w-4 h-4 text-emerald-400" />
               ) : (
-                <TrendingDown className="w-4 h-4 text-red-600" />
+                <TrendingDown className="w-4 h-4 text-red-400" />
               )}
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <span className="font-medium text-gray-900">{trade.symbol}</span>
+                <span className="font-medium text-slate-100">{trade.symbol}</span>
                 <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor((trade as any).status ?? 'COMPLETED')}`}>
                   {(trade as any).status ?? 'COMPLETED'}
                 </span>
               </div>
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-slate-400">
                 {trade.side} {trade.quantity} @ ${trade.price.toLocaleString()}
               </div>
             </div>
           </div>
           <div className="text-right">
-              <div className="font-medium text-gray-900">
+              <div className="font-medium text-slate-100">
                 ${ (trade.quantity * trade.price).toLocaleString() }
             </div>
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-slate-400">
                 {formatTime(trade.executed_at || trade.timestamp)}
             </div>
           </div>
         </div>
         ))
       )}
-      
+
       <div className="text-center pt-2">
-        <button className="text-sm text-blue-600 hover:text-blue-800 font-medium">
+        <button className="text-sm text-cyan-400 hover:text-cyan-300 font-medium">
           View all trades
         </button>
       </div>

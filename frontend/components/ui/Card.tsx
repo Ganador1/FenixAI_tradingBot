@@ -9,9 +9,10 @@ export interface CardProps {
 }
 
 export interface CardHeaderProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   className?: string;
   title?: string;
+  subtitle?: string;
   action?: ReactNode;
 }
 
@@ -52,8 +53,8 @@ export const Card: React.FC<CardProps> = ({
   return (
     <div
       className={cn(
-        'bg-white rounded-xl shadow-sm border border-gray-100 p-6',
-        hoverable && 'hover:shadow-lg hover:border-gray-200 transition-all cursor-pointer',
+        'glass-card rounded-xl p-6',
+        hoverable && 'cursor-pointer',
         className
       )}
       onClick={onClick}
@@ -67,13 +68,17 @@ export const CardHeader: React.FC<CardHeaderProps> = ({
   children,
   className,
   title,
+  subtitle,
   action,
 }) => {
   return (
-    <div className={cn('mb-4 pb-4 border-b border-gray-200', className)}>
+    <div className={cn('mb-4 pb-4 border-b border-white/10', className)}>
       {title ? (
         <div className="flex justify-between items-start">
-          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+          <div>
+            <h3 className="text-lg font-semibold text-slate-100">{title}</h3>
+            {subtitle && <p className="text-sm text-slate-400 mt-1">{subtitle}</p>}
+          </div>
           {action && <div className="ml-4">{action}</div>}
         </div>
       ) : (
@@ -85,7 +90,7 @@ export const CardHeader: React.FC<CardHeaderProps> = ({
 
 export const CardTitle: React.FC<CardTitleProps> = ({ children, className }) => {
   return (
-    <h3 className={cn('text-lg font-semibold text-gray-900', className)}>
+    <h3 className={cn('text-lg font-semibold text-slate-100', className)}>
       {children}
     </h3>
   );
@@ -114,7 +119,7 @@ export const CardFooter: React.FC<CardFooterProps> = ({
   return (
     <div
       className={cn(
-        'mt-4 pt-4 border-t border-gray-200 flex gap-3',
+        'mt-4 pt-4 border-t border-white/10 flex gap-3',
         alignClass[align],
         className
       )}
@@ -136,21 +141,21 @@ export const StatCard: React.FC<StatCardProps> = ({
     <Card className={cn('', className)}>
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-sm font-medium text-gray-600">{title}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-2">{value}</p>
-          {subtitle && <p className="text-xs text-gray-500 mt-1">{subtitle}</p>}
+          <p className="text-sm font-medium text-slate-400">{title}</p>
+          <p className="text-2xl font-bold text-slate-100 mt-2">{value}</p>
+          {subtitle && <p className="text-xs text-slate-500 mt-1">{subtitle}</p>}
           {trend && (
             <p
               className={cn(
                 'text-sm font-medium mt-2',
-                trend.isPositive ? 'text-green-600' : 'text-red-600'
+                trend.isPositive ? 'text-emerald-400' : 'text-red-400'
               )}
             >
               {trend.isPositive ? '↑' : '↓'} {Math.abs(trend.value)}%
             </p>
           )}
         </div>
-        {icon && <div className="text-gray-400">{icon}</div>}
+        {icon && <div className="text-cyan-400">{icon}</div>}
       </div>
     </Card>
   );

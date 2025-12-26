@@ -57,13 +57,19 @@ export const useApi = <T = any,>(
         headers['Authorization'] = `Bearer ${token}`;
       }
 
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        abortControllerRef.current?.abort();
+      }, API_CONFIG.timeout);
+
       const response = await fetch(fullUrl, {
         method: options.method || 'GET',
         headers,
         body: options.body ? JSON.stringify(options.body) : undefined,
         signal: abortControllerRef.current.signal,
-        timeout: API_CONFIG.timeout,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -173,13 +179,19 @@ export const useApiMutation = <T = any,>() => {
           headers['Authorization'] = `Bearer ${token}`;
         }
 
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+          abortControllerRef.current?.abort();
+        }, API_CONFIG.timeout);
+
         const response = await fetch(fullUrl, {
           method: options.method || 'POST',
           headers,
           body: options.body ? JSON.stringify(options.body) : undefined,
           signal: abortControllerRef.current.signal,
-          timeout: API_CONFIG.timeout,
         });
+
+        clearTimeout(timeoutId);
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));

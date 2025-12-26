@@ -84,13 +84,13 @@ export function AlertsPanel() {
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'danger':
-        return 'bg-red-50 border-red-200 text-red-800';
+        return 'bg-red-500/20 border-red-500/30 text-red-400';
       case 'warning':
-        return 'bg-yellow-50 border-yellow-200 text-yellow-800';
+        return 'bg-amber-500/20 border-amber-500/30 text-amber-400';
       case 'success':
-        return 'bg-green-50 border-green-200 text-green-800';
+        return 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400';
       default:
-        return 'bg-blue-50 border-blue-200 text-blue-800';
+        return 'bg-cyan-500/20 border-cyan-500/30 text-cyan-400';
     }
   };
 
@@ -154,12 +154,12 @@ export function ActivityFeed() {
       <CardContent>
         <div className="space-y-4">
           {activities.map((activity) => (
-            <div key={activity.id} className="flex items-start gap-4 pb-4 border-b last:pb-0 last:border-b-0">
+            <div key={activity.id} className="flex items-start gap-4 pb-4 border-b border-white/5 last:pb-0 last:border-b-0">
               <div className="text-2xl">{activity.icon}</div>
               <div className="flex-1">
-                <h4 className="font-semibold text-sm text-gray-900">{activity.action}</h4>
-                <p className="text-sm text-gray-600">{activity.details}</p>
-                <span className="text-xs text-gray-500 mt-1 block">{activity.timestamp}</span>
+                <h4 className="font-semibold text-sm text-slate-100">{activity.action}</h4>
+                <p className="text-sm text-slate-400">{activity.details}</p>
+                <span className="text-xs text-slate-500 mt-1 block">{activity.timestamp}</span>
               </div>
             </div>
           ))}
@@ -188,10 +188,10 @@ export function QuickActions() {
           {actions.map((action, index) => (
             <button
               key={index}
-              className="flex flex-col items-center justify-center p-4 rounded-lg bg-gradient-to-br from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 transition-all duration-200 border border-gray-200 hover:border-gray-300"
+              className="flex flex-col items-center justify-center p-4 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 transition-all duration-200 border border-white/5 hover:border-cyan-500/30"
             >
               <span className="text-2xl mb-2">{action.icon}</span>
-              <span className="text-sm font-medium text-gray-700">{action.label}</span>
+              <span className="text-sm font-medium text-slate-300">{action.label}</span>
             </button>
           ))}
         </div>

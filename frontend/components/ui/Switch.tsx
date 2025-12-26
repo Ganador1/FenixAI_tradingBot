@@ -1,20 +1,25 @@
 import React from 'react';
 
-interface SwitchProps {
+export interface SwitchProps {
   checked: boolean;
-  onChange: (checked: boolean) => void;
+  onChange?: (checked: boolean) => void;
+  onCheckedChange?: (checked: boolean) => void;
   disabled?: boolean;
   className?: string;
 }
 
-export const Switch: React.FC<SwitchProps> = ({ checked, onChange, disabled = false, className = '' }) => {
+export const Switch: React.FC<SwitchProps> = ({ checked, onChange, onCheckedChange, disabled = false, className = '' }) => {
+  const handleChange = (newValue: boolean) => {
+    onChange?.(newValue);
+    onCheckedChange?.(newValue);
+  };
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
+      onClick={() => handleChange(!checked)}
       className={`
         relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
         transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2

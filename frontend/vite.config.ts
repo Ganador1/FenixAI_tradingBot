@@ -27,12 +27,12 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false,
       },
       '/socket.io': {
-        target: 'ws://localhost:8000',
+        target: 'ws://localhost:3001',
         ws: true,
         changeOrigin: true,
       }
