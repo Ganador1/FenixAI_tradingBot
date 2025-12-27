@@ -10,10 +10,13 @@ from typing import Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, SecretStr, validator
 from pathlib import Path
 
+# The single Ollama model for all agents, configurable via environment variable
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+
 # Available provider types
 ProviderType = Literal[
     "ollama_local",
-    "ollama_cloud", 
+    "ollama_cloud",
     "huggingface_mlx",
     "huggingface_inference",
     "openai",
@@ -23,14 +26,14 @@ ProviderType = Literal[
 
 class AgentProviderConfig(BaseModel):
     """Provider configuration for a specific agent."""
-    
+
     # Provider configuration
     provider_type: ProviderType = "ollama_local"
     model_name: str = Field(
         default="qwen2.5:7b",
         description="Name of the model to use (e.g., 'qwen2.5:7b', 'gpt-4', 'claude-3-sonnet')"
     )
-    
+
     # Provider authentication (optional, env var is used if not specified)
     api_key: Optional[SecretStr] = Field(
         default=None,
@@ -40,28 +43,42 @@ class AgentProviderConfig(BaseModel):
         default=None,
         description="Base URL of the API (for Ollama cloud or custom APIs)"
     )
-    
+
     # Model parameters
     temperature: float = Field(default=0.15, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1500, ge=1)
     timeout: int = Field(default=90, ge=1)
-    
+
     # Vision support (for agents that use images)
     supports_vision: bool = False
-    
+
     # Extra configuration (for provider-specific parameters)
     extra_config: Dict[str, Any] = Field(default_factory=dict)
-    
+
     # Fallback configuration
     fallback_provider_type: Optional[ProviderType] = None
     fallback_model_name: Optional[str] = None
+
+    @validator('model_name', pre=True, always=True)
+    def set_ollama_model_from_env(cls, v, values):
+        """Sets the Ollama model from the OLLAMA_MODEL environment variable."""
+        if values.get('provider_type') == 'ollama_local':
+            return OLLAMA_MODEL
+        return v
     
+    @validator('fallback_model_name', pre=True, always=True)
+    def set_fallback_ollama_model_from_env(cls, v, values):
+        """Sets the fallback Ollama model from the OLLAMA_MODEL environment variable."""
+        if values.get('fallback_provider_type') == 'ollama_local':
+            return OLLAMA_MODEL
+        return v
+
     @validator('api_key', pre=True, always=True)
     def load_api_key_from_env(cls, v, values):
         """Loads the API key from environment variables if not configured."""
         if v is not None:
             return v
-        
+
         # Try to load from ENV based on the provider type
         provider_type = values.get('provider_type')
         if provider_type == 'openai':
@@ -84,15 +101,15 @@ class AgentProviderConfig(BaseModel):
             env_key = os.getenv('OLLAMA_API_KEY')
             if env_key:
                 return SecretStr(env_key)
-        
+
         return None
-    
+
     @validator('api_base', pre=True, always=True)
     def set_default_api_base(cls, v, values):
         """Sets the default base URL according to the provider."""
         if v is not None:
             return v
-        
+
         provider_type = values.get('provider_type')
         if provider_type == 'ollama_local':
             return 'http://localhost:11434'
@@ -100,14 +117,14 @@ class AgentProviderConfig(BaseModel):
             return os.getenv('OLLAMA_CLOUD_URL', 'https://api.ollama.ai')
         elif provider_type == 'huggingface_inference':
             return 'https://api-inference.huggingface.co'
-        
+
         return None
 
 class LLMProvidersConfig(BaseModel):
     """Provider configuration for all agents."""
-    
+
     # Per-agent configuration - SOTA optimized with Provider Diversification
-    
+
     sentiment: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
@@ -117,10 +134,10 @@ class LLMProvidersConfig(BaseModel):
             timeout=90,
             supports_vision=False,
             fallback_provider_type="ollama_local",
-            fallback_model_name="qwen2.5:7b"
+            fallback_model_name="this-will-be-replaced-by-validator"
         )
     )
-    
+
     technical: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
@@ -130,10 +147,10 @@ class LLMProvidersConfig(BaseModel):
             timeout=90,
             supports_vision=False,
             fallback_provider_type="ollama_local",
-            fallback_model_name="deepseek-r1:7b-qwen-distill-q4_K_M"
+            fallback_model_name="this-will-be-replaced-by-validator"
         )
     )
-    
+
     visual: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
@@ -143,10 +160,10 @@ class LLMProvidersConfig(BaseModel):
             timeout=120,
             supports_vision=True,
             fallback_provider_type="ollama_local",
-            fallback_model_name="qwen2.5vl:7b-q4_K_M"
+            fallback_model_name="this-will-be-replaced-by-validator"
         )
     )
-    
+
     qabba: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="huggingface_inference",
@@ -156,23 +173,23 @@ class LLMProvidersConfig(BaseModel):
             timeout=60,
             supports_vision=False,
             fallback_provider_type="ollama_local",
-            fallback_model_name="adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M"
+            fallback_model_name="this-will-be-replaced-by-validator"
         )
     )
-    
+
     # NOTE: Risk Manager DOES NOT USE LLM - It is pure mathematical logic and risk management rules
     # This configuration is here only as a legacy fallback, but should not be used
     risk_manager: AgentProviderConfig = Field(
         default_factory=lambda: AgentProviderConfig(
             provider_type="ollama_local",
-            model_name="qwen2.5:7b-instruct-q5_k_m",
+            model_name="this-will-be-replaced-by-validator",
             temperature=0.15,
             max_tokens=1000,
             timeout=45,
             supports_vision=False
         )
     )
-    
+
     # Decision Agent - Final synthesis with DeepSeek-V3.1-Terminus
     # Receives analysis from Technical, Sentiment, Visual and QABBA and makes the final decision
     decision: AgentProviderConfig = Field(
@@ -184,10 +201,10 @@ class LLMProvidersConfig(BaseModel):
             timeout=120,  # Extra time for complex synthesis
             supports_vision=False,
             fallback_provider_type="ollama_local",
-            fallback_model_name="qwen2.5:7b-instruct-q5_k_m"
+            fallback_model_name="this-will-be-replaced-by-validator"
         )
     )
-    
+
     def get_agent_config(self, agent_type: str) -> AgentProviderConfig:
         """Gets the provider configuration for a specific agent."""
         agent_configs = {
@@ -198,11 +215,11 @@ class LLMProvidersConfig(BaseModel):
             'risk_manager': self.risk_manager,
             'decision': self.decision
         }
-        
+
         config = agent_configs.get(agent_type)
         if config is None:
             raise ValueError(f"Unknown agent type: {agent_type}")
-        
+
         return config
 
 # Example configurations for different scenarios
@@ -211,24 +228,19 @@ class LLMProvidersConfig(BaseModel):
 EXAMPLE_ALL_LOCAL = LLMProvidersConfig(
     sentiment=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="qwen2.5:7b",
     ),
     technical=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="deepseek-r1:7b-qwen-distill-q4_K_M",
     ),
     visual=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="qwen2.5vl:7b-q4_K_M",
         supports_vision=True
     ),
     qabba=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M",
     ),
     decision=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="qwen2.5:7b-instruct-q5_k_m",
     )
 )
 
@@ -236,7 +248,6 @@ EXAMPLE_ALL_LOCAL = LLMProvidersConfig(
 EXAMPLE_MIXED_PROVIDERS = LLMProvidersConfig(
     sentiment=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="qwen2.5:7b",
         fallback_provider_type="groq",
         fallback_model_name="mixtral-8x7b-32768"
     ),
@@ -244,24 +255,20 @@ EXAMPLE_MIXED_PROVIDERS = LLMProvidersConfig(
         provider_type="groq",  # Ultra-fast for technical analysis
         model_name="mixtral-8x7b-32768",
         fallback_provider_type="ollama_local",
-        fallback_model_name="deepseek-r1:7b-qwen-distill-q4_K_M"
     ),
     visual=AgentProviderConfig(
         provider_type="openai",  # GPT-4 Vision for better chart analysis
         model_name="gpt-4-vision-preview",
         supports_vision=True,
         fallback_provider_type="ollama_local",
-        fallback_model_name="qwen2.5vl:7b-q4_K_M"
     ),
     qabba=AgentProviderConfig(
         provider_type="ollama_local",
-        model_name="adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M",
     ),
     decision=AgentProviderConfig(
         provider_type="anthropic",  # Claude for critical decisions
         model_name="claude-3-sonnet-20240229",
         fallback_provider_type="ollama_local",
-        fallback_model_name="qwen2.5:7b-instruct-q5_k_m"
     )
 )
 
@@ -277,7 +284,6 @@ EXAMPLE_MLX_OPTIMIZED = LLMProvidersConfig(
     ),
     visual=AgentProviderConfig(
         provider_type="ollama_local",  # MLX vision still in development
-        model_name="qwen2.5vl:7b-q4_K_M",
         supports_vision=True
     ),
     qabba=AgentProviderConfig(

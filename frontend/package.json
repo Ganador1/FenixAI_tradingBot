@@ -8,9 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "check": "tsc --noEmit",
-    "server:dev": "export NODE_PATH=./node_modules && nodemon --watch ./api --ext ts,json --exec tsx ./api/server.ts",
-    "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\""
+    "check": "tsc --noEmit"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

@@ -1,14 +1,14 @@
 # src/trading/binance_client.py
 """
-Cliente de Binance Futures para Fenix.
+Binance Futures client for Fenix.
 
-Maneja la comunicación con Binance:
-- Conexión REST y WebSocket
-- Obtención de datos de mercado
-- Ejecución de órdenes
-- Gestión de cuenta
+Handles communication with Binance:
+- REST and WebSocket connection
+- Market data retrieval
+- Order execution
+- Account management
 
-Compatible con Testnet para paper trading.
+Testnet compatible for paper trading.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BinanceConfig:
-    """Configuración del cliente Binance."""
+    """Binance client configuration."""
     api_key: str = ""
     api_secret: str = ""
     testnet: bool = True
@@ -49,9 +49,9 @@ class BinanceConfig:
 
 class BinanceClient:
     """
-    Cliente asíncrono para Binance Futures.
+    Asynchronous client for Binance Futures.
     
-    Uso:
+    Usage:
         client = BinanceClient(testnet=True)
         await client.connect()
         ticker = await client.get_ticker("BTCUSDT")
@@ -75,7 +75,7 @@ class BinanceClient:
         self._connected = False
     
     async def connect(self) -> bool:
-        """Establece conexión con Binance."""
+        """Establishes a connection to Binance."""
         try:
             import httpx
             
@@ -84,30 +84,30 @@ class BinanceClient:
                 timeout=30.0,
             )
             
-            # Verificar conexión
+            # Verify connection
             response = await self._session.get("/fapi/v1/ping")
             if response.status_code == 200:
                 self._connected = True
                 mode = "TESTNET" if self.config.testnet else "LIVE"
-                logger.info(f"Conectado a Binance Futures ({mode})")
+                logger.info(f"Connected to Binance Futures ({mode})")
                 return True
             
             return False
             
         except Exception as e:
-            logger.error(f"Error conectando a Binance: {e}")
+            logger.error(f"Error connecting to Binance: {e}")
             return False
     
     async def close(self) -> None:
-        """Cierra las conexiones."""
+        """Closes the connections."""
         if self._session:
             await self._session.aclose()
             self._session = None
         self._connected = False
-        logger.info("Conexión a Binance cerrada")
+        logger.info("Connection to Binance closed")
     
     def _sign_request(self, params: dict) -> dict:
-        """Firma una petición con HMAC SHA256."""
+        """Signs a request with HMAC SHA256."""
         params["timestamp"] = int(time.time() * 1000)
         params["recvWindow"] = self.config.recv_window
         
@@ -122,7 +122,7 @@ class BinanceClient:
         return params
     
     def _get_headers(self) -> dict:
-        """Retorna headers con API key."""
+        """Returns headers with API key."""
         return {"X-MBX-APIKEY": self.config.api_key}
     
     async def _request(
@@ -132,9 +132,9 @@ class BinanceClient:
         params: dict | None = None,
         signed: bool = False,
     ) -> dict | list | None:
-        """Realiza una petición a la API."""
+        """Makes a request to the API."""
         if not self._session:
-            raise RuntimeError("Cliente no conectado")
+            raise RuntimeError("Client not connected")
         
         params = params or {}
         headers = {}
@@ -163,23 +163,23 @@ class BinanceClient:
                     headers=headers,
                 )
             else:
-                raise ValueError(f"Método no soportado: {method}")
+                raise ValueError(f"Unsupported method: {method}")
             
             if response.status_code == 200:
                 return response.json()
             else:
                 error_msg = response.text
-                logger.error(f"Error API: {response.status_code} - {error_msg}")
+                logger.error(f"API Error: {response.status_code} - {error_msg}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error en petición: {e}")
+            logger.error(f"Request error: {e}")
             return None
     
-    # === Métodos públicos ===
+    # === Public methods ===
     
     async def get_ticker(self, symbol: str) -> dict | None:
-        """Obtiene ticker de 24h de un símbolo."""
+        """Gets 24h ticker for a symbol."""
         return await self._request(
             "GET",
             "/fapi/v1/ticker/24hr",
@@ -187,7 +187,7 @@ class BinanceClient:
         )
     
     async def get_price(self, symbol: str) -> float | None:
-        """Obtiene el último precio de un símbolo."""
+        """Gets the last price of a symbol."""
         data = await self._request(
             "GET",
             "/fapi/v1/ticker/price",
@@ -203,7 +203,7 @@ class BinanceClient:
         start_time: int | float | None = None,
         end_time: int | float | None = None,
     ) -> list[dict]:
-        """Obtiene velas históricas."""
+        """Gets historical candles."""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
         # Convert datetimes in ms if provided
         if start_time is not None:
@@ -257,7 +257,7 @@ class BinanceClient:
         symbol: str,
         limit: int = 20,
     ) -> dict | None:
-        """Obtiene el order book."""
+        """Gets the order book."""
         return await self._request(
             "GET",
             "/fapi/v1/depth",
@@ -265,7 +265,7 @@ class BinanceClient:
         )
     
     async def get_balance(self, asset: str = "USDT") -> float:
-        """Obtiene el balance de un asset."""
+        """Gets the balance of an asset."""
         data = await self._request(
             "GET",
             "/fapi/v2/balance",
@@ -282,7 +282,7 @@ class BinanceClient:
         return 0.0
     
     async def get_positions(self, symbol: str | None = None) -> list[dict]:
-        """Obtiene posiciones abiertas."""
+        """Gets open positions."""
         params = {}
         if symbol:
             params["symbol"] = symbol
@@ -297,7 +297,7 @@ class BinanceClient:
         if not data:
             return []
         
-        # Filtrar posiciones con tamaño > 0
+        # Filter positions with size > 0
         return [
             p for p in data
             if float(p.get("positionAmt", 0)) != 0
@@ -306,7 +306,7 @@ class BinanceClient:
     async def place_order(
         self,
         symbol: str,
-        side: str,  # "BUY" o "SELL"
+        side: str,  # "BUY" or "SELL"
         quantity: float,
         order_type: str = "MARKET",
         price: float | None = None,
@@ -314,7 +314,7 @@ class BinanceClient:
         take_profit: float | None = None,
         reduce_only: bool = False,
     ) -> dict | None:
-        """Coloca una orden."""
+        """Places an order."""
         params = {
             "symbol": symbol,
             "side": side,
@@ -337,9 +337,9 @@ class BinanceClient:
         )
         
         if order:
-            logger.info(f"Orden colocada: {order.get('orderId')}")
+            logger.info(f"Order placed: {order.get('orderId')}")
             
-            # Colocar SL/TP si se especificaron
+            # Place SL/TP if specified
             if stop_loss:
                 await self._place_stop_loss(symbol, side, quantity, stop_loss)
             if take_profit:
@@ -354,7 +354,7 @@ class BinanceClient:
         quantity: float,
         price: float,
     ) -> dict | None:
-        """Coloca orden de stop loss."""
+        """Places a stop loss order."""
         sl_side = "SELL" if side == "BUY" else "BUY"
         params = {
             "symbol": symbol,
@@ -373,7 +373,7 @@ class BinanceClient:
         quantity: float,
         price: float,
     ) -> dict | None:
-        """Coloca orden de take profit."""
+        """Places a take profit order."""
         tp_side = "SELL" if side == "BUY" else "BUY"
         params = {
             "symbol": symbol,
@@ -390,7 +390,7 @@ class BinanceClient:
         symbol: str,
         order_id: int | None = None,
     ) -> dict | None:
-        """Cancela una orden."""
+        """Cancels an order."""
         params = {"symbol": symbol}
         if order_id:
             params["orderId"] = order_id
@@ -403,7 +403,7 @@ class BinanceClient:
         )
     
     async def cancel_all_orders(self, symbol: str) -> dict | None:
-        """Cancela todas las órdenes de un símbolo."""
+        """Cancels all orders for a symbol."""
         return await self._request(
             "DELETE",
             "/fapi/v1/allOpenOrders",
@@ -412,10 +412,10 @@ class BinanceClient:
         )
 
 
-# === Función de utilidad ===
+# === Utility function ===
 
 async def test_connection(testnet: bool = True) -> bool:
-    """Prueba la conexión a Binance."""
+    """Tests the connection to Binance."""
     client = BinanceClient(testnet=testnet)
     connected = await client.connect()
     

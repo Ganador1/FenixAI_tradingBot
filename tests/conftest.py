@@ -27,10 +27,15 @@ def event_loop():
     loop.close()
 
 @pytest.fixture(scope="session", autouse=True)
-async def test_db(event_loop):
+def db_session(event_loop):
     """Initialize the test database before running tests."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    async def init_main():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    event_loop.run_until_complete(init_main())
     yield
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    async def drop_main():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+    event_loop.run_until_complete(drop_main())

@@ -1,6 +1,6 @@
 """
-Sistema de Fallback Bidireccional Avanzado para FenixAI Trading Bot
-Incluye health checks predictivos, recuperación automática y balanceado inteligente
+Advanced Bidirectional Fallback System for FenixAI Trading Bot
+Includes predictive health checks, automatic recovery, and intelligent load balancing
 """
 
 import asyncio
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProviderHealth(Enum):
-    """Estados de salud del proveedor"""
+    """Provider health states"""
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNHEALTHY = "unhealthy"
@@ -24,16 +24,16 @@ class ProviderHealth(Enum):
 
 
 class FallbackStrategy(Enum):
-    """Estrategias de fallback"""
-    IMMEDIATE = "immediate"  # Fallback inmediato en error
-    RETRY_FIRST = "retry_first"  # Reintentar antes de fallback
+    """Fallback strategies"""
+    IMMEDIATE = "immediate"  # Immediate fallback on error
+    RETRY_FIRST = "retry_first"  # Retry before fallback
     CIRCUIT_BREAKER = "circuit_breaker"  # Circuit breaker pattern
-    ADAPTIVE = "adaptive"  # Adaptativo según historial
+    ADAPTIVE = "adaptive"  # Adaptive based on history
 
 
 @dataclass
 class HealthMetrics:
-    """Métricas de salud de un proveedor"""
+    """Health metrics for a provider"""
     provider: str
     health_status: ProviderHealth = ProviderHealth.UNKNOWN
     response_times: deque = field(default_factory=lambda: deque(maxlen=100))
@@ -52,7 +52,7 @@ class HealthMetrics:
     total_cost: float = 0.0
     
     def update_success(self, response_time: float, cost: float = 0.0):
-        """Actualizar métricas de éxito"""
+        """Update success metrics"""
         current_time = time.time()
         self.total_requests += 1
         self.successful_requests += 1
@@ -70,11 +70,11 @@ class HealthMetrics:
             sorted_times = sorted(self.response_times)
             self.p95_response_time = sorted_times[int(len(sorted_times) * 0.95)]
         
-        # Actualizar estado de salud
+        # Update health status
         self._update_health_status()
     
     def update_failure(self, error: str):
-        """Actualizar métricas de fallo"""
+        """Update failure metrics"""
         current_time = time.time()
         self.total_requests += 1
         self.failed_requests += 1
@@ -85,35 +85,35 @@ class HealthMetrics:
         self.success_rate = (self.successful_requests / self.total_requests) * 100
         self.error_rate = 100 - self.success_rate
         
-        # Actualizar estado de salud
+        # Update health status
         self._update_health_status()
     
     def _update_health_status(self):
-        """Actualizar estado de salud basado en métricas"""
+        """Update health status based on metrics"""
         current_time = time.time()
         
-        # Si hay muchos fallos consecutivos
+        # If there are many consecutive failures
         if self.consecutive_failures >= 5:
             self.health_status = ProviderHealth.UNHEALTHY
             return
         
-        # Si el error rate es muy alto en las últimas requests
+        # If the error rate is very high in recent requests
         if self.error_rate > 50 and self.total_requests >= 10:
             self.health_status = ProviderHealth.UNHEALTHY
             return
         
-        # Si no ha habido éxito reciente
+        # If there has been no recent success
         if (self.last_success and 
-            current_time - self.last_success > 300):  # 5 minutos
+            current_time - self.last_success > 300):  # 5 minutes
             self.health_status = ProviderHealth.DEGRADED
             return
         
-        # Si el tiempo de respuesta es muy alto
-        if self.avg_response_time > 10000:  # 10 segundos
+        # If the response time is very high
+        if self.avg_response_time > 10000:  # 10 seconds
             self.health_status = ProviderHealth.DEGRADED
             return
         
-        # Si todo está bien
+        # If everything is fine
         if self.error_rate < 10 and self.avg_response_time < 5000:
             self.health_status = ProviderHealth.HEALTHY
         elif self.error_rate < 25:
@@ -124,7 +124,7 @@ class HealthMetrics:
 
 @dataclass
 class FallbackConfig:
-    """Configuración del sistema de fallback"""
+    """Fallback system configuration"""
     max_retries: int = 3
     retry_delay: float = 1.0
     circuit_breaker_threshold: int = 5
@@ -138,7 +138,7 @@ class FallbackConfig:
 
 
 class BidirectionalFallbackSystem:
-    """Sistema de Fallback Bidireccional con Health Checks Predictivos"""
+    """Bidirectional Fallback System with Predictive Health Checks"""
     
     def __init__(self, config: Optional[FallbackConfig] = None):
         self.config = config or FallbackConfig()
@@ -149,7 +149,7 @@ class BidirectionalFallbackSystem:
         self.health_check_task: Optional[asyncio.Task] = None
         self.is_monitoring = False
         
-        # Estadísticas del sistema
+        # System statistics
         self.system_stats = {
             'total_requests': 0,
             'successful_requests': 0,
@@ -164,7 +164,7 @@ class BidirectionalFallbackSystem:
                    self.config.fallback_strategy.value)
     
     def register_provider(self, provider_name: str, priority: int = 1):
-        """Registrar un proveedor en el sistema"""
+        """Register a provider in the system"""
         if provider_name not in self.providers_health:
             self.providers_health[provider_name] = HealthMetrics(provider=provider_name)
             self.circuit_breakers[provider_name] = {
@@ -178,19 +178,19 @@ class BidirectionalFallbackSystem:
             logger.info("✅ Provider '%s' registered with priority %d", provider_name, priority)
     
     def set_fallback_chain(self, agent_type: str, provider_chain: List[str]):
-        """Configurar cadena de fallback para un tipo de agente"""
+        """Set fallback chain for an agent type"""
         self.fallback_chains[agent_type] = provider_chain
         logger.info("🔗 Fallback chain for '%s': %s", agent_type, " → ".join(provider_chain))
     
     async def start_monitoring(self):
-        """Iniciar monitoreo de salud predictivo"""
+        """Start predictive health monitoring"""
         if not self.is_monitoring:
             self.is_monitoring = True
             self.health_check_task = asyncio.create_task(self._health_monitor_loop())
             logger.info("🔍 Predictive health monitoring started")
     
     async def stop_monitoring(self):
-        """Detener monitoreo de salud"""
+        """Stop health monitoring"""
         if self.health_check_task:
             self.health_check_task.cancel()
             try:
@@ -201,7 +201,7 @@ class BidirectionalFallbackSystem:
             logger.info("⏹️ Health monitoring stopped")
     
     async def _health_monitor_loop(self):
-        """Loop principal de monitoreo de salud"""
+        """Main health monitoring loop"""
         while self.is_monitoring:
             try:
                 await self._perform_health_checks()
@@ -215,10 +215,10 @@ class BidirectionalFallbackSystem:
                 await asyncio.sleep(5)
     
     async def _perform_health_checks(self):
-        """Realizar health checks de todos los proveedores"""
+        """Perform health checks for all providers"""
         for provider_name, metrics in self.providers_health.items():
             try:
-                # Verificar circuit breaker
+                # Check circuit breaker
                 cb = self.circuit_breakers[provider_name]
                 current_time = time.time()
                 
@@ -227,7 +227,7 @@ class BidirectionalFallbackSystem:
                         cb['state'] = 'half-open'
                         logger.info("🔄 Circuit breaker for '%s' moved to half-open", provider_name)
                 
-                # Health check predictivo basado en tendencias
+                # Predictive health check based on trends
                 if self.config.enable_predictive_health:
                     await self._predictive_health_check(provider_name, metrics)
                     
@@ -235,15 +235,15 @@ class BidirectionalFallbackSystem:
                 logger.error("Health check failed for '%s': %s", provider_name, e)
     
     async def _predictive_health_check(self, provider_name: str, metrics: HealthMetrics):
-        """Health check predictivo basado en tendencias"""
+        """Predictive health check based on trends"""
         current_time = time.time()
         
-        # Predicción basada en tendencia de errores
+        # Prediction based on error trend
         if len(metrics.response_times) >= 10:
             recent_times = list(metrics.response_times)[-10:]
             avg_recent = sum(recent_times) / len(recent_times)
             
-            # Si el tiempo de respuesta está aumentando dramáticamente
+            # If response time is increasing dramatically
             if avg_recent > metrics.avg_response_time * 2:
                 if metrics.health_status == ProviderHealth.HEALTHY:
                     metrics.health_status = ProviderHealth.DEGRADED
@@ -251,8 +251,8 @@ class BidirectionalFallbackSystem:
                     logger.warning("🔮 Predictive intervention: %s degraded due to response time trend", 
                                  provider_name)
         
-        # Predicción basada en tiempo desde último éxito
-        if metrics.last_success and current_time - metrics.last_success > 120:  # 2 minutos
+        # Prediction based on time since last success
+        if metrics.last_success and current_time - metrics.last_success > 120:  # 2 minutes
             if metrics.health_status == ProviderHealth.HEALTHY:
                 metrics.health_status = ProviderHealth.DEGRADED
                 self.system_stats['predictive_interventions'] += 1
@@ -260,14 +260,14 @@ class BidirectionalFallbackSystem:
                              provider_name)
     
     async def _update_load_balancer_weights(self):
-        """Actualizar pesos del load balancer basado en salud"""
+        """Update load balancer weights based on health"""
         if not self.config.enable_load_balancing:
             return
         
         for provider_name, metrics in self.providers_health.items():
             base_weight = 1.0
             
-            # Ajustar peso basado en salud
+            # Adjust weight based on health
             if metrics.health_status == ProviderHealth.HEALTHY:
                 health_multiplier = 1.0
             elif metrics.health_status == ProviderHealth.DEGRADED:
@@ -277,28 +277,28 @@ class BidirectionalFallbackSystem:
             else:
                 health_multiplier = 0.0
             
-            # Ajustar peso basado en performance
+            # Adjust weight based on performance
             if metrics.avg_response_time > 0:
-                # Menor tiempo de respuesta = mayor peso
+                # Lower response time = higher weight
                 time_multiplier = min(1.0, 1000 / max(metrics.avg_response_time, 100))
             else:
                 time_multiplier = 1.0
             
-            # Ajustar peso basado en costo si está habilitado
+            # Adjust weight based on cost if enabled
             cost_multiplier = 1.0
             if self.config.cost_optimization and metrics.cost_per_request > 0:
-                # Menor costo = mayor peso
+                # Lower cost = higher weight
                 avg_cost = sum(m.cost_per_request for m in self.providers_health.values()) / len(self.providers_health)
                 if avg_cost > 0:
                     cost_multiplier = min(2.0, avg_cost / max(metrics.cost_per_request, 0.001))
             
-            # Calcular peso final
+            # Calculate final weight
             final_weight = base_weight * health_multiplier * time_multiplier * cost_multiplier
-            self.load_balancer_weights[provider_name] = max(0.01, final_weight)  # Mínimo peso
+            self.load_balancer_weights[provider_name] = max(0.01, final_weight)  # Minimum weight
     
     async def _check_predictive_interventions(self):
-        """Verificar si se necesitan intervenciones predictivas"""
-        # Verificar si todos los proveedores están degradados
+        """Check if predictive interventions are needed"""
+        # Check if all providers are degraded
         healthy_providers = [
             name for name, metrics in self.providers_health.items()
             if metrics.health_status == ProviderHealth.HEALTHY
@@ -306,24 +306,24 @@ class BidirectionalFallbackSystem:
         
         if len(healthy_providers) == 0:
             logger.warning("🚨 All providers are unhealthy or degraded!")
-            # Podrían implementarse notificaciones aquí
+            # Notifications could be implemented here
         
-        # Verificar patrones de costo
+        # Check cost patterns
         if self.config.cost_optimization:
             await self._optimize_cost_patterns()
     
     async def _optimize_cost_patterns(self):
-        """Optimizar patrones de costo"""
+        """Optimize cost patterns"""
         total_cost = sum(m.total_cost for m in self.providers_health.values())
         if total_cost > 0:
-            # Identificar el proveedor más costoso
+            # Identify the most expensive provider
             most_expensive = max(
                 self.providers_health.items(),
                 key=lambda x: x[1].cost_per_request if x[1].total_requests > 0 else 0
             )
             
             if most_expensive[1].cost_per_request > 0:
-                # Reducir peso del proveedor más caro si hay alternativas saludables
+                # Reduce weight of the most expensive provider if healthy alternatives exist
                 healthy_alternatives = [
                     name for name, metrics in self.providers_health.items()
                     if (metrics.health_status == ProviderHealth.HEALTHY and 
@@ -336,11 +336,11 @@ class BidirectionalFallbackSystem:
                     self.system_stats['cost_optimizations'] += 1
     
     def _get_circuit_breaker_state(self, provider_name: str) -> str:
-        """Obtener estado del circuit breaker"""
+        """Get circuit breaker state"""
         return self.circuit_breakers.get(provider_name, {}).get('state', 'closed')
     
     def _should_trip_circuit_breaker(self, provider_name: str) -> bool:
-        """Verificar si debe activarse el circuit breaker"""
+        """Check if the circuit breaker should be tripped"""
         cb = self.circuit_breakers.get(provider_name, {})
         metrics = self.providers_health.get(provider_name)
         
@@ -351,7 +351,7 @@ class BidirectionalFallbackSystem:
                 metrics.consecutive_failures >= self.config.circuit_breaker_threshold)
     
     def _trip_circuit_breaker(self, provider_name: str):
-        """Activar circuit breaker"""
+        """Trip circuit breaker"""
         current_time = time.time()
         cb = self.circuit_breakers[provider_name]
         cb['state'] = 'open'
@@ -363,13 +363,13 @@ class BidirectionalFallbackSystem:
                       provider_name, self.config.circuit_breaker_timeout)
     
     def get_optimal_provider(self, agent_type: str, exclude: Optional[List[str]] = None) -> Optional[str]:
-        """Obtener el proveedor óptimo para un agente"""
+        """Get the optimal provider for an agent"""
         exclude = exclude or []
         
-        # Obtener cadena de fallback para el agente
+        # Get fallback chain for the agent
         available_providers = self.fallback_chains.get(agent_type, list(self.providers_health.keys()))
         
-        # Filtrar proveedores excluidos y con circuit breaker abierto
+        # Filter excluded providers and those with an open circuit breaker
         candidates = []
         for provider_name in available_providers:
             if provider_name in exclude:
@@ -384,13 +384,13 @@ class BidirectionalFallbackSystem:
         if not candidates:
             return None
         
-        # Si no hay load balancing, usar el primero disponible
+        # If no load balancing, use the first one available
         if not self.config.enable_load_balancing:
             return candidates[0]
         
-        # Selección basada en pesos
+        # Selection based on weights
         if self.config.fallback_strategy == FallbackStrategy.ADAPTIVE:
-            # Seleccionar basado en salud, performance y costo
+            # Select based on health, performance, and cost
             best_provider = None
             best_score = 0
             
@@ -415,7 +415,7 @@ class BidirectionalFallbackSystem:
             
             return best_provider or candidates[0]
         
-        # Para otras estrategias, usar el primero disponible
+        # For other strategies, use the first one available
         return candidates[0]
     
     async def execute_with_fallback(
@@ -426,8 +426,8 @@ class BidirectionalFallbackSystem:
         **kwargs
     ) -> Tuple[Any, str]:
         """
-        Ejecutar función con sistema de fallback
-        Retorna (resultado, provider_usado)
+        Execute function with fallback system
+        Returns (result, provider_used)
         """
         self.system_stats['total_requests'] += 1
         
@@ -435,7 +435,7 @@ class BidirectionalFallbackSystem:
         last_error = None
         
         for attempt in range(self.config.max_retries + 1):
-            # Obtener proveedor óptimo
+            # Get optimal provider
             provider_name = self.get_optimal_provider(agent_type, exclude=attempted_providers)
             
             if not provider_name:
@@ -443,7 +443,7 @@ class BidirectionalFallbackSystem:
             
             attempted_providers.append(provider_name)
             
-            # Verificar circuit breaker
+            # Check circuit breaker
             cb_state = self._get_circuit_breaker_state(provider_name)
             if cb_state == 'open':
                 continue
@@ -451,20 +451,20 @@ class BidirectionalFallbackSystem:
             start_time = time.time()
             
             try:
-                # Ejecutar función con timeout
+                # Execute function with timeout
                 result = await asyncio.wait_for(
                     execute_func(provider_name, *args, **kwargs),
                     timeout=self.config.response_timeout
                 )
                 
-                # Registrar éxito
+                # Register success
                 response_time = (time.time() - start_time) * 1000  # ms
                 cost = kwargs.get('estimated_cost', 0.0)
                 
                 metrics = self.providers_health[provider_name]
                 metrics.update_success(response_time, cost)
                 
-                # Resetear circuit breaker si estaba en half-open
+                # Reset circuit breaker if it was in half-open state
                 cb = self.circuit_breakers[provider_name]
                 if cb['state'] == 'half-open':
                     cb['state'] = 'closed'
@@ -491,30 +491,30 @@ class BidirectionalFallbackSystem:
                 logger.warning("❌ %s failed for '%s': %s", provider_name, agent_type, error_msg)
                 last_error = e
             
-            # Registrar fallo
+            # Register failure
             metrics = self.providers_health[provider_name]
             metrics.update_failure(str(last_error))
             
-            # Actualizar circuit breaker
+            # Update circuit breaker
             cb = self.circuit_breakers[provider_name]
             cb['failure_count'] += 1
             
-            # Activar circuit breaker si es necesario
+            # Trip circuit breaker if necessary
             if self._should_trip_circuit_breaker(provider_name):
                 self._trip_circuit_breaker(provider_name)
             
-            # Delay antes del siguiente intento
+            # Delay before next attempt
             if attempt < self.config.max_retries:
                 delay = self.config.retry_delay * (2 ** attempt)  # Exponential backoff
                 await asyncio.sleep(delay)
         
-        # Todos los intentos fallaron
+        # All attempts failed
         error_msg = f"All fallback attempts failed for '{agent_type}'. Last error: {last_error}"
         logger.error("💥 %s", error_msg)
         raise RuntimeError(error_msg)
     
     def get_health_summary(self) -> Dict[str, Any]:
-        """Obtener resumen de salud del sistema"""
+        """Get system health summary"""
         provider_summaries = {}
         
         for provider_name, metrics in self.providers_health.items():
@@ -554,10 +554,10 @@ class BidirectionalFallbackSystem:
         }
     
     def get_recommendations(self) -> List[str]:
-        """Obtener recomendaciones de optimización"""
+        """Get optimization recommendations"""
         recommendations = []
         
-        # Análisis de salud general
+        # General health analysis
         unhealthy_providers = [
             name for name, metrics in self.providers_health.items()
             if metrics.health_status == ProviderHealth.UNHEALTHY
@@ -565,74 +565,74 @@ class BidirectionalFallbackSystem:
         
         if unhealthy_providers:
             recommendations.append(
-                f"🚨 Proveedores no saludables detectados: {', '.join(unhealthy_providers)}. "
-                "Considere revisar su configuración o contactar soporte."
+                f"🚨 Unhealthy providers detected: {', '.join(unhealthy_providers)}. "
+                "Consider reviewing their configuration or contacting support."
             )
         
-        # Análisis de costos
+        # Cost analysis
         if self.config.cost_optimization:
             high_cost_providers = [
                 name for name, metrics in self.providers_health.items()
-                if metrics.cost_per_request > 0.01  # Umbral configurable
+                if metrics.cost_per_request > 0.01  # Configurable threshold
             ]
             
             if high_cost_providers:
                 recommendations.append(
-                    f"💰 Proveedores con alto costo detectados: {', '.join(high_cost_providers)}. "
-                    "Considere optimizar el uso o negociar mejores tarifas."
+                    f"💰 High-cost providers detected: {', '.join(high_cost_providers)}. "
+                    "Consider optimizing usage or negotiating better rates."
                 )
         
-        # Análisis de performance
+        # Performance analysis
         slow_providers = [
             name for name, metrics in self.providers_health.items()
-            if metrics.avg_response_time > 5000  # 5 segundos
+            if metrics.avg_response_time > 5000  # 5 seconds
         ]
         
         if slow_providers:
             recommendations.append(
-                f"🐌 Proveedores lentos detectados: {', '.join(slow_providers)}. "
-                "Considere revisar la conectividad o cambiar de región."
+                f"🐌 Slow providers detected: {', '.join(slow_providers)}. "
+                "Consider checking connectivity or changing regions."
             )
         
-        # Análisis de fallbacks
+        # Fallback analysis
         if self.system_stats['fallback_requests'] > self.system_stats['successful_requests'] * 0.1:
             recommendations.append(
-                "🔄 Alto número de fallbacks detectado. Revise la salud de los proveedores primarios."
+                "🔄 High number of fallbacks detected. Review the health of primary providers."
             )
         
-        # Análisis de circuit breakers
+        # Circuit breaker analysis
         if self.system_stats['circuit_breaker_trips'] > 0:
             recommendations.append(
-                f"⚡ {self.system_stats['circuit_breaker_trips']} circuit breakers activados. "
-                "Algunos proveedores pueden estar experimentando problemas."
+                f"⚡ {self.system_stats['circuit_breaker_trips']} circuit breakers tripped. "
+                "Some providers may be experiencing issues."
             )
         
-        return recommendations or ["✅ Sistema funcionando óptimamente"]
+        return recommendations or ["✅ System is operating optimally"]
     
     async def check_provider_health(self, provider: str) -> bool:
         """
-        Verifica la salud de un proveedor específico
+        Checks the health of a specific provider
         
         Args:
-            provider: Nombre del proveedor ('mlx', 'huggingface')
+            provider: Name of the provider ('mlx', 'huggingface')
             
         Returns:
-            True si el proveedor está saludable
+            True if the provider is healthy
         """
         try:
             if provider not in self.providers_health:
-                # Inicializar métricas si no existen
+                # Initialize metrics if they don't exist
                 self.providers_health[provider] = HealthMetrics(provider=provider)
-                return True  # Asumir saludable hasta probar lo contrario
+                return True  # Assume healthy until proven otherwise
             
             metrics = self.providers_health[provider]
             
-            # Criterios de salud
+            # Health criteria
             is_healthy = (
                 metrics.health_status in [ProviderHealth.HEALTHY, ProviderHealth.UNKNOWN] and
-                metrics.error_rate < 0.5 and  # Menos de 50% de errores
-                metrics.consecutive_failures < 5 and  # Menos de 5 fallos consecutivos
-                metrics.avg_response_time < 10000  # Menos de 10 segundos promedio
+                metrics.error_rate < 0.5 and  # Less than 50% error rate
+                metrics.consecutive_failures < 5 and  # Less than 5 consecutive failures
+                metrics.avg_response_time < 10000  # Less than 10 seconds average
             )
             
             return is_healthy
@@ -648,25 +648,25 @@ class BidirectionalFallbackSystem:
         requirements: Optional[Dict[str, Any]] = None
     ) -> Optional[str]:
         """
-        Selecciona el proveedor óptimo basado en el tipo de request y requerimientos
+        Selects the optimal provider based on request type and requirements
         
         Args:
-            request_type: Tipo de request ('sentiment', 'technical', 'visual', etc.)
-            complexity: Complejidad del análisis ('low', 'medium', 'high')
-            requirements: Requerimientos específicos (timeout, quality, etc.)
+            request_type: Type of request ('sentiment', 'technical', 'visual', etc.)
+            complexity: Analysis complexity ('low', 'medium', 'high')
+            requirements: Specific requirements (timeout, quality, etc.)
             
         Returns:
-            Nombre del proveedor óptimo o None si ninguno disponible
+            Name of the optimal provider, or None if none are available
         """
         try:
             requirements = requirements or {}
             timeout = requirements.get('timeout', 10)
             
-            # Evaluar proveedores disponibles
+            # Evaluate available providers
             provider_scores = {}
             
             for provider in ['mlx', 'huggingface']:
-                # Verificar si el proveedor está saludable
+                # Check if the provider is healthy
                 is_healthy = await self.check_provider_health(provider)
                 if not is_healthy:
                     continue
@@ -675,10 +675,10 @@ class BidirectionalFallbackSystem:
                 if not metrics:
                     continue
                 
-                # Calcular score basado en diferentes factores
-                score = 100  # Score base
+                # Calculate score based on different factors
+                score = 100  # Base score
                 
-                # Factor de salud
+                # Health factor
                 if metrics.health_status == ProviderHealth.HEALTHY:
                     score += 20
                 elif metrics.health_status == ProviderHealth.DEGRADED:
@@ -686,35 +686,35 @@ class BidirectionalFallbackSystem:
                 else:
                     score -= 30
                 
-                # Factor de velocidad (importante para timeout)
+                # Speed factor (important for timeout)
                 if metrics.avg_response_time > 0:
-                    if metrics.avg_response_time < timeout * 1000 * 0.5:  # Menos de 50% del timeout
+                    if metrics.avg_response_time < timeout * 1000 * 0.5:  # Less than 50% of timeout
                         score += 15
-                    elif metrics.avg_response_time > timeout * 1000:  # Más que el timeout
+                    elif metrics.avg_response_time > timeout * 1000:  # More than the timeout
                         score -= 50
                 
-                # Factor de éxito
+                # Success factor
                 score += metrics.success_rate * 0.3
                 
-                # Factor de costo (MLX es gratis)
+                # Cost factor (MLX is free)
                 if provider == 'mlx':
-                    score += 10  # Bonus por ser gratuito
+                    score += 10  # Bonus for being free
                 
-                # Factor específico por tipo de request
+                # Factor specific to request type
                 if request_type == 'visual' and provider == 'huggingface':
-                    score += 5  # HF generalmente mejor para visual
+                    score += 5  # HF is generally better for visual
                 elif request_type in ['sentiment', 'technical'] and provider == 'mlx':
-                    score += 5  # MLX puede ser suficiente para análisis simples
+                    score += 5  # MLX may be sufficient for simple analyses
                 
-                # Factor de complejidad
+                # Complexity factor
                 if complexity == 'high' and provider == 'huggingface':
-                    score += 10  # HF mejor para tareas complejas
+                    score += 10  # HF is better for complex tasks
                 elif complexity == 'low' and provider == 'mlx':
-                    score += 10  # MLX suficiente para tareas simples
+                    score += 10  # MLX is sufficient for simple tasks
                 
-                provider_scores[provider] = max(0, score)  # No scores negativos
+                provider_scores[provider] = max(0, score)  # No negative scores
             
-            # Seleccionar el mejor proveedor
+            # Select the best provider
             if not provider_scores:
                 return None
             
@@ -723,14 +723,14 @@ class BidirectionalFallbackSystem:
             
         except Exception as e:
             logger.error("Error selecting optimal provider: %s", e)
-            return 'mlx'  # Fallback por defecto
+            return 'mlx'  # Default fallback
     
     async def get_health_summary(self) -> Dict[str, Dict[str, Any]]:
         """
-        Obtiene resumen de salud de todos los proveedores
+        Gets a health summary for all providers
         
         Returns:
-            Dict con información de salud por proveedor
+            Dict with health information per provider
         """
         try:
             summary = {}
@@ -750,7 +750,7 @@ class BidirectionalFallbackSystem:
                     'last_failure': metrics.last_failure
                 }
             
-            # Agregar proveedores que no están en métricas pero deberían estar
+            # Add providers that are not in metrics but should be
             for provider in ['mlx', 'huggingface']:
                 if provider not in summary:
                     summary[provider] = {

@@ -286,7 +286,7 @@ async def lifespan(app: FastAPI):
 
 # FastAPI App
 app = FastAPI(lifespan=lifespan)
-app.include_router(auth_router)  # Register Auth Routes
+app.include_router(auth_router, prefix="/api")  # Register Auth Routes
 app_socketio = socketio.ASGIApp(sio, app)
 
 # Override database for testing

@@ -287,7 +287,7 @@ ollama pull qwen3:8b
 python run_fenix.py --api
 
 # Terminal 2: Start the frontend
-cd frontend && npm install && npm run dev
+cd frontend && npm install && npm run client:dev
 ```
 
 Access the dashboard at: **http://localhost:5173**
@@ -371,7 +371,7 @@ FenixAI/
 │   ├── hooks/                # Custom React hooks
 │   ├── stores/               # State management
 │   ├── providers/            # Context providers
-│   └── api/                  # Express.js API
+│   └── api/                  # API client for frontend
 │
 ├── docs/                     # Documentation
 ├── tests/                    # Test suite

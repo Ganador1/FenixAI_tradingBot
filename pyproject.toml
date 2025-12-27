@@ -42,7 +42,8 @@ dependencies = [
     "python-jose",
     "passlib",
     "python-multipart",
-    "uvicorn>=0.23"
+    "uvicorn>=0.23",
+    "httpx"
 ]
 [project.optional-dependencies]
 ml = [

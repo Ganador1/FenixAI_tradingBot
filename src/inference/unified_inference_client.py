@@ -1,6 +1,6 @@
 """
-Cliente unificado de inferencia para FenixAI Trading Bot v3.0
-Maneja MLX local y HuggingFace API con Sistema Bidirectional Fallback Avanzado
+Unified Inference Client for FenixAI Trading Bot v3.0
+Handles local MLX and HuggingFace API with Advanced Bidirectional Fallback System
 """
 import logging
 import asyncio
@@ -15,10 +15,10 @@ from src.inference.provider_rate_limiter import get_rate_limiter
 from src.inference.providers.base import GenerationParams
 from src.inference.model_id_normalizer import normalize_model_id_for_provider
 
-# Inicializar logger antes de cualquier uso
+# Initialize logger before any use
 logger = logging.getLogger(__name__)
 
-# Imports condicionales para cache
+# Conditional imports for cache
 try:
     from src.cache.response_cache import get_response_cache
     CACHE_AVAILABLE = True
@@ -26,7 +26,7 @@ except ImportError:
     CACHE_AVAILABLE = False
     logger.warning("⚠️ Cache system not available")
 
-# Import del sistema de fallback
+# Import of the fallback system
 try:
     from src.inference.bidirectional_fallback_system import (
         BidirectionalFallbackSystem,
@@ -39,10 +39,10 @@ except ImportError:
 
 
 class UnifiedInferenceClient:
-    """Cliente unificado para inferencia híbrida MLX + HuggingFace"""
+    """Unified client for hybrid MLX + HuggingFace inference"""
     
     def __init__(self, hf_api_key: Optional[str] = None):
-        # Inicializar y registrar proveedores por defecto
+        # Initialize and register default providers
         setup_default_providers()
         self._providers = registry.available()
         
@@ -75,7 +75,7 @@ class UnifiedInferenceClient:
         force_api: bool = False,
         image_path: Optional[str] = None
     ) -> str:
-        """Generar respuesta usando el mejor backend para el agente"""
+        """Generate a response using the best backend for the agent"""
         self.stats['total_requests'] += 1
         
         if agent_type not in self.stats['by_agent']:
@@ -118,9 +118,9 @@ class UnifiedInferenceClient:
         
         last_error = None
         for i, config in enumerate(configs):
-            # Saltar proveedores no disponibles en runtime (p.ej. HF sin token u Ollama sin CLI)
+            # Skip providers not available at runtime (e.g., HF without token or Ollama without CLI)
             if config.provider not in self._providers:
-                logger.warning("Provider %s no disponible; saltando config %s", config.provider, config.model_id)
+                logger.warning("Provider %s not available; skipping config %s", config.provider, config.model_id)
                 continue
             try:
                 result = await self._try_generate(
@@ -231,7 +231,7 @@ class UnifiedInferenceClient:
     ) -> str:
         provider = self._providers.get(provider_name)
         if not provider:
-            raise RuntimeError(f"Provider '{provider_name}' no disponible")
+            raise RuntimeError(f"Provider '{provider_name}' not available")
 
         params = GenerationParams(
             max_tokens=max_tokens,
@@ -241,7 +241,7 @@ class UnifiedInferenceClient:
 
         mdl = model_id
         if provider_name == 'mlx' and not mdl:
-            # Obtener modelo por defecto del agente si no se especificó
+            # Get default model for the agent if not specified
             from src.config.mlx_models import get_agent_model
             mdl = get_agent_model(agent_type)
 
@@ -259,7 +259,7 @@ class UnifiedInferenceClient:
             # If the normalization utility is unavailable or fails, continue with original id
             pass
 
-        # Seleccionar modo
+        # Select mode
         try:
             if images and agent_type == 'visual':
                 result = provider.generate_with_vision(mdl or '', prompt, images, params)
@@ -364,6 +364,6 @@ async def quick_generate(
     hf_api_key: Optional[str] = None,
     **kwargs
 ) -> str:
-    """Función de conveniencia para generación rápida"""
+    """Convenience function for quick generation"""
     async with UnifiedInferenceClient(hf_api_key) as client:
         return await client.generate_for_agent(agent_type, prompt, **kwargs)

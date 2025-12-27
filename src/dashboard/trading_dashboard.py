@@ -1,12 +1,12 @@
 # src/dashboard/trading_dashboard.py
 """
-Dashboard de Trading para Fenix.
+Trading Dashboard for Fenix.
 
-Proporciona visualización en tiempo real de:
-- Estado del pipeline de agentes
-- Métricas de rendimiento
-- Decisiones y señales
-- Estadísticas del ReasoningBank
+Provides real-time visualization of:
+- Agent pipeline status
+- Performance metrics
+- Decisions and signals
+- ReasoningBank statistics
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentStatus:
-    """Estado de un agente."""
+    """Status of an agent."""
 
     name: str
     status: str = "idle"  # idle, running, completed, error
@@ -35,7 +35,7 @@ class AgentStatus:
 
 @dataclass
 class PipelineMetrics:
-    """Métricas del pipeline."""
+    """Pipeline metrics."""
 
     total_runs: int = 0
     successful_runs: int = 0
@@ -49,13 +49,13 @@ class PipelineMetrics:
 
 class TradingDashboard:
     """
-    Dashboard para monitorear el sistema de trading Fenix.
+    Dashboard for monitoring the Fenix trading system.
 
-    Características:
-    - Visualización de estados de agentes
-    - Métricas en tiempo real
-    - Historial de decisiones
-    - Estadísticas del ReasoningBank
+    Features:
+    - Visualization of agent states
+    - Real-time metrics
+    - Decision history
+    - ReasoningBank statistics
     """
 
     def __init__(self):
@@ -64,7 +64,7 @@ class TradingDashboard:
         self.decision_history: list[dict[str, Any]] = []
         self.max_history = 100
 
-        # Inicializar agentes conocidos
+        # Initialize known agents
         agent_names = [
             "technical_analyst",
             "sentiment_analyst",
@@ -85,7 +85,7 @@ class TradingDashboard:
         latency_ms: float = 0.0,
         error: bool = False,
     ) -> None:
-        """Actualiza el estado de un agente."""
+        """Updates the status of an agent."""
         if agent_name not in self.agents:
             self.agents[agent_name] = AgentStatus(name=agent_name)
 
@@ -111,7 +111,7 @@ class TradingDashboard:
         final_signal: str | None = None,
         state: dict[str, Any] | None = None,
     ) -> None:
-        """Registra una ejecución completa del pipeline."""
+        """Records a complete pipeline execution."""
         self.pipeline_metrics.total_runs += 1
         self.pipeline_metrics.last_run_time = datetime.now().isoformat()
 
@@ -120,12 +120,12 @@ class TradingDashboard:
         else:
             self.pipeline_metrics.failed_runs += 1
 
-        # Actualizar latencia promedio (media móvil)
+        # Update average latency (moving average)
         n = self.pipeline_metrics.total_runs
         old_avg = self.pipeline_metrics.avg_latency_ms
         self.pipeline_metrics.avg_latency_ms = (old_avg * (n - 1) + latency_ms) / n
 
-        # Contar señales
+        # Count signals
         if final_signal:
             signal_upper = final_signal.upper()
             if signal_upper == "BUY":
@@ -135,7 +135,7 @@ class TradingDashboard:
             else:
                 self.pipeline_metrics.hold_signals += 1
 
-        # Agregar al historial
+        # Add to history
         decision_entry = {
             "timestamp": datetime.now().isoformat(),
             "success": success,
@@ -145,12 +145,12 @@ class TradingDashboard:
         }
         self.decision_history.append(decision_entry)
 
-        # Mantener límite de historial
+        # Maintain history limit
         if len(self.decision_history) > self.max_history:
             self.decision_history = self.decision_history[-self.max_history:]
 
     def _summarize_state(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Resume el estado para almacenamiento."""
+        """Summarizes the state for storage."""
         summary = {}
 
         if "symbol" in state:
@@ -168,7 +168,7 @@ class TradingDashboard:
         return summary
 
     def get_dashboard_data(self) -> dict[str, Any]:
-        """Retorna todos los datos del dashboard."""
+        """Returns all dashboard data."""
         return {
             "agents": {
                 name: {
@@ -197,7 +197,7 @@ class TradingDashboard:
         }
 
     def _calc_success_rate(self) -> str:
-        """Calcula la tasa de éxito."""
+        """Calculates the success rate."""
         total = self.pipeline_metrics.total_runs
         if total == 0:
             return "N/A"
@@ -205,15 +205,15 @@ class TradingDashboard:
         return f"{rate:.1%}"
 
     def print_status(self) -> None:
-        """Imprime el estado del dashboard en consola."""
+        """Prints the dashboard status to the console."""
         data = self.get_dashboard_data()
 
         print("\n" + "=" * 60)
         print("FENIX TRADING DASHBOARD")
         print("=" * 60)
 
-        # Estado de agentes
-        print("\n📊 AGENTES:")
+        # Agent status
+        print("\n📊 AGENTS:")
         print("-" * 40)
         for name, agent_data in data["agents"].items():
             status_emoji = self._get_status_emoji(agent_data["status"])
@@ -225,7 +225,7 @@ class TradingDashboard:
                 f"Latency: {agent_data['last_latency_ms']}"
             )
 
-        # Métricas del pipeline
+        # Pipeline metrics
         print("\n📈 PIPELINE:")
         print("-" * 40)
         pipeline = data["pipeline"]
@@ -241,7 +241,7 @@ class TradingDashboard:
             print(f"    SELL: {dist['sell']:4} ({dist['sell']/total_signals*100:.1f}%)")
             print(f"    HOLD: {dist['hold']:4} ({dist['hold']/total_signals*100:.1f}%)")
 
-        # Decisiones recientes
+        # Recent decisions
         recent = data["recent_decisions"]
         if recent:
             print("\n📜 RECENT DECISIONS:")
@@ -256,7 +256,7 @@ class TradingDashboard:
         print("\n" + "=" * 60)
 
     def _get_status_emoji(self, status: str) -> str:
-        """Retorna emoji según estado."""
+        """Returns an emoji based on the status."""
         status_emojis = {
             "idle": "⚪",
             "running": "🔵",
@@ -267,7 +267,7 @@ class TradingDashboard:
 
 
 class LiveDashboard:
-    """Dashboard en vivo que se actualiza continuamente."""
+    """Live dashboard that updates continuously."""
 
     def __init__(self, dashboard: TradingDashboard, refresh_interval: float = 1.0):
         self.dashboard = dashboard
@@ -275,7 +275,7 @@ class LiveDashboard:
         self.running = False
 
     def start(self) -> None:
-        """Inicia el dashboard en vivo."""
+        """Starts the live dashboard."""
         self.running = True
         logger.info("Starting live dashboard")
 
@@ -288,12 +288,12 @@ class LiveDashboard:
             self.stop()
 
     def stop(self) -> None:
-        """Detiene el dashboard."""
+        """Stops the dashboard."""
         self.running = False
         logger.info("Dashboard stopped")
 
     def _clear_screen(self) -> None:
-        """Limpia la pantalla."""
+        """Clears the screen."""
         print("\033[H\033[J", end="")
 
 
@@ -302,7 +302,7 @@ _dashboard: TradingDashboard | None = None
 
 
 def get_dashboard() -> TradingDashboard:
-    """Obtiene la instancia singleton del dashboard."""
+    """Gets the singleton instance of the dashboard."""
     global _dashboard
     if _dashboard is None:
         _dashboard = TradingDashboard()
