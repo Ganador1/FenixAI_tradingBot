@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from src.trading.engine import TradingEngine
 from src.trading.binance_client import BinanceClient
 from src.config.config_loader import APP_CONFIG
-from src.config.database import init_db, get_db
+from src.config.database import init_db, get_db, SessionLocal
 from src.memory.reasoning_bank import get_reasoning_bank
 from src.models.db_models import Order, Trade, Position, AgentOutput
 from sqlalchemy import select, desc
@@ -241,11 +241,7 @@ async def lifespan(app: FastAPI):
             demo_admin_user = demo_admin.scalar_one_or_none()
             if not demo_admin_user and create_demo_users:
                 logger.info("Creating demo admin user for local dev: admin@trading.com")
-                demo_admin_password = os.getenv("DEFAULT_DEMO_PASSWORD")
-                if not demo_admin_password:
-                    import secrets
-                    demo_admin_password = secrets.token_urlsafe(10)
-                    logger.info("[LOCAL DEV] Generated demo admin password (not printed). Use DEFAULT_DEMO_PASSWORD to set a custom password")
+                demo_admin_password = os.getenv("DEFAULT_DEMO_PASSWORD", "password")
                 new_demo_admin = User(
                     id=str(uuid.uuid4()),
                     email="admin@trading.com",
@@ -262,11 +258,7 @@ async def lifespan(app: FastAPI):
             demo_trader_user = demo_trader.scalar_one_or_none()
             if not demo_trader_user and create_demo_users:
                 logger.info("Creating demo trader user for local dev: trader@trading.com")
-                demo_trader_password = os.getenv("DEFAULT_DEMO_PASSWORD")
-                if not demo_trader_password:
-                    import secrets
-                    demo_trader_password = secrets.token_urlsafe(10)
-                    logger.info("[LOCAL DEV] Generated demo trader password (not printed). Use DEFAULT_DEMO_PASSWORD to set a custom password")
+                demo_trader_password = os.getenv("DEFAULT_DEMO_PASSWORD", "password")
                 new_demo_trader = User(
                     id=str(uuid.uuid4()),
                     email="trader@trading.com",
@@ -296,6 +288,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(auth_router)  # Register Auth Routes
 app_socketio = socketio.ASGIApp(sio, app)
+
+# Override database for testing
+if os.getenv("TESTING") == "true":
+    from tests.conftest import override_get_db
+    app.dependency_overrides[get_db] = override_get_db
 
 # CORS - limitar a orígenes conocidos
 app.add_middleware(

@@ -34,7 +34,15 @@ dependencies = [
     "ta>=0.11",
     "networkx>=3.0",
     "dash-bootstrap-components>=2.0",
-    "cryptography>=41.0.0"
+    "cryptography>=41.0.0",
+    "python-socketio",
+    "beautifulsoup4",
+    "feedparser",
+    "aiosqlite",
+    "python-jose",
+    "passlib",
+    "python-multipart",
+    "uvicorn>=0.23"
 ]
 [project.optional-dependencies]
 ml = [
@@ -57,7 +65,6 @@ vision = [
 ]
 monitoring = [
     "prometheus-client>=0.17",
-    "uvicorn>=0.23",
     "fastapi>=0.100",
     "flask>=2.3"
 ]
