@@ -1,12 +1,12 @@
 # src/trading/engine.py
 """
-Motor de Trading Principal para Fenix Trading Bot.
+Main Trading Engine for Fenix Trading Bot.
 
-Este es el núcleo refactorizado que orquesta:
-- Recepción de datos de mercado
-- Ejecución del grafo LangGraph de agentes
-- Gestión de decisiones y ejecución de órdenes
-- Logging y métricas
+This is the refactored core that orchestrates:
+- Receiving market data
+- Executing the LangGraph agent graph
+- Managing decisions and executing orders
+- Logging and metrics
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from src.trading.market_data import MarketDataManager, get_market_data_manager
-from src.trading.executor import OrderExecutor, OrderResult
 from src.tools.technical_tools import add_kline, get_current_indicators, close_buf, high_buf, low_buf, vol_buf
 from src.tools.chart_generator import FenixChartGenerator
 from src.tools.enhanced_news_scraper import EnhancedNewsScraper
@@ -28,8 +27,9 @@ from src.tools.reddit_scraper import RedditScraper
 from src.tools.fear_greed import FearGreedTool
 from src.memory.reasoning_bank import get_reasoning_bank
 from src.prompts.agent_prompts import format_prompt
+from src.trading.exchange_client import ExchangeClient
 
-# Importar LangGraph orchestrator
+# Import LangGraph orchestrator
 try:
     from src.core.langgraph_orchestrator import (
         FenixTradingGraph,
@@ -41,7 +41,7 @@ except ImportError:
     LANGGRAPH_AVAILABLE = False
     FenixTradingGraph = None
 
-# Configuración
+# Configuration
 try:
     from src.config.config_loader import APP_CONFIG
 except ImportError:
@@ -52,8 +52,9 @@ logger = logging.getLogger("FenixTradingEngine")
 
 @dataclass
 class TradingConfig:
-    """Configuración del motor de trading."""
-    symbol: str = "BTCUSDT"
+    """Configuration for the trading engine."""
+    exchange_id: str = "binance"
+    symbol: str = "BTC/USDT"
     interval: str = "15m"
     analysis_interval: int = 60
     use_visual: bool = True
@@ -66,21 +67,22 @@ class TradingConfig:
 
 class TradingEngine:
     """
-    Motor principal de trading de Fenix.
+    Main trading engine for Fenix.
 
-    Flujo de operación:
-    1. Recibe datos de mercado (klines, orderbook, trades)
-    2. Calcula indicadores técnicos
-    3. Ejecuta el grafo de agentes LangGraph
-    4. Procesa la decisión y ejecuta órdenes si corresponde
+    Operation flow:
+    1. Receives market data (klines, orderbook, trades)
+    2. Calculates technical indicators
+    3. Executes the LangGraph agent graph
+    4. Processes the decision and executes orders if applicable
 
-    Esta clase reemplaza el monolito live_trading.py con una
-    arquitectura limpia y modular.
+    This class replaces the monolithic live_trading.py with a
+    clean and modular architecture.
     """
 
     def __init__(
         self,
-        symbol: str = "BTCUSDT",
+        exchange_id: str = "binance",
+        symbol: str = "BTC/USDT",
         timeframe: str = "15m",
         use_testnet: bool = False,
         paper_trading: bool = True,
@@ -88,19 +90,20 @@ class TradingEngine:
         enable_sentiment_agent: bool = True,
         allow_live_trading: bool = False,
     ):
+        self.exchange_id = exchange_id
         self.symbol = symbol.upper()
         self.timeframe = timeframe
         self.use_testnet = use_testnet
         self.paper_trading = paper_trading
         self.allow_live_trading = allow_live_trading
 
-        # Componentes
+        # Components
+        self.exchange_client = ExchangeClient(exchange_id=exchange_id, testnet=use_testnet)
         self.market_data = get_market_data_manager(
             symbol=symbol,
             timeframe=timeframe,
             use_testnet=use_testnet,
         )
-        self.executor = OrderExecutor(symbol=symbol)
         self.chart_generator = FenixChartGenerator()
         self.news_scraper = EnhancedNewsScraper()
         self.twitter_scraper = TwitterScraper()
@@ -109,7 +112,7 @@ class TradingEngine:
         self.reasoning_bank = get_reasoning_bank()
         self.on_agent_event = None  # Callback for frontend events
 
-        # Estado
+        # State
         self._running = False
         self._last_decision_time: datetime | None = None
         self._consecutive_holds = 0
@@ -126,16 +129,16 @@ class TradingEngine:
         self.signal_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info(
-            f"TradingEngine initialized: {symbol}@{timeframe} "
+            f"TradingEngine initialized: {exchange_id} - {symbol}@{timeframe} "
             f"(paper={paper_trading}, testnet={use_testnet})"
         )
 
     async def initialize(self) -> bool:
-        """Inicializa todos los componentes."""
+        """Initializes all components."""
         logger.info("Initializing TradingEngine components...")
 
         try:
-            # Inicializar LangGraph
+            # Initialize LangGraph
             if LANGGRAPH_AVAILABLE:
                 logger.info("Creating LangGraph trading graph...")
                 self._trading_graph = get_trading_graph(force_new=True)
@@ -143,7 +146,12 @@ class TradingEngine:
             else:
                 logger.warning("⚠️ LangGraph not available, using fallback mode")
 
-            # Registrar callbacks de market data
+            # Connect to exchange
+            if not await self.exchange_client.connect():
+                logger.error(f"Failed to connect to {self.exchange_id}")
+                return False
+
+            # Register market data callbacks
             self.market_data.on_kline(self._on_kline_received)
 
             logger.info("✅ TradingEngine initialized successfully")
@@ -154,7 +162,7 @@ class TradingEngine:
             return False
 
     async def start(self) -> None:
-        """Inicia el motor de trading."""
+        """Starts the trading engine."""
         if self._running:
             logger.warning("TradingEngine already running")
             return
@@ -162,6 +170,7 @@ class TradingEngine:
         logger.info("=" * 60)
         logger.info("🦅 FENIX TRADING BOT - Starting Engine")
         logger.info("=" * 60)
+        logger.info(f"Exchange: {self.exchange_id}")
         logger.info(f"Symbol: {self.symbol}")
         logger.info(f"Timeframe: {self.timeframe}")
         logger.info(f"Mode: {'Paper Trading' if self.paper_trading else 'LIVE TRADING'}")
@@ -169,18 +178,18 @@ class TradingEngine:
 
         self._running = True
 
-        # Inicializar componentes
+        # Initialize components
         if not await self.initialize():
             logger.error("Failed to initialize, aborting start")
             self._running = False
             return
 
-        # Iniciar market data streams
+        # Start market data streams
         await self.market_data.start()
 
         logger.info("🚀 TradingEngine started and listening for market data")
 
-        # Mantener el motor corriendo
+        # Keep the engine running
         try:
             while self._running:
                 await asyncio.sleep(1)
@@ -190,19 +199,22 @@ class TradingEngine:
             await self.stop()
 
     async def stop(self) -> None:
-        """Detiene el motor de trading."""
+        """Stops the trading engine."""
         logger.info("Stopping TradingEngine...")
         self._running = False
 
-        # Detener market data
+        # Stop market data
         await self.market_data.stop()
+
+        # Close exchange connection
+        await self.exchange_client.close()
 
         logger.info("TradingEngine stopped")
 
     async def _on_kline_received(self, kline_data: dict[str, Any]) -> None:
-        """Callback cuando se recibe una nueva kline."""
+        """Callback when a new kline is received."""
         try:
-            # Agregar kline al buffer de indicadores
+            # Add kline to the indicator buffer
             add_kline(
                 close=kline_data["close"],
                 high=kline_data["high"],
@@ -211,7 +223,7 @@ class TradingEngine:
             )
             self._kline_count += 1
 
-            # Solo procesar cuando la vela cierra
+            # Only process when the candle closes
             if not kline_data.get("is_closed", False):
                 return
 
@@ -220,36 +232,36 @@ class TradingEngine:
                 f"(H:{kline_data['high']:.2f} L:{kline_data['low']:.2f})"
             )
 
-            # Verificar mínimo de velas
+            # Check for minimum number of candles
             if self._kline_count < self._min_klines_to_start:
                 logger.info(
                     f"Warming up: {self._kline_count}/{self._min_klines_to_start} klines"
                 )
                 return
 
-            # Ejecutar análisis
+            # Run analysis
             await self._run_analysis_cycle()
 
         except Exception as e:
             logger.error(f"Error processing kline: {e}", exc_info=True)
 
     async def _run_analysis_cycle(self) -> None:
-        """Ejecuta un ciclo completo de análisis."""
+        """Executes a complete analysis cycle."""
         start_time = datetime.now(timezone.utc)
         logger.info("=" * 50)
         logger.info("🔄 Starting analysis cycle")
 
         try:
-            # 1. Obtener indicadores técnicos
+            # 1. Get technical indicators
             indicators = get_current_indicators()
             if not indicators:
                 logger.warning("No indicators available, skipping cycle")
                 return
 
-            # 2. Obtener métricas de microestructura
+            # 2. Get microstructure metrics
             micro = self.market_data.get_microstructure_metrics()
 
-            # 3. Obtener noticias (si está habilitado)
+            # 3. Get news (if enabled)
             news_data = []
             if self.enable_sentiment:
                 try:
@@ -264,7 +276,7 @@ class TradingEngine:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
             
-            # 4. Obtener social data (Twitter/Reddit) y fear & greed
+            # 4. Get social data (Twitter/Reddit) and fear & greed
             social_data = {}
             fear_greed_value = None
             if self.enable_sentiment:
@@ -292,13 +304,13 @@ class TradingEngine:
                     "reddit": reddit_data,
                 }
 
-            # 5. Ejecutar el grafo de agentes
+            # 5. Execute the agent graph
             if self._trading_graph:
                 result = await self._execute_langgraph_analysis(indicators, micro, news_data, social_data, fear_greed_value)
             else:
                 result = await self._execute_fallback_analysis(indicators, micro)
 
-            # 5. Procesar decisión
+            # 5. Process decision
             await self._process_decision(result)
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -315,7 +327,7 @@ class TradingEngine:
         social_data: dict[str, Any] | None = None,
         fear_greed_value: str | None = None,
     ) -> FenixAgentState | dict[str, Any]:
-        """Ejecuta análisis usando LangGraph."""
+        """Executes analysis using LangGraph."""
         logger.info("🧠 Executing LangGraph multi-agent analysis...")
 
         try:
@@ -404,7 +416,7 @@ class TradingEngine:
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             })
 
-            # Log resultados de cada agente
+            # Log results of each agent
             if result.get("technical_report"):
                 logger.info(f"📈 Technical: {result['technical_report'].get('signal', 'N/A')}")
             if result.get("qabba_report"):
@@ -425,10 +437,10 @@ class TradingEngine:
         indicators: dict[str, Any],
         micro: Any,
     ) -> dict[str, Any]:
-        """Análisis de fallback cuando LangGraph no está disponible."""
+        """Fallback analysis when LangGraph is unavailable."""
         logger.warning("Using fallback analysis (LangGraph unavailable)")
 
-        # Análisis simple basado en indicadores
+        # Simple analysis based on indicators
         rsi = indicators.get("rsi", 50)
         macd_hist = indicators.get("macd_hist", 0)
 
@@ -451,7 +463,7 @@ class TradingEngine:
         }
 
     async def _process_decision(self, result: dict[str, Any]) -> None:
-        """Procesa la decisión final y ejecuta si corresponde."""
+        """Processes the final decision and executes if applicable."""
         decision_data = result.get("final_trade_decision", {})
         decision = decision_data.get("final_decision", "HOLD").upper()
         confidence = decision_data.get("confidence_in_decision", "LOW")
@@ -471,10 +483,10 @@ class TradingEngine:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
-        # Log estructurado
+        # Structured log
         self._log_signal(decision, confidence, reasoning, result)
 
-        # Ejecutar si no es HOLD
+        # Execute if not HOLD
         if decision in ["BUY", "SELL"]:
             await self._execute_trade(decision, confidence, decision_data)
         else:
@@ -487,7 +499,7 @@ class TradingEngine:
         confidence: str,
         decision_data: dict[str, Any],
     ) -> None:
-        """Ejecuta un trade basado en la decisión."""
+        """Executes a trade based on the decision."""
         logger.info(f"🎯 Executing {decision} trade...")
 
         self._consecutive_holds = 0
@@ -499,48 +511,39 @@ class TradingEngine:
 
         if not self.allow_live_trading:
             logger.warning(
-                "Live trading bloqueado: allow_live_trading=False. Ejecuta con flag seguro para operar."
+                "Live trading blocked: allow_live_trading=False. Run with the safe flag to operate."
             )
             return
 
-        # Obtener parámetros de riesgo
+        # Get risk parameters
         risk_data = decision_data.get("risk_assessment", {})
         entry_price = risk_data.get("entry_price", self.market_data.current_price)
         stop_loss = risk_data.get("stop_loss")
         take_profit = risk_data.get("take_profit")
 
-        # Calcular tamaño de posición (simplificado - en producción usar RiskManager)
-        balance = self.executor.get_balance()
+        # Calculate position size (simplified - in production use RiskManager)
+        balance = await self.exchange_client.get_balance()
         if balance is None:
             logger.error("Could not get balance, aborting trade")
             return
 
-        # Calcular cantidad basada en riesgo
+        # Calculate quantity based on risk
         position_size = balance * (APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01)
         quantity = position_size / entry_price
         
-        # Verificar min notional
-        notional = quantity * entry_price
-        if notional < self.executor.min_notional:
-            logger.warning(f"Trade skipped: Notional {notional:.2f} < Min {self.executor.min_notional}")
-            return
-
-        # Verificar balance suficiente
-        if decision == "BUY" and position_size > balance:
-            logger.warning(f"Trade skipped: Insufficient balance {balance:.2f} < Required {position_size:.2f}")
-            return
-
-        # Ejecutar orden
-        result = await self.executor.execute_market_order(
-            side=decision,
+        # Execute order
+        result = await self.exchange_client.place_order(
+            symbol=self.symbol,
+            side=decision.lower(),
             quantity=quantity,
+            order_type="market",
             stop_loss=stop_loss,
             take_profit=take_profit,
         )
 
-        if result.success:
+        if result and result.get('id'):
             logger.info(
-                f"✅ Trade executed: {decision} {result.executed_qty} @ {result.entry_price}"
+                f"✅ Trade executed: {decision} {result.get('amount')} @ {result.get('price')}"
             )
             # Update ReasoningBank with trade outcome (for audit and self-judgment)
             try:
@@ -552,12 +555,12 @@ class TradingEngine:
                         prompt_digest=digest,
                         success=True,
                         reward=0.0,
-                        trade_id=str(result.order_id) if result.order_id else None,
+                        trade_id=str(result['id']),
                     )
             except Exception as e:
                 logger.debug(f"Failed to attach trade outcome to ReasoningBank: {e}")
         else:
-            logger.error(f"❌ Trade failed: {result.status} - {result.message}")
+            logger.error(f"❌ Trade failed: {result}")
             try:
                 digest = decision_data.get('_reasoning_digest') or decision_data.get('reasoning_prompt_digest')
                 if digest:
@@ -566,7 +569,7 @@ class TradingEngine:
                         prompt_digest=digest,
                         success=False,
                         reward=0.0,
-                        trade_id=str(result.order_id) if result.order_id else None,
+                        trade_id=None,
                     )
             except Exception as e:
                 logger.debug(f"Failed to attach failed trade outcome to ReasoningBank: {e}")
@@ -578,7 +581,7 @@ class TradingEngine:
         reasoning: str,
         full_result: dict[str, Any],
     ) -> None:
-        """Loguea señal para auditoría."""
+        """Logs a signal for auditing."""
         signal_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "symbol": self.symbol,
@@ -597,7 +600,7 @@ class TradingEngine:
             logger.error(f"Failed to log signal: {e}")
 
     def get_status(self) -> dict[str, Any]:
-        """Retorna el estado actual del motor."""
+        """Returns the current status of the engine."""
         return {
             "running": self._running,
             "symbol": self.symbol,
@@ -612,16 +615,18 @@ class TradingEngine:
 
 
 # ============================================================================
-# Función principal para ejecutar el motor
+# Main function to run the engine
 # ============================================================================
 
 async def run_trading_engine(
-    symbol: str = "BTCUSDT",
+    exchange_id: str = "binance",
+    symbol: str = "BTC/USDT",
     timeframe: str = "15m",
     paper_trading: bool = True,
 ) -> None:
-    """Función principal para ejecutar el motor de trading."""
+    """Main function to run the trading engine."""
     engine = TradingEngine(
+        exchange_id=exchange_id,
         symbol=symbol,
         timeframe=timeframe,
         paper_trading=paper_trading,
@@ -639,7 +644,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Fenix Trading Engine")
-    parser.add_argument("--symbol", default="BTCUSDT", help="Trading pair")
+    parser.add_argument("--exchange", default="binance", help="Exchange to trade on")
+    parser.add_argument("--symbol", default="BTC/USDT", help="Trading pair")
     parser.add_argument("--timeframe", default="15m", help="Timeframe")
     parser.add_argument("--live", action="store_true", help="Enable live trading")
     args = parser.parse_args()
@@ -651,6 +657,7 @@ if __name__ == "__main__":
 
     asyncio.run(
         run_trading_engine(
+            exchange_id=args.exchange,
             symbol=args.symbol,
             timeframe=args.timeframe,
             paper_trading=not args.live,

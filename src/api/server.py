@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src.trading.engine import TradingEngine
-from src.trading.binance_client import BinanceClient
+from src.trading.exchange_client import ExchangeClient
 from src.config.config_loader import APP_CONFIG
 from src.config.database import init_db, get_db, SessionLocal
 from src.memory.reasoning_bank import get_reasoning_bank
@@ -35,8 +35,8 @@ from src.models.user import User
 # ============ Pydantic Schemas ============
 
 class OrderCreate(BaseModel):
-    """Schema para crear una orden."""
-    symbol: str = Field(default="BTCUSDT", description="Trading pair")
+    """Schema for creating an order."""
+    symbol: str = Field(default="BTC/USDT", description="Trading pair")
     type: str = Field(default="market", description="Order type: market, limit, stop")
     side: str = Field(..., description="Order side: buy or sell")
     quantity: float = Field(..., gt=0, description="Order quantity")
@@ -45,7 +45,7 @@ class OrderCreate(BaseModel):
 
 
 class OrderResponse(BaseModel):
-    """Schema de respuesta para una orden."""
+    """Response schema for an order."""
     id: str
     symbol: str
     type: str
@@ -60,7 +60,7 @@ class OrderResponse(BaseModel):
 
 
 class PositionResponse(BaseModel):
-    """Schema de respuesta para una posición."""
+    """Response schema for a position."""
     id: str
     symbol: str
     side: str
@@ -73,7 +73,7 @@ class PositionResponse(BaseModel):
 
 
 class TradeResponse(BaseModel):
-    """Schema de respuesta para un trade."""
+    """Response schema for a trade."""
     id: str
     symbol: str
     side: str
@@ -84,7 +84,7 @@ class TradeResponse(BaseModel):
 
 
 class AgentOutputResponse(BaseModel):
-    """Schema de respuesta para output de agente."""
+    """Response schema for agent output."""
     id: str
     agent_id: str
     agent_name: str
@@ -96,8 +96,8 @@ class AgentOutputResponse(BaseModel):
 
 
 class EngineConfigUpdate(BaseModel):
-    """Payload para actualizar configuración de engine."""
-    symbol: Optional[str] = Field(None, description="Trading pair, e.g., BTCUSDT")
+    """Payload for updating engine configuration."""
+    symbol: Optional[str] = Field(None, description="Trading pair, e.g., BTC/USDT")
     timeframe: Optional[str] = Field(None, description="Timeframe, e.g., 1m,5m,15m")
     paper_trading: Optional[bool] = Field(None, description="Paper trading on/off")
     allow_live_trading: Optional[bool] = Field(None, description="Allow live trading")
@@ -186,7 +186,8 @@ async def lifespan(app: FastAPI):
     
     logger.info("Initializing Trading Engine...")
     engine = TradingEngine(
-        symbol="BTCUSDT",
+        exchange_id=os.getenv("EXCHANGE_ID", "binance"),
+        symbol=os.getenv("DEFAULT_SYMBOL", "BTC/USDT"),
         timeframe="15m",
         paper_trading=True,
         allow_live_trading=False,
@@ -199,7 +200,7 @@ async def lifespan(app: FastAPI):
     # Start AutoEvaluator
     try:
         from src.analysis.auto_evaluator import AutoEvaluator
-        auto_evaluator = AutoEvaluator(symbol="BTCUSDT", evaluation_horizon_minutes=15)
+        auto_evaluator = AutoEvaluator(symbol=os.getenv("DEFAULT_SYMBOL", "BTC/USDT"), evaluation_horizon_minutes=15)
         asyncio.create_task(auto_evaluator.start())
         logger.info("✅ AutoEvaluator started")
     except Exception as e:
@@ -294,7 +295,7 @@ if os.getenv("TESTING") == "true":
     from tests.conftest import override_get_db
     app.dependency_overrides[get_db] = override_get_db
 
-# CORS - limitar a orígenes conocidos
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -311,7 +312,6 @@ app.add_middleware(
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"Request validation error: {request.url} - {exc}")
-    # Return a clearer message including the Pydantic details for debugging
     return JSONResponse(status_code=422, content={"success": False, "error": "Validation error", "detail": exc.errors()})
 
 # --- Background Tasks ---
@@ -336,7 +336,7 @@ async def broadcast_metrics():
 
 
 def build_system_metrics() -> dict:
-    """Recolecta métricas del sistema y mantiene historial."""
+    """Collects system metrics and maintains history."""
     cpu_usage = psutil.cpu_percent(interval=None)
     load_avg = psutil.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
     mem = psutil.virtual_memory()
@@ -383,9 +383,10 @@ def build_system_metrics() -> dict:
 
 def _build_connection_status() -> list[dict]:
     now_ts = time.time()
+    exchange_id = engine.exchange_id if engine else "unknown"
     return [
         {
-            "service": "binance",
+            "service": exchange_id,
             "status": "connected" if engine else "unknown",
             "last_ping": now_ts,
             "reconnect_attempts": 0,
@@ -413,32 +414,12 @@ def _summarize_metrics(metrics: dict) -> dict:
     }
 
 
-async def _fetch_ticker(symbol: str) -> Optional[dict]:
-    """Get 24h ticker data from Binance; returns None on failure."""
-    testnet = engine.paper_trading if engine else True
-    symbol_upper = symbol.upper()
+async def _with_exchange_client(fn):
+    """Helper to ensure ExchangeClient lifecycle is managed per request."""
+    if not engine:
+        return None
 
-    async def _inner(client: BinanceClient):
-        return await client.get_ticker(symbol_upper)
-
-    return await _with_binance_client(testnet, _inner)
-
-
-async def _fetch_klines(symbol: str, interval: str, limit: int = 100) -> list[dict]:
-    """Get historical klines for charting."""
-    testnet = engine.paper_trading if engine else True
-    symbol_upper = symbol.upper()
-
-    async def _inner(client: BinanceClient):
-        return await client.get_klines(symbol_upper, interval=interval, limit=limit)
-
-    data = await _with_binance_client(testnet, _inner)
-    return data or []
-
-
-async def _with_binance_client(testnet: bool, fn):
-    """Helper to ensure Binance client lifecycle is managed per request."""
-    client = BinanceClient(testnet=testnet)
+    client = ExchangeClient(exchange_id=engine.exchange_id, testnet=engine.use_testnet)
     connected = await client.connect()
     if not connected:
         await client.close()
@@ -555,7 +536,7 @@ async def _restart_engine_with_config(
     """Restart engine with new configuration requested by the UI."""
     global engine, _engine_task
 
-    current_symbol = symbol or (engine.symbol if engine else "BTCUSDT")
+    current_symbol = symbol or (engine.symbol if engine else "BTC/USDT")
     current_timeframe = timeframe or (engine.timeframe if engine else "15m")
     current_paper = paper_trading if paper_trading is not None else (engine.paper_trading if engine else True)
     current_live = allow_live_trading if allow_live_trading is not None else (engine.allow_live_trading if engine else False)
@@ -570,6 +551,7 @@ async def _restart_engine_with_config(
             await _engine_task
 
     engine = TradingEngine(
+        exchange_id=engine.exchange_id if engine else "binance",
         symbol=current_symbol,
         timeframe=current_timeframe,
         paper_trading=current_paper,
@@ -682,14 +664,12 @@ async def get_system_settings():
 async def update_system_settings(section: str, payload: dict):
     if section not in _SYSTEM_SETTINGS:
         raise HTTPException(status_code=404, detail="Settings section not found")
-    # Very permissive for demo - replace on valid payload
     _SYSTEM_SETTINGS[section].update(payload)
     return {"success": True, "section": section, "settings": _SYSTEM_SETTINGS[section]}
 
 
 @app.post("/api/system/test-connection/{type}")
 async def test_system_connection(type: str):
-    # Simple stub to keep frontend happy
     return {"success": True, "type": type, "message": "Connection OK"}
 
 
@@ -697,9 +677,6 @@ async def test_system_connection(type: str):
 async def reset_system_settings(section: str):
     if section not in _SYSTEM_SETTINGS:
         raise HTTPException(status_code=404, detail="Settings section not found")
-    # Replace with defaults - for now set to empty or predefined defaults
-    # We simply reset to the currently defined defaults by reloading the in-memory defaults
-    # TODO: implement persistent storage or config file
     return {"success": True, "section": section, "settings": _SYSTEM_SETTINGS[section]}
 
 @app.get("/api/system/alerts")
@@ -710,6 +687,7 @@ async def get_alerts():
 
 @app.get("/api/system/health")
 async def get_health():
+    exchange_id = engine.exchange_id if engine else "unknown"
     components = [
         {
             "component": "engine",
@@ -718,7 +696,7 @@ async def get_health():
             "last_check": time.time(),
         },
         {
-            "component": "binance",
+            "component": exchange_id,
             "status": "healthy" if engine else "unknown",
             "message": "Market data connected" if engine else "Engine not initialized",
             "last_check": time.time(),
@@ -812,28 +790,24 @@ async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
         updated_at=datetime.utcnow(),
     )
     
-    # In production, this would send to the exchange
     if engine:
         try:
-            # Simulate order execution for paper trading
             new_order.status = "filled"
             new_order.filled_quantity = order.quantity
             new_order.updated_at = datetime.utcnow()
             
-            # Add to trade history
             trade = Trade(
                 id=str(uuid.uuid4()),
                 order_id=new_order.id,
                 symbol=order.symbol,
                 side=order.side,
                 quantity=order.quantity,
-                price=order.price or 0,  # Would get from market
+                price=order.price or 0,
                 realized_pnl=0.0,
                 executed_at=datetime.utcnow(),
             )
             db.add(trade)
             
-            # Emit via socket
             await sio.emit('orderUpdate', {
                 "id": new_order.id, "status": new_order.status, "symbol": new_order.symbol
             })
@@ -849,7 +823,6 @@ async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_order)
     
-    # Convert to dict for response (Pydantic expects dict or object with attributes)
     return {
         "id": new_order.id,
         "symbol": new_order.symbol,
@@ -885,7 +858,6 @@ async def cancel_order(order_id: str = Path(...), db: AsyncSession = Depends(get
 @app.get("/api/trading/positions")
 async def get_positions(db: AsyncSession = Depends(get_db)):
     """Get all open positions."""
-    # In production, this would fetch from exchange
     if engine:
         status = engine.get_status()
         if status.get("position"):
@@ -903,7 +875,6 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
             }
             return {"positions": [position]}
     
-    # Fallback to DB positions
     result = await db.execute(select(Position).where(Position.is_open == True))
     positions = result.scalars().all()
     return {"positions": positions}
@@ -927,28 +898,27 @@ async def get_trade_history(
 
 @app.get("/api/trading/market")
 async def get_market_data(symbol: Optional[str] = Query(None)):
-    """Return live market snapshot using engine stream with Binance fallback."""
-    target_symbol = (symbol or (engine.symbol if engine else "BTCUSDT")).upper()
+    """Return live market snapshot using engine stream with exchange fallback."""
+    target_symbol = (symbol or (engine.symbol if engine else "BTC/USDT")).upper()
 
     status = engine.get_status() if engine else {}
     ticker = await _fetch_ticker(target_symbol)
 
-    # Prefer live stream price, fallback to ticker
-    price = status.get("current_price") or (float(ticker["lastPrice"]) if ticker else None)
+    price = status.get("current_price") or (float(ticker["last"]) if ticker else None)
     if price is None:
         raise HTTPException(status_code=503, detail="Market data unavailable")
 
     payload = {
         "symbol": target_symbol,
         "price": price,
-        "volume_24h": float(ticker.get("volume", 0)) if ticker else None,
+        "volume_24h": float(ticker.get("baseVolume", 0)) if ticker else None,
         "quote_volume_24h": float(ticker.get("quoteVolume", 0)) if ticker else None,
-        "change_24h": float(ticker.get("priceChangePercent", 0)) if ticker else 0.0,
-        "high_24h": float(ticker.get("highPrice", 0)) if ticker else None,
-        "low_24h": float(ticker.get("lowPrice", 0)) if ticker else None,
+        "change_24h": float(ticker.get("percentage", 0)) if ticker else 0.0,
+        "high_24h": float(ticker.get("high", 0)) if ticker else None,
+        "low_24h": float(ticker.get("low", 0)) if ticker else None,
         "timeframe": status.get("timeframe", "15m"),
         "timestamp": datetime.utcnow().isoformat(),
-        "source": "stream" if engine else "binance",
+        "source": "stream" if engine else "exchange",
     }
 
     return payload
@@ -1070,7 +1040,6 @@ async def add_agent_output(output: AgentOutputResponse, db: AsyncSession = Depen
         "input_summary": new_output.input_summary
     }
     
-    # Emit via socket
     await sio.emit('agentOutput', output_dict)
     await sio.emit('agent:reasoning', output_dict)
     
@@ -1094,7 +1063,6 @@ async def get_reasoning_bank_logs(
     db: AsyncSession = Depends(get_db)
 ):
     """Compatibility layer for the frontend Reasoning Bank view."""
-    # reuse AgentOutput query
     cutoff_map = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
     cutoff_delta = cutoff_map.get(timeframe)
 
@@ -1167,7 +1135,11 @@ async def get_market_series(
 ):
     """Return real kline series for charting."""
     target_interval = interval or (engine.timeframe if engine else "15m")
-    klines = await _fetch_klines(symbol, target_interval, limit)
+
+    async def _fetch(client: ExchangeClient):
+        return await client.get_klines(symbol, interval=target_interval, limit=limit)
+
+    klines = await _with_exchange_client(_fetch)
 
     if not klines:
         raise HTTPException(status_code=503, detail="No market series available")
@@ -1188,35 +1160,40 @@ async def get_market_series(
 async def get_market_overview(symbols: Optional[str] = Query(None)):
     """Return 24h overview for a handful of symbols used by the dashboard."""
     default_symbols = [
-        engine.symbol if engine else "BTCUSDT",
-        "ETHUSDT",
-        "SOLUSDT",
-        "BNBUSDT",
-        "ADAUSDT",
+        engine.symbol if engine else "BTC/USDT",
+        "ETH/USDT",
+        "SOL/USDT",
+        "BNB/USDT",
+        "ADA/USDT",
     ]
 
     symbol_list = [s.strip().upper() for s in (symbols.split(",") if symbols else default_symbols) if s.strip()]
 
     markets: list[dict] = []
-    for sym in symbol_list:
-        ticker = await _fetch_ticker(sym)
+
+    async def _fetch_tickers(client: ExchangeClient):
+        return await asyncio.gather(*[client.get_ticker(sym) for sym in symbol_list])
+
+    tickers = await _with_exchange_client(_fetch_tickers)
+
+    if not tickers:
+        raise HTTPException(status_code=503, detail="No market overview data available")
+
+    for ticker in tickers:
         if not ticker:
             continue
 
         markets.append({
-            "symbol": sym,
-            "price": float(ticker.get("lastPrice", 0)),
-            "change_percent": float(ticker.get("priceChangePercent", 0)),
-            "price_change": float(ticker.get("priceChange", 0)),
-            "volume": float(ticker.get("volume", 0)),
+            "symbol": ticker['symbol'],
+            "price": float(ticker.get("last", 0)),
+            "change_percent": float(ticker.get("percentage", 0)),
+            "price_change": float(ticker.get("change", 0)),
+            "volume": float(ticker.get("baseVolume", 0)),
             "quote_volume": float(ticker.get("quoteVolume", 0)),
-            "high_24h": float(ticker.get("highPrice", 0)),
-            "low_24h": float(ticker.get("lowPrice", 0)),
+            "high_24h": float(ticker.get("high", 0)),
+            "low_24h": float(ticker.get("low", 0)),
             "timestamp": datetime.utcnow().isoformat(),
         })
-
-    if not markets:
-        raise HTTPException(status_code=503, detail="No market overview data available")
 
     return {"markets": markets, "data": markets}
 

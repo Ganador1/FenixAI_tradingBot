@@ -11,12 +11,12 @@
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/Frontend-React_18-61DAFB.svg)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6.svg)](https://www.typescriptlang.org/)
-[![Binance](https://img.shields.io/badge/Exchange-Binance_Futures-F0B90B.svg)](https://www.binance.com/)
+[![CCXT](https://img.shields.io/badge/Exchange-CCXT-green.svg)](https://ccxt.trade/)
 [![arXiv](https://img.shields.io/badge/arXiv-2509.25140-b31b1b.svg)](https://arxiv.org/abs/2509.25140)
 [![TailwindCSS](https://img.shields.io/badge/Styling-TailwindCSS-38B2AC.svg)](https://tailwindcss.com/)
 [![Socket.IO](https://img.shields.io/badge/Realtime-Socket.IO-010101.svg)](https://socket.io/)
 
-*An advanced trading system powered by multiple specialized AI agents that collaborate to analyze markets, manage risk, and execute trades on Binance Futures. Features ReasoningBank memory system for self-evolving agent capabilities.*
+*An advanced trading system powered by multiple specialized AI agents that collaborate to analyze markets, manage risk, and execute trades on multiple cryptocurrency exchanges. Features ReasoningBank memory system for self-evolving agent capabilities.*
 
 ![Fenix Dashboard Preview](./Dashboard%20Fenix.png)
 
@@ -69,6 +69,7 @@ Thank you very much,
 | **Memory System** | Basic TradeMemory | [ReasoningBank](https://arxiv.org/abs/2509.25140) + LLM-as-Judge |
 | **Visual Analysis** | Static screenshots | Chart Generator + Playwright TradingView Capture |
 | **LLM Providers** | Ollama only | Ollama, MLX, Groq, HuggingFace |
+| **Exchange Support**| Binance only | **Multi-Exchange (CCXT)** |
 | **Frontend** | Flask Dashboard | React + Vite + TypeScript |
 | **Agent Weighting** | Static | Dynamic (performance-based) |
 | **Security** | Basic | SecureSecretsManager + Path Validation |
@@ -176,8 +177,8 @@ Both modes produce base64-encoded images that are analyzed by vision-capable LLM
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                        EXECUTION LAYER                               │   │
 │  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐   │   │
-│  │  │  Binance Client │  │  Order Executor │  │   Market Data       │   │   │
-│  │  │ (REST + WS)     │  │  (Paper/Live)   │  │   (Real-time)       │   │   │
+│  │  │ Exchange Client │  │  Order Executor │  │   Market Data       │   │   │
+│  │  │ (CCXT)          │  │  (Paper/Live)   │  │   (Real-time)       │   │   │
 │  │  └─────────────────┘  └─────────────────┘  └─────────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
@@ -212,9 +213,10 @@ Both modes produce base64-encoded images that are analyzed by vision-capable LLM
 - ⚡ **Groq** - Ultra-fast cloud inference
 - 🤗 **HuggingFace** - Serverless inference API
 
-### Trading Features
+### Multi-Exchange Support (CCXT)
 
-- 📈 **Binance Futures** integration (testnet & live)
+- 📈 **CCXT Integration** for trading on multiple exchanges
+- 🇺🇸 **USA-Compliant Exchanges** supported (Coinbase, Kraken, Gemini)
 - 🛡️ **Paper Trading** mode by default
 - ⚠️ **Circuit Breakers** for risk management
 - 📊 **Multi-Timeframe Analysis** support
@@ -243,7 +245,7 @@ Both modes produce base64-encoded images that are analyzed by vision-capable LLM
 
 ### Optional Services
 
-- **Binance Account** - For live/testnet trading
+- **Exchange Account** - For live/testnet trading (Binance, Coinbase, Kraken, etc.)
 - **Groq API Key** - For cloud LLM inference
 - **HuggingFace Token** - For HF Inference API
 - **Playwright** - For TradingView chart capture
@@ -274,7 +276,7 @@ pip install -e ".[dev,vision,monitoring]"
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your exchange and API keys
 
 # Pull required Ollama models
 ollama pull qwen3:8b
@@ -282,12 +284,22 @@ ollama pull qwen3:8b
 
 ### Running FenixAI
 
-```bash
-# Terminal 1: Start the backend with API
-python run_fenix.py --api
+**1. Start the Backend Server**
 
-# Terminal 2: Start the frontend
-cd frontend && npm install && npm run client:dev
+In your first terminal, run the following command to start the FastAPI backend:
+
+```bash
+python run_fenix.py --api
+```
+
+**2. Start the Frontend Development Server**
+
+In a second terminal, navigate to the `frontend` directory, install the dependencies, and start the development server:
+
+```bash
+cd frontend
+npm install
+npm run client:dev
 ```
 
 Access the dashboard at: **http://localhost:5173**
@@ -309,10 +321,10 @@ If you want to enable demo accounts for local development, set `CREATE_DEMO_USER
 ```bash
 python run_fenix.py --help
 
-python run_fenix.py                      # Paper trading (default)
-python run_fenix.py --symbol ETHUSDT     # Different symbol
-python run_fenix.py --timeframe 5m       # Different timeframe
-python run_fenix.py --no-visual          # Disable visual agent
+python run_fenix.py --exchange kraken     # Use Kraken exchange
+python run_fenix.py --symbol ETH/USD      # Different symbol
+python run_fenix.py --timeframe 5m        # Different timeframe
+python run_fenix.py --no-visual           # Disable visual agent
 python run_fenix.py --mode live --allow-live  # Live trading (⚠️ real money)
 ```
 
@@ -356,7 +368,7 @@ FenixAI/
 │   │   └── reddit_scraper.py
 │   ├── trading/              # Trading engine
 │   │   ├── engine.py         # Main trading engine
-│   │   ├── binance_client.py # Binance Futures client
+│   │   ├── exchange_client.py # Generic CCXT client
 │   │   └── executor.py       # Order execution
 │   └── utils/                # Utility functions
 │
@@ -387,7 +399,7 @@ FenixAI/
 | **LLM Inference** | Ollama, MLX, Groq, HuggingFace | Multi-provider with automatic fallback |
 | **Backend** | Python 3.10+, FastAPI, Socket.IO | Async REST API + WebSocket |
 | **Frontend** | React 18, Vite, TypeScript, TailwindCSS | Modern SPA with real-time updates |
-| **Exchange** | Binance Futures (ccxt, python-binance) | Testnet & production support |
+| **Exchange** | CCXT | Multi-exchange support (Binance, Coinbase, Kraken, etc.) |
 | **Memory** | ReasoningBank | Semantic search + embeddings + LLM-as-Judge |
 | **Visual Tools** | mplfinance, Playwright | Chart generation + TradingView capture |
 | **Database** | SQLite | Trade history & reasoning persistence |
@@ -401,7 +413,8 @@ FenixAI/
 
 ```yaml
 trading:
-  symbol: BTCUSDT
+  exchange: binance
+  symbol: BTC/USDT
   timeframe: 15m
   max_risk_per_trade: 0.02
   
@@ -443,8 +456,9 @@ all_local:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `BINANCE_API_KEY` | Binance API key | - |
-| `BINANCE_SECRET_KEY` | Binance secret key | - |
+| `EXCHANGE_ID` | The exchange to use | `binance` |
+| `[EXCHANGE]_API_KEY`| API key for the selected exchange | - |
+| `[EXCHANGE]_SECRET` | API secret for the selected exchange | - |
 | `LLM_PROFILE` | LLM provider profile to use | `all_local` |
 | `GROQ_API_KEY` | Groq API key (for cloud inference) | - |
 | `HF_TOKEN` | HuggingFace token | - |
@@ -511,7 +525,7 @@ pytest tests/test_langgraph_orchestrator.py -v
 | **API Key Encryption** | SecureSecretsManager for encrypted storage |
 | **Local API Binding** | API binds to `127.0.0.1` by default |
 | **Path Validation** | Prevents path traversal attacks |
-| **Rate Limiting** | Respects Binance API limits |
+| **Rate Limiting** | Respects exchange API limits |
 | **Demo User Gating** | Demo accounts disabled by default |
 | **Secrets Scanning** | Pre-commit hooks for secret detection |
 
@@ -582,7 +596,7 @@ You may obtain a copy of the License at
 - [MLX](https://github.com/ml-explore/mlx) - Apple Silicon optimized ML framework
 - [Groq](https://groq.com/) - Ultra-fast LLM inference
 - [HuggingFace](https://huggingface.co/) - Model hub and inference
-- [Binance](https://www.binance.com/) - Exchange API
+- [CCXT](https://ccxt.trade/) - Multi-exchange trading library
 - [Playwright](https://playwright.dev/) - Browser automation for TradingView capture
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
 - [React](https://reactjs.org/) - Frontend framework

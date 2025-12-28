@@ -6,7 +6,7 @@ Main execution script for Fenix Trading Bot.
 Usage:
     python run_fenix.py                    # Paper trading with Ollama
     python run_fenix.py --mode live        # Live trading
-    python run_fenix.py --symbol ETHUSDT   # Other pair
+    python run_fenix.py --symbol ETH/USDT  # Other pair
     python run_fenix.py --help             # See options
 """
 from __future__ import annotations
@@ -19,6 +19,10 @@ import sys
 import os
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Create logs directory if it doesn't exist
 Path("logs").mkdir(exist_ok=True)
@@ -42,14 +46,19 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python run_fenix.py                       # Paper trading, BTCUSDT, 15m
+  python run_fenix.py                       # Paper trading, BTC/USDT, 15m
   python run_fenix.py --mode live           # Live trading
-  python run_fenix.py --symbol ETHUSDT      # Other pair
+  python run_fenix.py --symbol ETH/USDT     # Other pair
   python run_fenix.py --timeframe 5m        # Other timeframe
   python run_fenix.py --no-visual           # Without visual agent
         """,
     )
     
+    parser.add_argument(
+        "--exchange",
+        default=os.getenv("EXCHANGE_ID", "binance"),
+        help="Exchange to use (default: binance)",
+    )
     parser.add_argument(
         "--mode",
         choices=["paper", "live"],
@@ -63,8 +72,8 @@ Examples:
     )
     parser.add_argument(
         "--symbol",
-        default="BTCUSDT",
-        help="Pair to trade (default: BTCUSDT)",
+        default=os.getenv("DEFAULT_SYMBOL", "BTC/USDT"),
+        help="Pair to trade (default: BTC/USDT)",
     )
     parser.add_argument(
         "--timeframe",
@@ -131,6 +140,7 @@ async def main():
     """)
     
     logger.info("Starting Fenix Trading Bot")
+    logger.info(f"  Exchange: {args.exchange}")
     logger.info(f"  Mode: {args.mode.upper()}")
     logger.info(f"  Symbol: {args.symbol}")
     logger.info(f"  Timeframe: {args.timeframe}")
@@ -164,37 +174,38 @@ async def main():
         logger.error(f"Error connecting to Ollama: {e}")
         return 1
     
-    # Check Binance
-    logger.info("Checking connection to Binance...")
+    # Check Exchange Connection
+    logger.info(f"Checking connection to {args.exchange.capitalize()}...")
     try:
-        from src.trading.binance_client import BinanceClient
+        from src.trading.exchange_client import ExchangeClient
+
+        api_key = os.getenv(f"{args.exchange.upper()}_API_KEY")
+        api_secret = os.getenv(f"{args.exchange.upper()}_API_SECRET")
         
         testnet = args.mode == "paper"
-        client = BinanceClient(testnet=testnet)
+        client = ExchangeClient(exchange_id=args.exchange, api_key=api_key, api_secret=api_secret, testnet=testnet)
         connected = await client.connect()
         
         if connected:
             price = await client.get_price(args.symbol)
             if price:
-                logger.info(f"✅ Binance OK - {args.symbol}: ${price:,.2f}")
+                logger.info(f"✅ {args.exchange.capitalize()} OK - {args.symbol}: ${price:,.2f}")
             else:
                 logger.warning(f"Could not get price for {args.symbol}")
         else:
-            logger.warning("Could not connect to Binance, continuing in simulated mode")
+            logger.warning(f"Could not connect to {args.exchange.capitalize()}, continuing in simulated mode")
         
         await client.close()
         
     except ImportError:
-        logger.warning("Binance client not available, continuing in simulated mode")
+        logger.warning("Exchange client not available, continuing in simulated mode")
     except Exception as e:
-        logger.warning(f"Error connecting to Binance: {e}")
+        logger.warning(f"Error connecting to {args.exchange.capitalize()}: {e}")
     
     # Start API server if requested
     if args.api:
         logger.info("🚀 Starting API server (Frontend Backend)...")
         import uvicorn
-        # Import app_socketio from the new server module
-        # Note: uvicorn needs the import string "src.api.server:app_socketio"
         uvicorn.run("src.api.server:app_socketio", host=args.host, port=8000, reload=False)
         return 0
 
@@ -205,6 +216,7 @@ async def main():
         from src.trading.engine import TradingEngine
         
         engine = TradingEngine(
+            exchange_id=args.exchange,
             symbol=args.symbol,
             timeframe=args.timeframe,
             use_testnet=args.mode == "paper",
@@ -247,17 +259,19 @@ async def run_simple_test(args):
     from src.prompts.agent_prompts import format_prompt
     from langchain_ollama import ChatOllama
     from langchain_core.messages import SystemMessage, HumanMessage
-    from src.trading.binance_client import BinanceClient
+    from src.trading.exchange_client import ExchangeClient
     
-    # Connect to Binance
-    client = BinanceClient(testnet=True)
+    # Connect to Exchange
+    api_key = os.getenv(f"{args.exchange.upper()}_API_KEY")
+    api_secret = os.getenv(f"{args.exchange.upper()}_API_SECRET")
+    client = ExchangeClient(exchange_id=args.exchange, api_key=api_key, api_secret=api_secret, testnet=True)
     await client.connect()
     
     # Get real data
     price = await client.get_price(args.symbol)
     klines = await client.get_klines(args.symbol, args.timeframe, limit=50)
     
-    logger.info(f"Data received: {args.symbol} @ ${price:,.2f}")
+    logger.info(f"Data received: {args.symbol} @ ${price or 0:,.2f}")
     logger.info(f"Klines: {len(klines)} candles")
     
     # Calculate simple indicators
@@ -316,7 +330,6 @@ async def run_simple_test(args):
 
 
 if __name__ == "__main__":
-    # Parse args first to handle --api mode which uses uvicorn (blocking, owns loop)
     args = parse_args()
 
     if args.api:
@@ -333,10 +346,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        # Pass args to main (we need to modify main signature or use global/re-parse)
-        # Easier: Re-parse inside main or refactor main to accept args. 
-        # Since main calls parse_args again, it's fine (argparse is idempotent usually if args not passed explicitly)
-        # But clearer to pass args.
         exit_code = asyncio.run(main())
         sys.exit(exit_code)
     except KeyboardInterrupt:
