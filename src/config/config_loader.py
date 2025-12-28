@@ -47,8 +47,9 @@ _PLACEHOLDER_SECRET = "FENIX_TEST_SECRET"
 @dataclass
 class TradingConfig:
     """Trading configuration"""
+    exchange_id: str = "binance"
     mode: str = "paper"  # "paper" or "live"
-    symbol: str = "BTCUSDT"
+    symbol: str = "BTC/USDT"
     base_asset: str = "BTC"
     quote_asset: str = "USDT"
     timeframe: str = "5m"
@@ -72,9 +73,10 @@ class TradingConfig:
                 "1h": "https://www.tradingview.com/chart/iERzAcI8/?interval=60"
             }
 
-class BinanceConfig(BaseModel):
+class ExchangeConfig(BaseModel):
     api_key: str
     api_secret: str
+    password: Optional[str] = None  # For exchanges like Coinbase Pro
 
 class RiskManagementConfig(BaseModel):
     """Base risk configuration.
@@ -87,7 +89,7 @@ class RiskManagementConfig(BaseModel):
     max_risk_per_trade: float = 0.04
     min_risk_per_trade: float = 0.005
     atr_sl_multiplier: float = 1.5
-    atr_tp_multiplier: float = 3.0  # FIXED: Changed from 2.0 to 3.0 to use YAML configuration
+    atr_tp_multiplier: float = 3.0
     min_reward_risk_ratio: float = 1.5
     target_reward_risk_ratio: float = 2.0
     max_daily_loss_pct: float = 0.05
@@ -148,7 +150,7 @@ class AgentsConfig(BaseModel):
 
 class AppConfig(BaseModel):
     trading: TradingConfig = Field(default_factory=TradingConfig)
-    binance: BinanceConfig
+    exchange: ExchangeConfig
     risk_management: RiskManagementConfig = Field(default_factory=RiskManagementConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
@@ -157,34 +159,25 @@ class AppConfig(BaseModel):
     technical_analysis: TechnicalAnalysisConfig = Field(default_factory=TechnicalAnalysisConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
 
-def _resolve_api_credentials(use_testnet_flag: bool) -> Dict[str, str]:
+def _resolve_api_credentials(exchange_id: str) -> Dict[str, str]:
     """
-    Returns credentials for the Binance API.
-    - Prioritizes real credentials if they exist.
-    - Otherwise, generates a secure placeholder pair for test environments.
+    Returns credentials for the specified exchange API.
     """
-    testnet_key = os.getenv("BINANCE_TESTNET_API_KEY")
-    testnet_secret = os.getenv("BINANCE_TESTNET_API_SECRET")
-    main_key = os.getenv("BINANCE_API_KEY")
-    main_secret = os.getenv("BINANCE_API_SECRET")
-
-    if use_testnet_flag:
-        api_key = testnet_key or main_key
-        api_secret = testnet_secret or main_secret
-    else:
-        api_key = main_key or testnet_key
-        api_secret = main_secret or testnet_secret
+    exchange_id = exchange_id.upper()
+    api_key = os.getenv(f"{exchange_id}_API_KEY")
+    api_secret = os.getenv(f"{exchange_id}_API_SECRET")
+    password = os.getenv(f"{exchange_id}_PASSPHRASE")
 
     if not api_key or not api_secret:
         logger.warning(
-            "Binance API credentials not found. Using placeholder values suitable for tests "
+            f"{exchange_id} API credentials not found. Using placeholder values suitable for tests "
             "and forcing paper trading mode. Provide real credentials via environment variables "
             "for live trading."
         )
         api_key = _PLACEHOLDER_KEY
         api_secret = _PLACEHOLDER_SECRET
 
-    return {"api_key": api_key, "api_secret": api_secret}
+    return {"api_key": api_key, "api_secret": api_secret, "password": password}
 
 
 def _load_yaml_config(config_path: Path) -> Dict[str, Dict[str, object]]:
@@ -289,8 +282,9 @@ def create_app_config() -> AppConfig:
         # Detect if we are in testnet/paper mode from YAML or environment variables
         trading_cfg = yaml_config.get("trading", {}) if isinstance(yaml_config, dict) else {}
         use_testnet_flag = _compute_use_testnet_flag(trading_cfg)
+        exchange_id = os.getenv("EXCHANGE_ID", "binance")
 
-        credentials = _resolve_api_credentials(use_testnet_flag)
+        credentials = _resolve_api_credentials(exchange_id)
 
         # Force paper mode if using placeholder credentials
         trading_cfg = _ensure_safe_trading_mode(trading_cfg, credentials)
@@ -301,7 +295,7 @@ def create_app_config() -> AppConfig:
 
         config_data = {
             "trading": trading_cfg,
-            "binance": credentials,
+            "exchange": credentials,
             "risk_management": effective_rm_cfg,
             "llm": yaml_config.get("llm", {}),
             "tools": yaml_config.get("tools", {}),
@@ -357,7 +351,6 @@ class ConfigWatcher:
         self.observer.start()
 
     def stop(self):
-        self.observer.stop()
         self.observer.join()
 
     def on_modified(self, event):

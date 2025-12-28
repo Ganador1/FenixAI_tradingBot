@@ -902,7 +902,11 @@ async def get_market_data(symbol: Optional[str] = Query(None)):
     target_symbol = (symbol or (engine.symbol if engine else "BTC/USDT")).upper()
 
     status = engine.get_status() if engine else {}
-    ticker = await _fetch_ticker(target_symbol)
+
+    async def _fetch(client: ExchangeClient):
+        return await client.get_ticker(target_symbol)
+
+    ticker = await _with_exchange_client(_fetch)
 
     price = status.get("current_price") or (float(ticker["last"]) if ticker else None)
     if price is None:
