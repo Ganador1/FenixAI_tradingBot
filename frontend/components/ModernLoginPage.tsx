@@ -48,8 +48,8 @@ export function ModernLoginPage() {
     const formErrors = validateForm(
       { email: formData.email, password: formData.password },
       {
-        email: validators.email,
-        password: validators.required,
+        email: (val) => validators.email(val as string),
+        password: (val) => validators.required(val as string | null | undefined),
       }
     );
 

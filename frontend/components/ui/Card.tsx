@@ -2,31 +2,32 @@ import React, { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 export interface CardProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   className?: string;
   onClick?: () => void;
   hoverable?: boolean;
 }
 
 export interface CardHeaderProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   className?: string;
   title?: string;
+  subtitle?: string;
   action?: ReactNode;
 }
 
 export interface CardTitleProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   className?: string;
 }
 
 export interface CardContentProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   className?: string;
 }
 
 export interface CardFooterProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   className?: string;
   align?: 'left' | 'center' | 'right' | 'between';
 }
@@ -67,13 +68,17 @@ export const CardHeader: React.FC<CardHeaderProps> = ({
   children,
   className,
   title,
+  subtitle,
   action,
 }) => {
   return (
     <div className={cn('mb-4 pb-4 border-b border-gray-200', className)}>
       {title ? (
         <div className="flex justify-between items-start">
-          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+            {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
+          </div>
           {action && <div className="ml-4">{action}</div>}
         </div>
       ) : (
