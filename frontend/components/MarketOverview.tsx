@@ -70,7 +70,7 @@ export function MarketOverview() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || data.error || 'Failed to load chart data');
 
-        const series: ChartPoint[] = (data.data || data.points || []).map((p: any) => ({
+        const series: ChartPoint[] = (data.data || data.points || []).map((p: { timestamp: string; price: number; volume?: number }) => ({
           timestamp: p.timestamp,
           price: p.price,
           volume: p.volume,

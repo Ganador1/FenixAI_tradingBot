@@ -1,6 +1,6 @@
 import React from 'react';
 import { Card, CardHeader, CardContent, StatCard } from '@/components/ui/Card';
-import { TrendingUp, TrendingDown, Activity, Zap, Shield, AlertCircle } from 'lucide-react';
+import { TrendingUp, Activity, Zap, Shield, AlertCircle } from 'lucide-react';
 
 /**
  * Dashboard Principal - Vista resumen

@@ -53,6 +53,7 @@ export const Agents: React.FC = () => {
         socket.off('agentOutput', handleAgentOutput);
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, selectedAgent, selectedTimeframe]);
 
   useEffect(() => {

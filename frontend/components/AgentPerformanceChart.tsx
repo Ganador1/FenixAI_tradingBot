@@ -3,9 +3,9 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { useAgentStore } from '@/stores/agentStore';
 
 export function AgentPerformanceChart() {
-  const { agents, scorecards, fetchAgents, fetchScorecards } = useAgentStore();
+  const { agents, fetchAgents, fetchScorecards } = useAgentStore();
   const [analytics, setAnalytics] = useState<{ date: string; confidence: number }[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
     const load = async () => {
@@ -17,7 +17,7 @@ export function AgentPerformanceChart() {
           const payload = await res.json();
           const trend = payload.confidence_trend || payload.data?.confidence_trend || [];
           // normalize to chart format
-          setAnalytics(trend.map((t: any) => ({ date: t.date, confidence: t.confidence * 100 })));
+          setAnalytics(trend.map((t: { date: string; confidence: number }) => ({ date: t.date, confidence: t.confidence * 100 })));
         }
       } catch (err) {
         console.error('Failed to load agent analytics', err);

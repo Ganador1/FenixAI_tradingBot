@@ -2,7 +2,6 @@ import React from 'react';
 import { Bell, User, LogOut, Sparkles, Activity } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from './ui/Button';
-import { cn } from '@/lib/utils';
 
 export function Header() {
   const { user, logout } = useAuthStore();

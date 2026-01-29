@@ -60,7 +60,7 @@ export function Dashboard() {
     animate('.animate-card', {
       translateY: [20, 0],
       opacity: [0, 1],
-      delay: (el: any, i: number) => i * 100,
+      delay: (_el: Element, i: number) => i * 100,
       easing: 'easeOutExpo',
       duration: 800
     });
@@ -68,6 +68,7 @@ export function Dashboard() {
     // Refresh every 30 seconds
     const interval = setInterval(fetchDashboardData, 30000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchDashboardData = async () => {

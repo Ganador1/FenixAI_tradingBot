@@ -64,6 +64,7 @@ export const ReasoningBank: React.FC = () => {
         socket.off('consensusUpdate', handleConsensusUpdate);
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, selectedTimeframe]);
 
   useEffect(() => {

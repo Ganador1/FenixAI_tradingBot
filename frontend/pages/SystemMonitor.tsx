@@ -124,6 +124,7 @@ export const SystemMonitor: React.FC = () => {
       const interval = setInterval(fetchSystemData, 30000); // Refresh every 30 seconds
       return () => clearInterval(interval);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, selectedTimeframe]);
 
   const fetchSystemData = async () => {

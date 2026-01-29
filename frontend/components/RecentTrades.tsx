@@ -9,7 +9,8 @@ interface Trade {
   price: number;
   total: number;
   timestamp: string;
-  status: 'COMPLETED' | 'PENDING' | 'CANCELLED';
+  status?: 'COMPLETED' | 'PENDING' | 'CANCELLED';
+  executed_at?: string;
 }
 
 // RecentTrades component will fetch recent trades from the backend
@@ -79,8 +80,8 @@ export function RecentTrades() {
             <div>
               <div className="flex items-center space-x-2">
                 <span className="font-medium text-gray-900">{trade.symbol}</span>
-                <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor((trade as any).status ?? 'COMPLETED')}`}>
-                  {(trade as any).status ?? 'COMPLETED'}
+                <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(trade.status ?? 'COMPLETED')}`}>
+                  {trade.status ?? 'COMPLETED'}
                 </span>
               </div>
               <div className="text-sm text-gray-600">
