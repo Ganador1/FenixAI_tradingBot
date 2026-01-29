@@ -8,7 +8,7 @@ export interface SystemMetrics {
   network: number;
   process: number;
   timestamp: string;
-  raw?: Record<string, any>;
+  raw?: Record<string, unknown>;
 }
 
 export interface SystemAlert {
@@ -78,8 +78,8 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
       newSocket.emit('subscribe:system');
     });
 
-    newSocket.on('system:metrics', (data: any) => {
-      const summary = data?.summary || data;
+    newSocket.on('system:metrics', (data: { summary: SystemMetrics } | SystemMetrics) => {
+      const summary = (data as { summary: SystemMetrics }).summary || (data as SystemMetrics);
       set({ metrics: summary });
     });
 
@@ -89,8 +89,8 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
       }));
     });
 
-    newSocket.on('system:connection', (payload: any) => {
-      const connections = payload?.connections || payload || [];
+    newSocket.on('system:connection', (payload: ConnectionStatus[] | { connections: ConnectionStatus[] }) => {
+      const connections = (payload as { connections: ConnectionStatus[] }).connections || (payload as ConnectionStatus[]) || [];
       set({ connections });
     });
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Brain, TrendingUp, TrendingDown, Activity, Target, AlertCircle, CheckCircle, Clock, Filter, RefreshCw } from 'lucide-react';
-import { useAuthStore } from '../stores/authStore';
+import { Brain, TrendingUp, Activity, Target, AlertCircle, RefreshCw } from 'lucide-react';
+// import { useAuthStore } from '../stores/authStore';
 import { useAgentStore, Agent, ReasoningEntry } from '../stores/agentStore';
 import { useSystemStore } from '../stores/systemStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -23,7 +23,7 @@ const AGENT_COLORS = {
 };
 
 export const Agents: React.FC = () => {
-  const { user } = useAuthStore();
+  // const { user } = useAuthStore();
   const { agents, reasoningLogs, socket, fetchAgents, fetchReasoningLogs } = useAgentStore();
   const { engineConfig, fetchEngineConfig, updateEngineConfig } = useSystemStore();
   
@@ -230,11 +230,11 @@ export const Agents: React.FC = () => {
           </div>
         </div>
 
-        {output.input_data && Object.keys(output.input_data).length > 0 && (
+        {!!output.input_data && typeof output.input_data === 'object' && Object.keys(output.input_data).length > 0 && (
           <div className="mb-3">
             <h5 className="text-sm font-medium text-gray-700 mb-1">Input Data:</h5>
             <div className="flex flex-wrap gap-2">
-              {Object.entries(output.input_data).slice(0, 5).map(([key, value]) => (
+              {Object.entries(output.input_data as Record<string, unknown>).slice(0, 5).map(([key, value]) => (
                 <Badge key={key} variant="outline" className="text-xs">
                   {key}: {String(value)}
                 </Badge>
@@ -251,7 +251,7 @@ export const Agents: React.FC = () => {
     );
   };
 
-  const renderReasoningEntry = (entry: import('../stores/agentStore').ReasoningEntry) => {
+  const renderReasoningEntry = (entry: ReasoningEntry) => {
     return (
       <div key={entry.id} className="border rounded-lg p-4 mb-4">
         <div className="flex justify-between items-start mb-3">
@@ -271,7 +271,7 @@ export const Agents: React.FC = () => {
           </div>
         </div>
 
-        {entry.input_data && (
+        {!!entry.input_data && typeof entry.input_data === 'object' && (
           <div className="mb-3">
             <h5 className="text-sm font-medium text-gray-700 mb-1">Input Data:</h5>
             <div className="bg-gray-50 rounded-lg p-3">
@@ -381,7 +381,7 @@ export const Agents: React.FC = () => {
               </div>
               <Switch
                 checked={configDraft.enable_visual_agent}
-                onCheckedChange={(val) => setConfigDraft(prev => ({ ...prev, enable_visual_agent: val }))}
+                onChange={(val) => setConfigDraft(prev => ({ ...prev, enable_visual_agent: val }))}
               />
             </div>
             <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
@@ -391,7 +391,7 @@ export const Agents: React.FC = () => {
               </div>
               <Switch
                 checked={configDraft.enable_sentiment_agent}
-                onCheckedChange={(val) => setConfigDraft(prev => ({ ...prev, enable_sentiment_agent: val }))}
+                onChange={(val) => setConfigDraft(prev => ({ ...prev, enable_sentiment_agent: val }))}
               />
             </div>
           </div>
@@ -404,7 +404,7 @@ export const Agents: React.FC = () => {
               </div>
               <Switch
                 checked={configDraft.paper_trading}
-                onCheckedChange={(val) => setConfigDraft(prev => ({ ...prev, paper_trading: val }))}
+                onChange={(val) => setConfigDraft(prev => ({ ...prev, paper_trading: val }))}
               />
             </div>
             <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
@@ -414,7 +414,7 @@ export const Agents: React.FC = () => {
               </div>
               <Switch
                 checked={configDraft.allow_live_trading}
-                onCheckedChange={(val) => setConfigDraft(prev => ({ ...prev, allow_live_trading: val }))}
+                onChange={(val) => setConfigDraft(prev => ({ ...prev, allow_live_trading: val }))}
               />
             </div>
             <div className="flex items-center justify-end gap-3">

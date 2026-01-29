@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Clock, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
-import { useAuthStore } from '../stores/authStore';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { DollarSign, Activity, Target, Clock, AlertCircle } from 'lucide-react';
+// import { useAuthStore } from '../stores/authStore';
 import { useSystemStore } from '../stores/systemStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -50,13 +50,13 @@ interface TradeHistory {
 }
 
 export const Trading: React.FC = () => {
-  const { user } = useAuthStore();
+  // const { user } = useAuthStore();
   const { socket } = useSystemStore();
   
   const [orders, setOrders] = useState<Order[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [tradeHistory, setTradeHistory] = useState<TradeHistory[]>([]);
-  const [marketData, setMarketData] = useState<any[]>([]);
+  const [marketData, setMarketData] = useState<{ timestamp: string; price: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
@@ -113,43 +113,43 @@ export const Trading: React.FC = () => {
         marketRes.json()
       ]);
 
-      const mapOrder = (order: any): Order => ({
-        id: order.id,
-        symbol: order.symbol,
-        type: order.type,
-        side: order.side,
-        quantity: order.quantity,
-        price: order.price ?? order.limit_price ?? 0,
-        stopPrice: order.stop_price ?? order.stopPrice ?? 0,
-        status: order.status,
-        filledQuantity: order.filled_quantity ?? order.filledQuantity ?? 0,
-        createdAt: order.created_at || order.createdAt || new Date().toISOString(),
-        updatedAt: order.updated_at || order.updatedAt || new Date().toISOString(),
-        userId: order.user_id || order.userId || 'system',
+      const mapOrder = (order: Record<string, unknown>): Order => ({
+        id: order.id as string,
+        symbol: order.symbol as string,
+        type: order.type as Order['type'],
+        side: order.side as Order['side'],
+        quantity: order.quantity as number,
+        price: (order.price ?? order.limit_price ?? 0) as number,
+        stopPrice: (order.stop_price ?? order.stopPrice ?? 0) as number,
+        status: order.status as Order['status'],
+        filledQuantity: (order.filled_quantity ?? order.filledQuantity ?? 0) as number,
+        createdAt: (order.created_at || order.createdAt || new Date().toISOString()) as string,
+        updatedAt: (order.updated_at || order.updatedAt || new Date().toISOString()) as string,
+        userId: (order.user_id || order.userId || 'system') as string,
       });
 
-      const mapPosition = (pos: any): Position => ({
-        id: pos.id || pos.position_id || crypto.randomUUID(),
-        symbol: pos.symbol,
-        side: pos.side,
-        quantity: pos.quantity,
-        entryPrice: pos.entry_price ?? pos.entryPrice ?? 0,
-        currentPrice: pos.current_price ?? pos.currentPrice ?? 0,
-        unrealizedPnl: pos.unrealized_pnl ?? pos.unrealizedPnl ?? 0,
-        realizedPnl: pos.realized_pnl ?? pos.realizedPnl ?? 0,
-        openedAt: pos.opened_at || pos.openedAt || new Date().toISOString(),
-        userId: pos.user_id || pos.userId || 'system',
+      const mapPosition = (pos: Record<string, unknown>): Position => ({
+        id: (pos.id || pos.position_id || crypto.randomUUID()) as string,
+        symbol: pos.symbol as string,
+        side: pos.side as Position['side'],
+        quantity: pos.quantity as number,
+        entryPrice: (pos.entry_price ?? pos.entryPrice ?? 0) as number,
+        currentPrice: (pos.current_price ?? pos.currentPrice ?? 0) as number,
+        unrealizedPnl: (pos.unrealized_pnl ?? pos.unrealizedPnl ?? 0) as number,
+        realizedPnl: (pos.realized_pnl ?? pos.realizedPnl ?? 0) as number,
+        openedAt: (pos.opened_at || pos.openedAt || new Date().toISOString()) as string,
+        userId: (pos.user_id || pos.userId || 'system') as string,
       });
 
-      const mapTrade = (trade: any): TradeHistory => ({
-        id: trade.id,
-        symbol: trade.symbol,
-        side: trade.side,
-        quantity: trade.quantity,
-        price: trade.price,
-        realizedPnl: trade.realized_pnl ?? trade.realizedPnl ?? 0,
-        executedAt: trade.executed_at || trade.executedAt || new Date().toISOString(),
-        userId: trade.user_id || trade.userId || 'system',
+      const mapTrade = (trade: Record<string, unknown>): TradeHistory => ({
+        id: trade.id as string,
+        symbol: trade.symbol as string,
+        side: trade.side as TradeHistory['side'],
+        quantity: trade.quantity as number,
+        price: trade.price as number,
+        realizedPnl: (trade.realized_pnl ?? trade.realizedPnl ?? 0) as number,
+        executedAt: (trade.executed_at || trade.executedAt || new Date().toISOString()) as string,
+        userId: (trade.user_id || trade.userId || 'system') as string,
       });
 
       setOrders((ordersData.orders || ordersData || []).map(mapOrder));
@@ -187,7 +187,7 @@ export const Trading: React.FC = () => {
     setTradeHistory(prev => [trade, ...prev]);
   };
 
-  const handleMarketData = (data: any[]) => {
+  const handleMarketData = (data: { timestamp: string; price: number }[]) => {
     setMarketData(data);
   };
 
@@ -362,7 +362,7 @@ export const Trading: React.FC = () => {
                   <label className="block text-sm font-medium mb-1">Type</label>
                   <Select
                     value={orderForm.type}
-                    onChange={(e) => setOrderForm(prev => ({ ...prev, type: e.target.value as any }))}
+                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setOrderForm(prev => ({ ...prev, type: e.target.value as Order['type'] }))}
                   >
                     <option value="market">Market</option>
                     <option value="limit">Limit</option>
@@ -374,7 +374,7 @@ export const Trading: React.FC = () => {
                   <label className="block text-sm font-medium mb-1">Side</label>
                   <Select
                     value={orderForm.side}
-                    onChange={(e) => setOrderForm(prev => ({ ...prev, side: e.target.value as any }))}
+                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setOrderForm(prev => ({ ...prev, side: e.target.value as Order['side'] }))}
                   >
                     <option value="buy">Buy</option>
                     <option value="sell">Sell</option>

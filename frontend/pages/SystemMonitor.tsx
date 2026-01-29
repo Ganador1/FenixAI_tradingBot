@@ -1,26 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { 
-  Activity, 
   AlertTriangle, 
   CheckCircle, 
   XCircle, 
   Clock, 
   Server, 
-  Database, 
   Wifi, 
   HardDrive, 
   Cpu, 
   MemoryStick,
   RefreshCw,
-  Settings,
-  Filter
 } from 'lucide-react';
-import { useAuthStore } from '../stores/authStore';
+// import { useAuthStore } from '../stores/authStore';
 import { useSystemStore } from '../stores/systemStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Select } from '../components/ui/Select';
+// import { Select } from '../components/ui/Select';
 import { Badge } from '../components/ui/Badge';
 import { Alert, AlertTitle, AlertDescription } from '../components/ui/Alert';
 
@@ -65,6 +61,7 @@ interface ComponentHealth {
   response_time?: number;
 }
 
+/*
 interface SystemAlert {
   id: string;
   type: 'info' | 'warning' | 'error';
@@ -74,6 +71,7 @@ interface SystemAlert {
   resolved: boolean;
   auto_resolved: boolean;
 }
+*/
 
 interface ConnectionStatus {
   service: string;
@@ -90,15 +88,17 @@ const STATUS_COLORS = {
   unknown: 'text-gray-600 bg-gray-100'
 };
 
+/*
 const ALERT_COLORS = {
   info: 'text-blue-600 bg-blue-100',
   warning: 'text-yellow-600 bg-yellow-100',
   error: 'text-red-600 bg-red-100'
 };
+*/
 
 export const SystemMonitor: React.FC = () => {
-  const { user } = useAuthStore();
-  const { metrics, alerts, connections, fetchSystemStatus, fetchAlerts } = useSystemStore();
+  // const { user } = useAuthStore();
+  const { metrics, alerts, fetchSystemStatus, fetchAlerts } = useSystemStore();
   
   const currentMetrics = metrics || {
     cpu: 0,
@@ -108,8 +108,7 @@ export const SystemMonitor: React.FC = () => {
     process: 0,
     timestamp: new Date().toISOString()
   };
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1h');
-  const [selectedComponent, setSelectedComponent] = useState<string>('all');
+  const [selectedTimeframe] = useState<string>('1h');
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +163,7 @@ export const SystemMonitor: React.FC = () => {
     }
   };
 
+  /*
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -171,6 +171,7 @@ export const SystemMonitor: React.FC = () => {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
+  */
 
   const formatUptime = (seconds: number): string => {
     const days = Math.floor(seconds / 86400);

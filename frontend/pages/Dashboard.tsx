@@ -14,7 +14,7 @@ import {
 import { useSystemStore } from '@/stores/systemStore';
 import { useAgentStore } from '@/stores/agentStore';
 import { formatCurrency, formatPercentage } from '@/lib/utils';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
+// import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { MetricCard } from '@/components/MetricCard';
 import { SystemStatusChart } from '@/components/SystemStatusChart';
 import { AgentPerformanceChart } from '@/components/AgentPerformanceChart';
@@ -60,7 +60,8 @@ export function Dashboard() {
     animate('.animate-card', {
       translateY: [20, 0],
       opacity: [0, 1],
-      delay: (_el: Element, i: number) => i * 100,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delay: (_el: any, i: number) => i * 100,
       easing: 'easeOutExpo',
       duration: 800
     });
@@ -86,12 +87,12 @@ export function Dashboard() {
         const positions = posData.positions || [];
 
         // Calculate portfolio metrics from positions
-        const totalValue = positions.reduce((sum: number, pos: any) => {
-          return sum + (pos.quantity * pos.current_price);
+        const totalValue = positions.reduce((sum: number, pos: Record<string, unknown>) => {
+          return sum + ((pos.quantity as number) * (pos.current_price as number));
         }, 10000); // Base balance of 10000
 
-        const unrealizedPnl = positions.reduce((sum: number, pos: any) => {
-          return sum + (pos.unrealized_pnl || 0);
+        const unrealizedPnl = positions.reduce((sum: number, pos: Record<string, unknown>) => {
+          return sum + ((pos.unrealized_pnl as number) || 0);
         }, 0);
 
         setPortfolio({

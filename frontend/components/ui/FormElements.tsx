@@ -140,7 +140,7 @@ export const FormTextarea: React.FC<FormTextareaProps> = ({
   className = '',
   ...props
 }) => {
-  const { disabled, required, ...textareaProps } = props as any;
+  const { disabled, required, ...textareaProps } = props;
 
   return (
     <div className="w-full">

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Users as UsersIcon, UserPlus, Edit, Trash2, Shield, Mail, Calendar, Search, Filter, Key, RefreshCw, AlertCircle } from 'lucide-react';
-import { useAuthStore } from '../stores/authStore';
+import { Users as UsersIcon, UserPlus, Edit, Trash2, Shield, Key, RefreshCw, AlertCircle } from 'lucide-react';
+// import { useAuthStore } from '../stores/authStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -31,6 +31,7 @@ interface User {
   };
 }
 
+/*
 interface Role {
   id: string;
   name: string;
@@ -38,20 +39,21 @@ interface Role {
   permissions: string[];
   is_system: boolean;
 }
+*/
 
 export const UsersPage: React.FC = () => {
-  const { user: currentUser } = useAuthStore();
+  // const { user: currentUser } = useAuthStore();
   const [users, setUsers] = useState<User[]>([]);
-  const [roles, setRoles] = useState<Role[]>([]);
+  // const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [showUserModal, setShowUserModal] = useState(false);
-  const [showRoleModal, setShowRoleModal] = useState(false);
+  // const [showRoleModal, setShowRoleModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [editingRole, setEditingRole] = useState<Role | null>(null);
+  // const [editingRole, setEditingRole] = useState<Role | null>(null);
 
   // Form states
   const [userForm, setUserForm] = useState({
@@ -65,11 +67,13 @@ export const UsersPage: React.FC = () => {
     department: ''
   });
 
+  /*
   const [roleForm, setRoleForm] = useState({
     name: '',
     description: '',
     permissions: [] as string[]
   });
+  */
 
   useEffect(() => {
     fetchUsersData();
@@ -80,30 +84,20 @@ export const UsersPage: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      const [usersResponse, rolesResponse] = await Promise.all([
-        fetch('/api/auth/users', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        }),
-        fetch('/api/auth/roles', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        })
-      ]);
+      const usersResponse = await fetch('/api/auth/users', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
 
-      if (!usersResponse.ok || !rolesResponse.ok) {
+      if (!usersResponse.ok) {
         throw new Error('Failed to fetch users data');
       }
 
-      const [usersData, rolesData] = await Promise.all([
-        usersResponse.json(),
-        rolesResponse.json()
-      ]);
+      const usersData = await usersResponse.json();
 
       setUsers(usersData);
-      setRoles(rolesData);
+      // setRoles(rolesData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch users data');
     } finally {
@@ -174,6 +168,7 @@ export const UsersPage: React.FC = () => {
     setShowUserModal(true);
   };
 
+  /*
   const handleCreateRole = () => {
     setEditingRole(null);
     setRoleForm({
@@ -183,7 +178,9 @@ export const UsersPage: React.FC = () => {
     });
     setShowRoleModal(true);
   };
+  */
 
+  /*
   const handleEditRole = (role: Role) => {
     setEditingRole(role);
     setRoleForm({
@@ -193,6 +190,7 @@ export const UsersPage: React.FC = () => {
     });
     setShowRoleModal(true);
   };
+  */
 
   const handleSubmitUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -322,6 +320,7 @@ export const UsersPage: React.FC = () => {
             <RefreshCw className="h-4 w-4" />
             <span>Refresh</span>
           </Button>
+          {/*
           <Button
             variant="outline"
             size="sm"
@@ -331,6 +330,7 @@ export const UsersPage: React.FC = () => {
             <Shield className="h-4 w-4" />
             <span>Manage Roles</span>
           </Button>
+          */}
           <Button
             onClick={handleCreateUser}
             className="flex items-center space-x-1"

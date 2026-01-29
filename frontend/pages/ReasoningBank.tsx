@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Brain, Search, Filter, Download, TrendingUp, TrendingDown, Activity, Target, Clock, AlertCircle, CheckCircle } from 'lucide-react';
-import { useAuthStore } from '../stores/authStore';
+import { Brain, Download, TrendingUp, Activity, Target, AlertCircle } from 'lucide-react';
+// import { useAuthStore } from '../stores/authStore';
 import { useAgentStore, ReasoningEntry } from '../stores/agentStore';
 import { useSystemStore } from '../stores/systemStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -35,7 +35,7 @@ interface ReasoningAnalytics {
 }
 
 export const ReasoningBank: React.FC = () => {
-  const { user } = useAuthStore();
+  // const { user } = useAuthStore();
   const { reasoningLogs, fetchReasoningLogs } = useAgentStore();
   const { socket } = useSystemStore();
   
@@ -66,10 +66,6 @@ export const ReasoningBank: React.FC = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, selectedTimeframe]);
-
-  useEffect(() => {
-    filterReasoningLogs();
-  }, [reasoningLogs, searchQuery, selectedAgent, selectedOutcome, selectedConfidence]);
 
   const fetchReasoningBankData = async () => {
     try {
@@ -107,7 +103,7 @@ export const ReasoningBank: React.FC = () => {
     setConsensus(consensusData);
   };
 
-  const filterReasoningLogs = () => {
+  const filterReasoningLogs = React.useCallback(() => {
     let filtered = reasoningLogs;
 
     if (searchQuery) {
@@ -143,9 +139,13 @@ export const ReasoningBank: React.FC = () => {
     }
 
     setFilteredLogs(filtered);
-  };
+  }, [reasoningLogs, searchQuery, selectedAgent, selectedOutcome, selectedConfidence]);
 
-  const getOutcomeColor = (outcome: any) => {
+  useEffect(() => {
+    filterReasoningLogs();
+  }, [filterReasoningLogs, reasoningLogs, searchQuery, selectedAgent, selectedOutcome, selectedConfidence]);
+
+  const getOutcomeColor = (outcome: ReasoningEntry['outcome']) => {
     if (!outcome) return 'default';
     if (outcome.accuracy > 70) return 'success';
     if (outcome.accuracy > 40) return 'warning';
@@ -199,11 +199,11 @@ export const ReasoningBank: React.FC = () => {
           </div>
         </div>
 
-        {entry.input_data && Object.keys(entry.input_data).length > 0 && (
+        {!!entry.input_data && typeof entry.input_data === 'object' && Object.keys(entry.input_data).length > 0 && (
           <div className="mb-3">
             <h5 className="text-sm font-medium text-gray-700 mb-1">Input Data:</h5>
             <div className="flex flex-wrap gap-2">
-              {Object.entries(entry.input_data).slice(0, 5).map(([key, value]) => (
+              {Object.entries(entry.input_data as Record<string, unknown>).slice(0, 5).map(([key, value]) => (
                 <Badge key={key} variant="outline" className="text-xs">
                   {key}: {String(value)}
                 </Badge>
@@ -212,7 +212,7 @@ export const ReasoningBank: React.FC = () => {
           </div>
         )}
 
-        {entry.input_data && (
+        {!!entry.input_data && typeof entry.input_data === 'object' && (
           <div className="mb-3">
             <h5 className="text-sm font-medium text-gray-700 mb-1">Input Data:</h5>
             <div className="bg-gray-50 rounded-lg p-3">

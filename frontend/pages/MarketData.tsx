@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, Activity, DollarSign, BarChart3, RefreshCw, Filter } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { RefreshCw } from 'lucide-react';
 import { useSystemStore } from '../stores/systemStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -16,25 +16,35 @@ const formatPrice = (price: number) => {
   }).format(price);
 };
 
+/*
 const formatMarketCap = (value: number) => {
   if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
   if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
   if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
   return `$${value.toFixed(2)}`;
 };
+*/
 
 // The market snapshot will be fetched from the backend via /api/trading/market
 
 const INITIAL_HISTORY = [{ time: 'N/A', price: 0 }];
 
+interface MarketSnapshot {
+  symbol: string;
+  price: number;
+  change_24h: number;
+  volume_24h: number;
+  quote_volume_24h: number;
+}
+
 export const MarketData: React.FC = () => {
-  const { metrics, connections, isLoading, error } = useSystemStore();
-  const [marketSnapshot, setMarketSnapshot] = useState<any | null>(null);
-  const [selectedTimeframe, setSelectedTimeframe] = useState('1D');
-  const [selectedSymbol, setSelectedSymbol] = useState('all');
+  const { connections } = useSystemStore();
+  const [marketSnapshot, setMarketSnapshot] = useState<MarketSnapshot | null>(null);
+  // const [selectedTimeframe, setSelectedTimeframe] = useState('1D');
+  // const [selectedSymbol, setSelectedSymbol] = useState('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [historical, setHistorical] = useState<any[]>(INITIAL_HISTORY);
-  const [sentiment, setSentiment] = useState<any[]>([]);
+  const [historical, setHistorical] = useState<{ time: string; price: number }[]>(INITIAL_HISTORY);
+  const [sentiment, setSentiment] = useState<{ name: string; value: number; color: string }[]>([]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -60,7 +70,10 @@ export const MarketData: React.FC = () => {
       const resp = await fetch(`/api/market/data/${symbol}?interval=${interval}&limit=24`);
       if (!resp.ok) throw new Error('Failed to fetch historical data');
       const data = await resp.json();
-      const formatted = (data.data || []).map((p: any) => ({ time: new Date(p.timestamp).toLocaleTimeString(), price: p.price }));
+      const formatted = (data.data || []).map((p: Record<string, unknown>) => ({ 
+        time: new Date(p.timestamp as string).toLocaleTimeString(), 
+        price: p.price as number 
+      }));
       setHistorical(formatted.length ? formatted : INITIAL_HISTORY);
     } catch (err) {
       console.error('Failed to fetch historical data', err);
@@ -75,9 +88,9 @@ export const MarketData: React.FC = () => {
       const payload = await resp.json();
       const data = payload.data || payload.consensus || payload || [];
       // Convert to simple { name, value, color }
-      const counts = { bullish: 0, bearish: 0, neutral: 0 } as any;
-      (data || []).forEach((d: any) => {
-        const dom = (d.dominant_sentiment || d.dominant || d.dominantSentiment || d.dominantSentiment || d) ;
+      const counts = { bullish: 0, bearish: 0, neutral: 0 };
+      (data || []).forEach((d: Record<string, unknown>) => {
+        const dom = (d.dominant_sentiment || d.dominant || d.dominantSentiment || d.dominantSentiment || d) as string;
         if (dom === 'bullish') counts.bullish += 1;
         else if (dom === 'bearish') counts.bearish += 1;
         else counts.neutral += 1;
@@ -133,7 +146,7 @@ export const MarketData: React.FC = () => {
           <CardTitle>Live Market Overview</CardTitle>
         </CardHeader>
         <CardContent>
-          <MarketOverview />
+          <MarketOverview marketSnapshot={marketSnapshot} />
         </CardContent>
       </Card>
 
@@ -342,8 +355,7 @@ export const MarketData: React.FC = () => {
   );
 };
 
-// Placeholder component for Market Overview
-const MarketOverview: React.FC<{marketSnapshot?: any | null}> = ({marketSnapshot}) => {
+const MarketOverview: React.FC<{marketSnapshot?: MarketSnapshot | null}> = ({marketSnapshot}) => {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
       {marketSnapshot ? (

@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Save, RefreshCw, Database, Shield, Bell, Palette, Globe, Zap, AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { Save, RefreshCw, AlertTriangle, CheckCircle } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/Alert';
-import { Badge } from '@/components/ui/Badge';
+// import { Badge } from '@/components/ui/Badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 
 interface SystemSettings {
@@ -88,7 +88,7 @@ export const SettingsPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState('general');
+  const [activeTab] = useState('general');
   const [testResults, setTestResults] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -164,12 +164,12 @@ export const SettingsPage: React.FC = () => {
       setTestResults(prev => ({ ...prev, [type]: result.success }));
       
       setTimeout(() => {
-        setTestResults(prev => ({ ...prev, [type]: undefined as any }));
+        setTestResults(prev => ({ ...prev, [type]: undefined as unknown as boolean }));
       }, 3000);
-    } catch (err) {
+    } catch {
       setTestResults(prev => ({ ...prev, [type]: false }));
       setTimeout(() => {
-        setTestResults(prev => ({ ...prev, [type]: undefined as any }));
+        setTestResults(prev => ({ ...prev, [type]: undefined as unknown as boolean }));
       }, 3000);
     }
   };
@@ -201,7 +201,7 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const updateSetting = (section: keyof SystemSettings, key: string, value: any) => {
+  const updateSetting = (section: keyof SystemSettings, key: string, value: unknown) => {
     if (!settings) return;
     
     setSettings(prev => ({

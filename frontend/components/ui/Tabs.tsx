@@ -33,7 +33,7 @@ export const Tabs: React.FC<TabsProps> = ({ defaultValue, children, className = 
           return React.cloneElement(child, {
             activeTab,
             setActiveTab,
-          } as any);
+          } as unknown as React.Attributes);
         }
         return child;
       })}

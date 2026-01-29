@@ -59,7 +59,7 @@ export function MarketOverview() {
     fetchOverview();
     const interval = setInterval(fetchOverview, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedSymbol]);
 
   useEffect(() => {
     if (!selectedSymbol) return;

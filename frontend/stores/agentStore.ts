@@ -7,7 +7,7 @@ export interface Agent {
   type: 'sentiment' | 'technical' | 'visual' | 'qabba' | 'decision' | 'risk';
   status: 'active' | 'inactive' | 'error';
   last_run: string;
-  config: Record<string, any>;
+  config: Record<string, unknown>;
   performance: {
     total_signals: number;
     successful_signals: number;
@@ -21,7 +21,7 @@ export interface ReasoningEntry {
   agent_id: string;
   agent_name: string;
   timestamp: string;
-  input_data: any;
+  input_data: unknown;
   reasoning: string;
   decision: string;
   confidence: number;

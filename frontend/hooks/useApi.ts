@@ -1,11 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { API_CONFIG, HTTP_STATUS, ERROR_MESSAGES } from '@/lib/api-config';
+import { API_CONFIG, ERROR_MESSAGES } from '@/lib/api-config';
 import { toast } from 'sonner';
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   headers?: Record<string, string>;
-  body?: any;
+  body?: unknown;
   showNotification?: boolean;
   token?: string;
 }
@@ -19,7 +19,7 @@ interface UseApiState<T> {
 /**
  * Custom hook for making API requests with error handling and retry logic
  */
-export const useApi = <T = any,>(
+export const useApi = <T = unknown,>(
   url: string,
   options: RequestOptions = {}
 ): UseApiState<T> & { refetch: () => Promise<void> } => {
@@ -62,7 +62,6 @@ export const useApi = <T = any,>(
         headers,
         body: options.body ? JSON.stringify(options.body) : undefined,
         signal: abortControllerRef.current.signal,
-        timeout: API_CONFIG.timeout,
       });
 
       if (!response.ok) {
@@ -78,17 +77,17 @@ export const useApi = <T = any,>(
       const data = await response.json();
       setState({ data, loading: false, error: null });
       attemptsRef.current = 0;
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Ignore abort errors
-      if (error.name === 'AbortError') {
+      if (error instanceof Error && error.name === 'AbortError') {
         return;
       }
 
       // Retry logic for network errors and server errors
       const shouldRetry =
         attemptsRef.current < API_CONFIG.retries &&
-        (error.message === ERROR_MESSAGES.NETWORK_ERROR ||
-          error.message === ERROR_MESSAGES.TIMEOUT_ERROR);
+        (error instanceof Error && (error.message === ERROR_MESSAGES.NETWORK_ERROR ||
+          error.message === ERROR_MESSAGES.TIMEOUT_ERROR));
 
       if (shouldRetry) {
         attemptsRef.current += 1;
@@ -134,7 +133,7 @@ export const useApi = <T = any,>(
 /**
  * Mutation hook for POST, PUT, DELETE requests
  */
-export const useApiMutation = <T = any,>() => {
+export const useApiMutation = <T = unknown,>() => {
   const [state, setState] = useState<UseApiState<T> & { isLoading: boolean }>({
     data: null,
     loading: false,
@@ -178,7 +177,6 @@ export const useApiMutation = <T = any,>() => {
           headers,
           body: options.body ? JSON.stringify(options.body) : undefined,
           signal: abortControllerRef.current.signal,
-          timeout: API_CONFIG.timeout,
         });
 
         if (!response.ok) {
@@ -199,9 +197,9 @@ export const useApiMutation = <T = any,>() => {
         }
 
         return data;
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Ignore abort errors
-        if (error.name === 'AbortError') {
+        if (error instanceof Error && error.name === 'AbortError') {
           return null;
         }
 

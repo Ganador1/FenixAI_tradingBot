@@ -66,7 +66,7 @@ export function OrderForm({ onSubmit, isLoading = false, defaultSymbol = 'BTCUSD
     }
   };
 
-  const updateForm = (field: keyof OrderFormData, value: any) => {
+  const updateForm = <K extends keyof OrderFormData>(field: K, value: OrderFormData[K]) => {
     setForm(prev => ({ ...prev, [field]: value }));
   };
 
@@ -107,7 +107,7 @@ export function OrderForm({ onSubmit, isLoading = false, defaultSymbol = 'BTCUSD
               <label className="block text-sm font-medium mb-1">Type</label>
               <Select
                 value={form.type}
-                onChange={(e) => updateForm('type', e.target.value)}
+                onChange={(e) => updateForm('type', e.target.value as OrderFormData['type'])}
               >
                 <option value="market">Market</option>
                 <option value="limit">Limit</option>
@@ -120,7 +120,7 @@ export function OrderForm({ onSubmit, isLoading = false, defaultSymbol = 'BTCUSD
               <div className="flex gap-2">
                 <Button
                   type="button"
-                  variant={form.side === 'buy' ? 'default' : 'outline'}
+                  variant={form.side === 'buy' ? 'primary' : 'outline'}
                   className={form.side === 'buy' ? 'bg-green-600 hover:bg-green-700 flex-1' : 'flex-1'}
                   onClick={() => updateForm('side', 'buy')}
                 >
@@ -128,7 +128,7 @@ export function OrderForm({ onSubmit, isLoading = false, defaultSymbol = 'BTCUSD
                 </Button>
                 <Button
                   type="button"
-                  variant={form.side === 'sell' ? 'default' : 'outline'}
+                  variant={form.side === 'sell' ? 'primary' : 'outline'}
                   className={form.side === 'sell' ? 'bg-red-600 hover:bg-red-700 flex-1' : 'flex-1'}
                   onClick={() => updateForm('side', 'sell')}
                 >

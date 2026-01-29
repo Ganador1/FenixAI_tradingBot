@@ -71,8 +71,8 @@ export const validators = {
 };
 
 export const validateForm = (
-  formData: Record<string, any>,
-  schema: Record<string, (value: any) => ValidationResult>
+  formData: Record<string, unknown>,
+  schema: Record<string, (value: unknown) => ValidationResult>
 ): Record<string, string> => {
   const errors: Record<string, string> = {};
   
