@@ -220,7 +220,7 @@ class FenixChartGenerator:
         style: Optional[Dict] = None,
         save_path: Optional[str] = None,
         dpi: int = 150,
-        figsize: Tuple[int, int] = (14, 10)
+        figsize: Tuple[int, int] = (16, 10)
     ):
         self.style = style or get_fenix_style()
         self.save_path = Path(save_path) if save_path else Path("cache/charts")
@@ -494,26 +494,26 @@ class FenixChartGenerator:
         # Construir addplots
         addplots = []
         
-        # EMAs
+        # EMAs - made thicker for better visibility
         if 'ema_9' in show_indicators and 'ema_9' in indicators:
             s = indicators['ema_9'].reindex(df.index)
             addplots.append(mpf.make_addplot(
                 s, 
-                color='#2196f3', width=1.2, label='EMA 9'
+                color='#2196f3', width=2.0, label='EMA 9'
             ))
         
         if 'ema_21' in show_indicators and 'ema_21' in indicators:
             s = indicators['ema_21'].reindex(df.index)
             addplots.append(mpf.make_addplot(
                 s, 
-                color='#ff9800', width=1.2, label='EMA 21'
+                color='#ff9800', width=2.0, label='EMA 21'
             ))
         
         if 'sma_50' in show_indicators and 'sma_50' in indicators:
             s = indicators['sma_50'].reindex(df.index)
             addplots.append(mpf.make_addplot(
                 s, 
-                color='#9c27b0', width=1.2, label='SMA 50'
+                color='#9c27b0', width=1.8, label='SMA 50'
             ))
         
         # Bollinger Bands
@@ -630,18 +630,28 @@ class FenixChartGenerator:
         try:
             chart_title = title or f"{symbol} - {timeframe}"
             
+            # Configure candle width for better visibility
+            # Thicker candles are more readable, especially for AI vision analysis
+            width_config = dict(
+                candle_linewidth=1.5,   # Wick/shadow line width
+                candle_width=0.7,       # Body width (0.0 to 1.0, where 1.0 is full width)
+                volume_width=0.6,       # Volume bar width
+            )
+            
             fig, axlist = mpf.plot(
                 df,
                 type='candle',
                 style=self.style,
                 addplot=addplots if addplots else None,
                 alines=alines if alines else None,
-                # alines=dict(alines=alines, colors=['#4caf50', '#f44336'], linewidths=1.5) if alines else None,
                 volume='volume' in show_indicators,
                 title=chart_title,
                 figsize=self.figsize,
                 returnfig=True,
                 warn_too_much_data=500,
+                update_width_config=width_config,
+                datetime_format='%H:%M',  # Format x-axis timestamps as HH:MM
+                xrotation=45,             # Rotate labels for better readability
             )
             
             # Guardar a buffer

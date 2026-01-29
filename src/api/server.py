@@ -292,9 +292,38 @@ async def lifespan(app: FastAPI):
             _engine_task.cancel()
             await _engine_task
 
-# FastAPI App
-app = FastAPI(lifespan=lifespan)
-app.include_router(auth_router)  # Register Auth Routes
+# FastAPI App with OpenAPI Metadata
+app = FastAPI(
+    title="FenixAI Trading Bot API",
+    description="""
+🦅 **FenixAI Trading Bot v2.0**
+
+API for autonomous multi-agent cryptocurrency trading system.
+
+## Features
+- Real-time market data via WebSocket
+- Multi-agent trading decisions with ReasoningBank memory
+- Portfolio and risk management
+- Agent performance analytics
+
+## Authentication
+Most endpoints require JWT authentication. Use `/api/auth/login` to obtain a token.
+    """,
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    openapi_tags=[
+        {"name": "auth", "description": "Authentication and user management"},
+        {"name": "trading", "description": "Trading operations, orders, and positions"},
+        {"name": "agents", "description": "Agent outputs and reasoning bank"},
+        {"name": "market", "description": "Market data and price feeds"},
+        {"name": "system", "description": "System status, health, and metrics"},
+        {"name": "engine", "description": "Trading engine control"},
+    ],
+    lifespan=lifespan
+)
+app.include_router(auth_router, tags=["auth"])  # Register Auth Routes
 app_socketio = socketio.ASGIApp(sio, app)
 
 # CORS - limitar a orígenes conocidos
@@ -309,6 +338,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Prometheus Metrics Middleware
+try:
+    from src.monitoring.prometheus_metrics import PrometheusMiddleware, metrics_endpoint
+    app.add_middleware(PrometheusMiddleware)
+    app.add_api_route("/metrics", metrics_endpoint, methods=["GET"], include_in_schema=False)
+    logger.info("✅ Prometheus metrics enabled at /metrics")
+except ImportError as e:
+    logger.warning(f"Prometheus metrics not available: {e}")
 
 
 @app.exception_handler(RequestValidationError)

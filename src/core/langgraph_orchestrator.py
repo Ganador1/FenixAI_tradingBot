@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import logging
+from pathlib import Path
 from datetime import datetime
 from typing import Any, TypedDict, Annotated
 
@@ -63,6 +64,56 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# LOGGING HELPER
+# ============================================================================
+
+def save_legacy_agent_log(
+    agent_name: str,
+    prompt: list[dict[str, str]] | list[Any],
+    response_content: str,
+    parsed_json: dict | None,
+):
+    """
+    Guarda logs detallados al estilo legacy (input/output/prompt/raw) en src/logs/llm_responses.
+    Útil para debugging humano y análisis detallado.
+    """
+    try:
+        # Directorio base - usar path absoluto basado en ubicación del script
+        project_root = Path(__file__).parent.parent.parent
+        base_dir = project_root / "src" / "logs" / "llm_responses" / agent_name
+        base_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"📝 Saving agent log to: {base_dir}")
+        
+        # Timestamp único
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        base_name = f"{timestamp}"
+        
+        # Guardar prompt (raw list of messages)
+        prompt_path = base_dir / f"{base_name}_prompt.txt"
+        with open(prompt_path, "w", encoding="utf-8") as f:
+            for i, msg in enumerate(prompt):
+                content = getattr(msg, "content", str(msg))
+                role = getattr(msg, "type", "unknown")
+                f.write(f"--- Message {i} ({role}) ---\n{content}\n\n")
+        
+        # Guardar input estructurado (si es posible extraerlo del prompt)
+        # Esto es más difícil de reconstruir genéricamente, pero guardamos el prompt completo
+        
+        # Guardar raw response
+        raw_path = base_dir / f"{base_name}_raw_response.txt"
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write(response_content)
+            
+        # Guardar output JSON
+        if parsed_json:
+            output_path = base_dir / f"{base_name}_output.json"
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(parsed_json, f, indent=2, ensure_ascii=False)
+                
+    except Exception as e:
+        logger.warning(f"Error saving legacy log for {agent_name}: {e}")
 
 # ============================================================================
 # REASONING BANK HELPER
@@ -388,10 +439,11 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
                 raise ValueError("No se pudo formatear el prompt técnico")
             
             # Invocar LLM
-            response = llm.invoke([
+            llm_messages = [
                 SystemMessage(content=messages[0]["content"]),
                 HumanMessage(content=messages[1]["content"]),
-            ])
+            ]
+            response = llm.invoke(llm_messages)
             
             # Parsear respuesta JSON
             content = response.content
@@ -412,6 +464,9 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
                     "reasoning": content,
                     "raw_response": True,
                 }
+            
+            # Legacy logging
+            save_legacy_agent_log("technical_enhanced", llm_messages, content, report)
             
             elapsed = (datetime.now() - start_time).total_seconds()
             # Store result in ReasoningBank
@@ -492,10 +547,11 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
             if not messages:
                 raise ValueError("No se pudo formatear el prompt de sentimiento")
             
-            response = llm.invoke([
+            llm_messages = [
                 SystemMessage(content=messages[0]["content"]),
                 HumanMessage(content=messages[1]["content"]),
-            ])
+            ]
+            response = llm.invoke(llm_messages)
             
             content = response.content
             try:
@@ -513,6 +569,9 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
                     "reasoning": content,
                 }
             
+            # Legacy logging
+            save_legacy_agent_log("sentiment", llm_messages, content, report)
+
             elapsed = (datetime.now() - start_time).total_seconds()
             # Persist sentiment analysis in ReasoningBank
             try:
@@ -601,10 +660,11 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
                 },
             ]
             
-            response = llm.invoke([
+            llm_messages = [
                 SystemMessage(content=image_prompt[0]["content"]),
                 HumanMessage(content=vision_content),
-            ])
+            ]
+            response = llm.invoke(llm_messages)
             
             content = response.content
             logger.info(f"🖼️ Visual Agent: Response received, length = {len(content) if content else 0}")
@@ -615,12 +675,17 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
             
             # Parse JSON response
             try:
+                json_str = content
                 if "```json" in content:
                     json_str = content.split("```json")[1].split("```")[0].strip()
                 elif "```" in content:
                     json_str = content.split("```")[1].split("```")[0].strip()
                 else:
-                    json_str = content
+                    # Fallback: intentar extraer el primer objeto JSON
+                    start = content.find("{")
+                    end = content.rfind("}")
+                    if start != -1 and end != -1 and end > start:
+                        json_str = content[start:end + 1]
                 report = json.loads(json_str)
                 # Ensure visual_analysis is present
                 if "visual_analysis" not in report and content:
@@ -634,6 +699,13 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
                     "raw_parse_error": True
                 }
                 logger.warning(f"🖼️ Visual Agent: Could not parse JSON, storing raw content")
+            
+            # Legacy logging - avoid logging base64 image to text file
+            log_messages = [
+                SystemMessage(content=image_prompt[0]["content"]),
+                HumanMessage(content=f"[IMAGE CONTENT HIDDEN] \nPrompt: {image_prompt[1]['content']}"),
+            ]
+            save_legacy_agent_log("visual", log_messages, content, report)
             
             elapsed = (datetime.now() - start_time).total_seconds()
             # Persist visual analysis in ReasoningBank
@@ -703,10 +775,11 @@ def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
             if not messages:
                 raise ValueError("No se pudo formatear el prompt QABBA")
             
-            response = llm.invoke([
+            llm_messages = [
                 SystemMessage(content=messages[0]["content"]),
                 HumanMessage(content=messages[1]["content"]),
-            ])
+            ]
+            response = llm.invoke(llm_messages)
             
             content = response.content
             try:
@@ -724,6 +797,9 @@ def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
                     "reasoning": content,
                 }
             
+            # Legacy logging
+            save_legacy_agent_log("qabba_enhanced", llm_messages, content, report)
+
             elapsed = (datetime.now() - start_time).total_seconds()
             # Store QABBA report in ReasoningBank
             try:
@@ -784,10 +860,11 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
             if not messages:
                 raise ValueError("No se pudo formatear el prompt de decisión")
             
-            response = llm.invoke([
+            llm_messages = [
                 SystemMessage(content=messages[0]["content"]),
                 HumanMessage(content=messages[1]["content"]),
-            ])
+            ]
+            response = llm.invoke(llm_messages)
             
             content = response.content
             try:
@@ -805,6 +882,9 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
                     "combined_reasoning": content,
                 }
             
+            # Legacy logging
+            save_legacy_agent_log("decision_agent", llm_messages, content, report)
+            
             elapsed = (datetime.now() - start_time).total_seconds()
             
             # Store decision in Reasoning Bank
@@ -816,7 +896,7 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
                         prompt=messages[1]["content"][:500],  # User prompt (truncated)
                         result=report,
                         raw_response=content,
-                        backend="groq",
+                        backend=getattr(llm, 'model', 'langchain'),
                         latency_ms=elapsed * 1000,
                     )
                     
@@ -833,7 +913,7 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
                                 prompt=messages[1]["content"],
                                 normalized_result=report,
                                 raw_response=content,
-                                backend="groq",
+                                backend=judge_config.provider,
                                 metadata={"source": "langgraph_orchestrator"},
                                 latency_ms=elapsed * 1000
                             )
@@ -945,10 +1025,11 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             if historical_context:
                 messages[1]["content"] += f"\n\n{historical_context}"
             
-            response = llm.invoke([
+            llm_messages = [
                 SystemMessage(content=messages[0]["content"]),
                 HumanMessage(content=messages[1]["content"]),
-            ])
+            ]
+            response = llm.invoke(llm_messages)
             
             content = response.content
             try:
@@ -965,6 +1046,9 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
                     "reason": content[:200],
                     "risk_notes": content,
                 }
+            
+            # Legacy logging
+            save_legacy_agent_log("risk_manager", llm_messages, content, report)
             
             elapsed = (datetime.now() - start_time).total_seconds()
             

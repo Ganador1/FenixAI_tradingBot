@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Configuration helpers for the ReasoningBank LLM-as-a-Judge component.
 
-The defaults prioritize local execution to avoid paid API calls. You can
+The defaults prioritize Ollama Cloud to avoid external providers unless configured. You can
 override every field via environment variables:
 
 - FENIX_JUDGE_PROVIDER  (default: "ollama")
@@ -34,9 +34,8 @@ class JudgeModelConfig:
 def get_judge_model_config() -> JudgeModelConfig:
     """Read judge configuration from environment variables."""
 
-    provider = os.getenv("FENIX_JUDGE_PROVIDER", "groq").strip() or "groq"
-    # Fallback to qwen2.5:3b as ministral-3:3b requires newer Ollama
-    model_id = os.getenv("FENIX_JUDGE_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+    provider = os.getenv("FENIX_JUDGE_PROVIDER", "ollama_cloud").strip() or "ollama_cloud"
+    model_id = os.getenv("FENIX_JUDGE_MODEL", "deepseek-v3.2:cloud").strip() or "deepseek-v3.2:cloud"
     temperature = float(os.getenv("FENIX_JUDGE_TEMPERATURE", "0.1"))
     max_tokens = int(os.getenv("FENIX_JUDGE_MAX_TOKENS", "512"))
     system_prompt = os.getenv("FENIX_JUDGE_SYSTEM_PROMPT")

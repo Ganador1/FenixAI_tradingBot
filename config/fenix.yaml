@@ -16,8 +16,8 @@ trading:
 agents:
   enable_technical: true
   enable_qabba: true
-  enable_visual: false  # Desactivado por defecto - requiere modelo vision
-  enable_sentiment: false  # Desactivado por defecto - requiere APIs de noticias
+  enable_visual: true  # Activado para pruebas completas
+  enable_sentiment: true  # Activado para pruebas completas
   technical_weight: 0.30
   qabba_weight: 0.30
   visual_weight: 0.25

@@ -41,10 +41,10 @@ class BinanceConfig:
     def __post_init__(self):
         if self.testnet:
             self.base_url = "https://testnet.binancefuture.com"
-            self.ws_url = "wss://stream.binancefuture.com"
+            self.ws_url = "wss://stream.binancefuture.com/ws"  # Testnet WebSocket
         else:
             self.base_url = "https://fapi.binance.com"
-            self.ws_url = "wss://fstream.binance.com"
+            self.ws_url = "wss://fstream.binance.com/ws"
 
 
 class BinanceClient:
@@ -64,9 +64,17 @@ class BinanceClient:
         api_secret: str | None = None,
         testnet: bool = True,
     ):
+        # Usar credenciales de testnet si está habilitado
+        if testnet:
+            default_key = os.getenv("BINANCE_TESTNET_API_KEY", os.getenv("BINANCE_API_KEY", ""))
+            default_secret = os.getenv("BINANCE_TESTNET_API_SECRET", os.getenv("BINANCE_API_SECRET", ""))
+        else:
+            default_key = os.getenv("BINANCE_API_KEY", "")
+            default_secret = os.getenv("BINANCE_API_SECRET", "")
+        
         self.config = BinanceConfig(
-            api_key=api_key or os.getenv("BINANCE_API_KEY", ""),
-            api_secret=api_secret or os.getenv("BINANCE_API_SECRET", ""),
+            api_key=api_key or default_key,
+            api_secret=api_secret or default_secret,
             testnet=testnet,
         )
         

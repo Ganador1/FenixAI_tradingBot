@@ -1,0 +1,23 @@
+# FenixAI Prometheus Configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+rule_files: []
+
+scrape_configs:
+  # FenixAI API metrics
+  - job_name: "fenixai"
+    static_configs:
+      - targets: ["fenix-api:8000"]
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

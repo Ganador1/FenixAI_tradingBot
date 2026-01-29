@@ -60,6 +60,8 @@ close_buf: Deque[float] = deque(maxlen=MAXLEN)
 high_buf: Deque[float] = deque(maxlen=MAXLEN)
 low_buf: Deque[float] = deque(maxlen=MAXLEN)
 vol_buf: Deque[float] = deque(maxlen=MAXLEN)
+open_buf: Deque[float] = deque(maxlen=MAXLEN)  # Added for chart generation
+timestamp_buf: Deque[int] = deque(maxlen=MAXLEN)  # Unix timestamp in milliseconds
 
 # Buffers for calculated indicator values (stores only the latest value)
 # These are updated by _calculate_and_store_all_indicators
@@ -173,10 +175,19 @@ def validate_kline_data(close: float, high: float, low: float, volume: float) ->
         return False
     return True
 
-def add_kline(close: float, high: float, low: float, volume: float) -> bool:
+def add_kline(close: float, high: float, low: float, volume: float, 
+              open_price: Optional[float] = None, timestamp: Optional[int] = None) -> bool:
     """
     Adds a new k-line data point to the buffers and recalculates indicators.
     Thread-safe. Returns True if successful, False otherwise.
+    
+    Args:
+        close: Close price
+        high: High price
+        low: Low price
+        volume: Volume
+        open_price: Open price (optional, will be synthesized from previous close if not provided)
+        timestamp: Unix timestamp in milliseconds (optional, will use current time if not provided)
     """
     if not validate_kline_data(close, high, low, volume):
         logger.error(f"Invalid k-line data provided to add_kline: C={close}, H={high}, L={low}, V={volume}")
@@ -184,12 +195,29 @@ def add_kline(close: float, high: float, low: float, volume: float) -> bool:
     
     # Ensure values are float after validation
     close_f, high_f, low_f, vol_f = float(close), float(high), float(low), float(volume)
+    
+    # Handle open price - synthesize from previous close if not provided
+    if open_price is not None:
+        open_f = float(open_price)
+    elif len(close_buf) > 0:
+        open_f = float(close_buf[-1])  # Use previous close as open
+    else:
+        open_f = close_f  # First candle: open = close
+    
+    # Handle timestamp - use current time if not provided
+    if timestamp is not None:
+        ts = int(timestamp)
+    else:
+        import time as time_module
+        ts = int(time_module.time() * 1000)
 
     with _buffer_lock:
         close_buf.append(close_f)
         high_buf.append(high_f)
         low_buf.append(low_f)
         vol_buf.append(vol_f)
+        open_buf.append(open_f)
+        timestamp_buf.append(ts)
 
         # Recalculate all indicators and update cache if enough data
         if len(close_buf) >= MIN_CANDLES_FOR_CALC: # Use a less strict minimum for attempting calculation

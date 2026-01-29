@@ -68,6 +68,7 @@ dev = [
     "mypy>=1.4",
     "pytest>=7.4",
     "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
     "bandit>=1.7",
     "sphinx>=7.1",
     "myst-parser>=2.0"
@@ -145,3 +146,30 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
+
+# --- Coverage Configuration ---
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/migrations/*",
+    "src/system/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+fail_under = 40
+show_missing = true
+skip_covered = false
+
+[tool.coverage.html]
+directory = "htmlcov"
+

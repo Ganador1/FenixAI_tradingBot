@@ -4,17 +4,17 @@
 system:
   name: "Advanced Trading System"
   version: "1.0.0"
-  environment: "development"  # development, staging, production
+  environment: "development" # development, staging, production
   debug: true
   log_level: "INFO"
-  
+
   # Configuración de timeouts
   timeouts:
     component_startup: 60
     graceful_shutdown: 30
     health_check: 10
     operation_timeout: 30
-  
+
   # Configuración de reintentos
   retry:
     max_attempts: 3
@@ -26,7 +26,7 @@ logging:
   enabled: true
   level: "INFO"
   format: "json"
-  
+
   # Configuración de archivos
   files:
     main_log: "logs/system.log"
@@ -34,75 +34,75 @@ logging:
     audit_log: "logs/audit.log"
     max_size: "100MB"
     backup_count: 5
-  
+
   # Configuración de Elasticsearch (opcional)
   elasticsearch:
     enabled: false
     hosts: ["localhost:9200"]
     index_prefix: "trading_system"
-  
+
   # Configuración de correlación de eventos
   correlation:
     enabled: true
-    window_size: 300  # segundos
+    window_size: 300 # segundos
     max_correlations: 1000
 
 # Configuración de Métricas Avanzadas
 metrics:
   enabled: true
-  collection_interval: 10  # segundos
+  collection_interval: 10 # segundos
   retention_days: 30
   scorecards_exporter:
     enabled: true
     port: 9105
     scan_interval: 10
     scorecard_dir: "monitoring/scorecards"
-  
+
   # Configuración de Prometheus
   prometheus:
-    enabled: false
+    enabled: true
     port: 9090
     endpoint: "/metrics"
-  
+
   # Configuración de alertas
   alerts:
     enabled: true
     email_notifications: false
     slack_notifications: false
-    
+
   # Configuración de dashboards
   dashboards:
     enabled: true
-    auto_refresh: 30  # segundos
+    auto_refresh: 30 # segundos
     port: 8050
 
 # Configuración de Monitoreo de Salud
 health_monitoring:
   enabled: true
-  check_interval: 30  # segundos
-  
+  check_interval: 30 # segundos
+
   # Umbrales de alerta
   thresholds:
-    cpu_usage: 80  # porcentaje
-    memory_usage: 85  # porcentaje
-    disk_usage: 90  # porcentaje
-    response_time: 5000  # milisegundos
-  
+    cpu_usage: 80 # porcentaje
+    memory_usage: 85 # porcentaje
+    disk_usage: 90 # porcentaje
+    response_time: 5000 # milisegundos
+
   # Auto-recuperación
   auto_recovery:
     enabled: true
     max_restart_attempts: 3
-    restart_delay: 60  # segundos
+    restart_delay: 60 # segundos
 
 # Configuración de Análisis de Rendimiento
 performance:
   enabled: true
   profiling:
     enabled: true
-    sample_rate: 0.1  # 10% de las operaciones
+    sample_rate: 0.1 # 10% de las operaciones
     memory_profiling: true
     line_profiling: false
-  
+
   # Detección de cuellos de botella
   bottleneck_detection:
     enabled: true
@@ -114,11 +114,11 @@ performance:
 dependencies:
   enabled: true
   auto_install: false
-  check_interval: 3600  # segundos
-  
+  check_interval: 3600 # segundos
+
   # Métodos de instalación preferidos
   installation_methods: ["pip", "conda"]
-  
+
   # Configuración de conflictos
   conflict_resolution:
     auto_resolve: false
@@ -127,18 +127,18 @@ dependencies:
 # Configuración de Contenedores y Orquestación
 containers:
   enabled: false
-  platform: "docker"  # docker, kubernetes
-  
+  platform: "docker" # docker, kubernetes
+
   # Configuración de Docker
   docker:
     socket_path: "/var/run/docker.sock"
     registry: "localhost:5000"
-  
+
   # Configuración de Kubernetes
   kubernetes:
     config_file: "~/.kube/config"
     namespace: "trading-system"
-  
+
   # Auto-escalado
   auto_scaling:
     enabled: true
@@ -152,10 +152,10 @@ documentation:
   enabled: true
   auto_generate: true
   output_directory: "docs"
-  
+
   # Formatos de salida
   formats: ["html", "markdown", "pdf"]
-  
+
   # Configuración de diagramas
   diagrams:
     enabled: true
@@ -167,15 +167,15 @@ dynamic_config:
   enabled: true
   hot_reload: true
   backup_enabled: true
-  backup_interval: 3600  # segundos
-  
+  backup_interval: 3600 # segundos
+
   # Fuentes de configuración
   sources:
     - type: "file"
       path: "config/"
     - type: "environment"
       prefix: "TRADING_"
-  
+
   # Versionado
   versioning:
     enabled: true
@@ -184,32 +184,32 @@ dynamic_config:
 # Configuración de Integración Multi-Exchange
 exchanges:
   enabled: true
-  
+
   # Configuración de exchanges
   binance:
     enabled: false
     api_key: ""
     api_secret: ""
     testnet: true
-  
+
   coinbase:
     enabled: false
     api_key: ""
     api_secret: ""
     passphrase: ""
     sandbox: true
-  
+
   kraken:
     enabled: false
     api_key: ""
     api_secret: ""
-  
+
   # Configuración de failover
   failover:
     enabled: true
     max_retries: 3
-    retry_delay: 5  # segundos
-  
+    retry_delay: 5 # segundos
+
   # Agregación de liquidez
   liquidity_aggregation:
     enabled: true
@@ -218,19 +218,19 @@ exchanges:
 # Configuración de Backtesting Avanzado
 backtesting:
   enabled: true
-  
+
   # Configuración de datos
   data:
-    source: "file"  # file, database, api
+    source: "file" # file, database, api
     directory: "data/"
     formats: ["csv", "parquet"]
-  
+
   # Configuración de simulación
   simulation:
     initial_capital: 100000
-    commission: 0.001  # 0.1%
-    slippage: 0.0005   # 0.05%
-  
+    commission: 0.001 # 0.1%
+    slippage: 0.0005 # 0.05%
+
   # Configuración de métricas
   metrics:
     calculate_all: true
@@ -239,51 +239,51 @@ backtesting:
 # Configuración de Gestión de Riesgo
 risk_management:
   enabled: true
-  
+
   # Límites de posición
   position_limits:
-    max_position_size: 0.1  # 10% del portafolio
-    max_sector_exposure: 0.3  # 30% del portafolio
+    max_position_size: 0.1 # 10% del portafolio
+    max_sector_exposure: 0.3 # 30% del portafolio
     max_correlation: 0.7
-  
+
   # Gestión de VaR
   var:
     confidence_level: 0.95
-    time_horizon: 1  # días
-    method: "historical"  # historical, parametric, monte_carlo
-  
+    time_horizon: 1 # días
+    method: "historical" # historical, parametric, monte_carlo
+
   # Stop loss y take profit
   stops:
-    default_stop_loss: 0.02  # 2%
-    default_take_profit: 0.06  # 6%
+    default_stop_loss: 0.02 # 2%
+    default_take_profit: 0.06 # 6%
 
 # Configuración de Calidad de Datos
 data_quality:
   enabled: true
-  
+
   # Validaciones
   validations:
     price_range_check: true
     volume_check: true
     timestamp_check: true
     duplicate_check: true
-  
+
   # Limpieza automática
   auto_cleaning:
     enabled: true
     outlier_detection: true
-    missing_data_handling: "interpolate"  # drop, interpolate, forward_fill
+    missing_data_handling: "interpolate" # drop, interpolate, forward_fill
 
 # Configuración de Optimización Bayesiana
 optimization:
   enabled: true
-  
+
   # Configuración del optimizador
   optimizer:
     n_calls: 100
     n_initial_points: 10
-    acquisition_function: "EI"  # EI, PI, LCB
-  
+    acquisition_function: "EI" # EI, PI, LCB
+
   # Configuración de parámetros
   parameter_space:
     continuous_params: 10
@@ -293,17 +293,17 @@ optimization:
 # Configuración de Detección de Régimen de Mercado
 regime_detection:
   enabled: true
-  
+
   # Configuración de modelos
   models:
     hmm:
       n_states: 3
       covariance_type: "full"
-    
+
     clustering:
       n_clusters: 4
       algorithm: "kmeans"
-  
+
   # Configuración de características
   features:
     returns: true
@@ -314,16 +314,16 @@ regime_detection:
 # Configuración de Base de Datos
 database:
   enabled: false
-  
+
   # Configuración principal
   main:
-    type: "postgresql"  # postgresql, mysql, sqlite
+    type: "postgresql" # postgresql, mysql, sqlite
     host: "localhost"
     port: 5432
     database: "trading_system"
     username: "trader"
     password: ""
-  
+
   # Configuración de Redis
   redis:
     enabled: false
@@ -336,13 +336,13 @@ api:
   enabled: false
   host: "0.0.0.0"
   port: 8000
-  
+
   # Configuración de autenticación
   authentication:
     enabled: true
-    method: "jwt"  # jwt, api_key, oauth
+    method: "jwt" # jwt, api_key, oauth
     secret_key: "your-secret-key"
-  
+
   # Configuración de CORS
   cors:
     enabled: true
@@ -351,7 +351,7 @@ api:
 # Configuración de Notificaciones
 notifications:
   enabled: false
-  
+
   # Email
   email:
     enabled: false
@@ -359,13 +359,13 @@ notifications:
     smtp_port: 587
     username: ""
     password: ""
-  
+
   # Slack
   slack:
     enabled: false
     webhook_url: ""
     channel: "#trading-alerts"
-  
+
   # Telegram
   telegram:
     enabled: false
@@ -375,14 +375,14 @@ notifications:
 # Configuración de Seguridad
 security:
   enabled: true
-  
+
   # Encriptación
   encryption:
     enabled: true
     algorithm: "AES-256"
     key_rotation: true
-    rotation_interval: 86400  # segundos
-  
+    rotation_interval: 86400 # segundos
+
   # Auditoría
   audit:
     enabled: true

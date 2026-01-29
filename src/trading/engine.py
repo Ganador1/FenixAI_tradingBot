@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any
 
 from src.trading.market_data import MarketDataManager, get_market_data_manager
 from src.trading.executor import OrderExecutor, OrderResult
-from src.tools.technical_tools import add_kline, get_current_indicators, close_buf, high_buf, low_buf, vol_buf
+from src.tools.technical_tools import add_kline, get_current_indicators, close_buf, high_buf, low_buf, vol_buf, open_buf, timestamp_buf
 from src.tools.chart_generator import FenixChartGenerator
 from src.tools.enhanced_news_scraper import EnhancedNewsScraper
 from src.tools.twitter_scraper import TwitterScraper
@@ -46,6 +47,13 @@ try:
     from src.config.config_loader import APP_CONFIG
 except ImportError:
     APP_CONFIG = None
+
+try:
+    from src.risk.runtime_risk_manager import RuntimeRiskManager, get_risk_manager
+    RISK_MANAGER_AVAILABLE = True
+except ImportError:
+    RISK_MANAGER_AVAILABLE = False
+    get_risk_manager = None
 
 logger = logging.getLogger("FenixTradingEngine")
 
@@ -114,16 +122,19 @@ class TradingEngine:
         self._last_decision_time: datetime | None = None
         self._consecutive_holds = 0
         self._kline_count = 0
-        self._min_klines_to_start = 20
+        self._min_klines_to_start = int(os.getenv("FENIX_MIN_KLINES_TO_START", "20"))
 
         # LangGraph
         self._trading_graph: FenixTradingGraph | None = None
         self.enable_visual = enable_visual_agent
         self.enable_sentiment = enable_sentiment_agent
 
-        # Logging
-        self.signal_log_path = Path("logs/signal_trace.jsonl")
-        self.signal_log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Inicializar RiskManager
+        self.risk_manager = get_risk_manager() if RISK_MANAGER_AVAILABLE else None
+        if self.risk_manager:
+            logger.info("✅ RuntimeRiskManager initialized")
+        else:
+            logger.warning("⚠️ RuntimeRiskManager not available")
 
         logger.info(
             f"TradingEngine initialized: {symbol}@{timeframe} "
@@ -202,12 +213,14 @@ class TradingEngine:
     async def _on_kline_received(self, kline_data: dict[str, Any]) -> None:
         """Callback cuando se recibe una nueva kline."""
         try:
-            # Agregar kline al buffer de indicadores
+            # Agregar kline al buffer de indicadores (with open and timestamp)
             add_kline(
                 close=kline_data["close"],
                 high=kline_data["high"],
                 low=kline_data["low"],
                 volume=kline_data["volume"],
+                open_price=kline_data.get("open"),
+                timestamp=kline_data.get("open_time"),
             )
             self._kline_count += 1
 
@@ -323,14 +336,14 @@ class TradingEngine:
             chart_b64 = None
             if self.enable_visual:
                 try:
-                    # Construct kline data from buffers
+                    # Construct kline data from buffers with proper OHLCV and timestamps
                     kline_data = {
+                        "open": list(open_buf),
                         "close": list(close_buf),
                         "high": list(high_buf),
                         "low": list(low_buf),
                         "volume": list(vol_buf),
-                        # Simple index as datetime proxy if real timestamps not available in buffers
-                        "datetime": [datetime.now(timezone.utc).isoformat() for _ in range(len(close_buf))] 
+                        "datetime": list(timestamp_buf)  # Unix timestamps in milliseconds
                     }
                     chart_result = self.chart_generator.generate_chart(
                         kline_data=kline_data,
@@ -487,11 +500,39 @@ class TradingEngine:
         confidence: str,
         decision_data: dict[str, Any],
     ) -> None:
-        """Ejecuta un trade basado en la decisión."""
+        """Ejecuta un trade basado en la decisión con RiskManager activo."""
         logger.info(f"🎯 Executing {decision} trade...")
 
         self._consecutive_holds = 0
         self._last_decision_time = datetime.now(timezone.utc)
+
+        # --- CIRCUIT BREAKER: Evaluar riesgo AVANZADO ---
+        if self.risk_manager and RISK_MANAGER_AVAILABLE:
+            # Actualizar balance para métricas de riesgo
+            try:
+                if self.executor.get_balance():
+                    self.risk_manager.update_balance(self.executor.get_balance())
+            except Exception as e:
+                logger.warning(f"Could not update risk manager balance: {e}")
+            
+            # Verificar si el trade está permitido
+            base_size = decision_data.get("position_size", 1000)  # Default $1000
+            allowed, risk_status = self.risk_manager.check_trade_allowed(self.symbol, base_size)
+            
+            if not allowed:
+                logger.critical(f"🚨 TRADE BLOCKED BY CIRCUIT BREAKER: {risk_status.describe()}")
+                if self.on_agent_event:
+                    await self.on_agent_event("risk:blocked", {
+                        "status": risk_status.dict(),
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                return
+            
+            # Aplicar risk_bias al tamaño
+            adjusted_size = self.risk_manager.get_adjusted_size(base_size)
+            if adjusted_size != base_size:
+                logger.info(f"Size adjusted by risk manager: ${base_size:.2f} → ${adjusted_size:.2f}")
+        # --- FIN CIRCUIT BREAKER ---
 
         if self.paper_trading:
             logger.info(f"📝 PAPER TRADE: Would {decision} at {self.market_data.current_price}")
@@ -509,14 +550,18 @@ class TradingEngine:
         stop_loss = risk_data.get("stop_loss")
         take_profit = risk_data.get("take_profit")
 
-        # Calcular tamaño de posición (simplificado - en producción usar RiskManager)
+        # Calcular tamaño de posición (ajustado por RiskManager)
         balance = self.executor.get_balance()
         if balance is None:
             logger.error("Could not get balance, aborting trade")
             return
 
         # Calcular cantidad basada en riesgo
-        position_size = balance * (APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01)
+        if hasattr(self, 'adjusted_size') and adjusted_size:
+            position_size = adjusted_size
+        else:
+            position_size = balance * (APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01)
+        
         quantity = position_size / entry_price
         
         # Verificar min notional
@@ -542,7 +587,8 @@ class TradingEngine:
             logger.info(
                 f"✅ Trade executed: {decision} {result.executed_qty} @ {result.entry_price}"
             )
-            # Update ReasoningBank with trade outcome (for audit and self-judgment)
+            
+            # --- ACTUALIZAR REASONING BANK ---
             try:
                 digest = decision_data.get('_reasoning_digest') or decision_data.get('reasoning_prompt_digest')
                 if digest:
@@ -556,8 +602,32 @@ class TradingEngine:
                     )
             except Exception as e:
                 logger.debug(f"Failed to attach trade outcome to ReasoningBank: {e}")
+            
+            # --- ACTUALIZAR RISK MANAGER ---
+            if self.risk_manager and RISK_MANAGER_AVAILABLE:
+                try:
+                    # Crear record de trade para métricas
+                    from src.risk.runtime_risk_manager import TradeRecord
+                    trade_record = TradeRecord(
+                        trade_id=str(result.order_id) if result.order_id else "paper_trade",
+                        timestamp=datetime.now(timezone.utc),
+                        symbol=self.symbol,
+                        decision=decision,
+                        entry_price=float(result.entry_price) if result.entry_price else 0.0,
+                        exit_price=None,  # Se actualizará cuando cierre
+                        pnl=0.0,  # Se actualizará cuando cierre
+                        pnl_pct=0.0,
+                        success=True,  # Se actualizará cuando sepa el resultado
+                        size=float(result.executed_qty) * float(result.entry_price) if result.executed_qty and result.entry_price else 0.0
+                    )
+                    self.risk_manager.record_trade(trade_record)
+                    logger.info(f"Trade recorded in RiskManager: {self.risk_manager.current_status.describe()}")
+                except Exception as e:
+                    logger.warning(f"Could not record trade in RiskManager: {e}")
         else:
             logger.error(f"❌ Trade failed: {result.status} - {result.message}")
+            
+            # --- ACTUALIZAR REASONING BANK PARA TRADE FALLIDO ---
             try:
                 digest = decision_data.get('_reasoning_digest') or decision_data.get('reasoning_prompt_digest')
                 if digest:
@@ -570,6 +640,32 @@ class TradingEngine:
                     )
             except Exception as e:
                 logger.debug(f"Failed to attach failed trade outcome to ReasoningBank: {e}")
+            
+            # --- ACTUALIZAR RISK MANAGER PARA TRADE FALLIDO ---
+            if self.risk_manager and RISK_MANAGER_AVAILABLE:
+                try:
+                    from src.risk.runtime_risk_manager import TradeRecord
+                    trade_record = TradeRecord(
+                        trade_id=str(result.order_id) if result.order_id else "failed_trade",
+                        timestamp=datetime.now(timezone.utc),
+                        symbol=self.symbol,
+                        decision=decision,
+                        entry_price=float(result.entry_price) if result.entry_price else 0.0,
+                        exit_price=None,
+                        pnl=0.0,
+                        pnl_pct=0.0,
+                        success=False,
+                        size=0.0
+                    )
+                    self.risk_manager.record_trade(trade_record)
+                except Exception as e:
+                    logger.warning(f"Could not record failed trade: {e}")
+
+    def get_risk_status(self) -> Optional[Dict[str, Any]]:
+        """Retorna el estado del RiskManager para el dashboard."""
+        if self.risk_manager and RISK_MANAGER_AVAILABLE:
+            return self.risk_manager.get_status_summary()
+        return None
 
     def _log_signal(
         self,

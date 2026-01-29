@@ -10,7 +10,7 @@
 # ============================================================================
 # CONFIGURACIÓN ACTIVA (cambiar según necesidad)
 # ============================================================================
-active_profile: "groq_free"  # Opciones: all_local, mixed_providers, mlx_optimized, all_cloud, bench_hf, groq_free
+active_profile: "ollama_cloud"  # Opciones: all_local, mixed_providers, mlx_optimized, all_cloud, bench_hf, groq_free, ollama_cloud
 
 # ============================================================================
 # PERFIL 1: ALL LOCAL (Ollama)
@@ -44,8 +44,6 @@ all_local:
     supports_vision: false
     fallback_provider_type: "ollama_local"
     fallback_model_name: "gemma3:1b"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "gemma3:1b"
     api_base: "http://localhost:11434"
   
   visual:
@@ -55,8 +53,6 @@ all_local:
     max_tokens: 1200
     timeout: 90
     supports_vision: true
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen2.5vl:7b-q4_K_M"
     fallback_provider_type: "ollama_local"
     fallback_model_name: "qwen2.5vl:7b-q4_K_M"
     api_base: "http://localhost:11434"
@@ -70,8 +66,6 @@ all_local:
     supports_vision: false
     fallback_provider_type: "ollama_local"
     fallback_model_name: "adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M"
     api_base: "http://localhost:11434"
   
   decision:
@@ -83,8 +77,6 @@ all_local:
     supports_vision: false
     fallback_provider_type: "ollama_local"
     fallback_model_name: "qwen2.5:7b"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen2.5:7b" 
     api_base: "http://localhost:11434"
 
 # ============================================================================
@@ -431,3 +423,84 @@ bench_hf:
       provider: "together"
     fallback_provider_type: "together"
     fallback_model_name: "Qwen/Qwen2.5-72B-Instruct"
+
+# ============================================================================
+# PERFIL 6: OLLAMA CLOUD (Modelos Potentes en la Nube de Ollama)
+# ============================================================================
+# Ventajas:
+# - Modelos muy potentes (hasta 671B parámetros)
+# - Sin necesidad de GPU local
+# - Privacidad con Ollama
+# - Balance entre costo y rendimiento
+# Desventajas:
+# - Requiere cuenta Ollama Cloud
+# - Latencia de red
+# ============================================================================
+ollama_cloud:
+  sentiment:
+    provider_type: "ollama_cloud"
+    model_name: "qwen3-next:80b-cloud"  # Excelente para análisis de texto y sentimiento
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 60
+    supports_vision: false
+    api_base: "http://localhost:11434"  # Ollama local conecta a cloud automáticamente
+    fallback_provider_type: "ollama_local"
+    fallback_model_name: "qwen2.5:7b"
+  
+  technical:
+    provider_type: "ollama_cloud"
+    model_name: "deepseek-v3.2:cloud"  # Óptimo para análisis numérico y técnico
+    temperature: 0.1
+    max_tokens: 2000
+    timeout: 90
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_local"
+    fallback_model_name: "gemma3:1b"
+  
+  visual:
+    provider_type: "ollama_cloud"
+    model_name: "gemini-3-flash-preview:cloud"  # Modelo multimodal rápido
+    temperature: 0.1
+    max_tokens: 1200
+    timeout: 90
+    supports_vision: true
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_local"
+    fallback_model_name: "qwen2.5vl:7b-q4_K_M"
+  
+  qabba:
+    provider_type: "ollama_cloud"
+    model_name: "kimi-k2-thinking:cloud"  # Razonamiento profundo para análisis cuantitativo
+    temperature: 0.05
+    max_tokens: 900
+    timeout: 120
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_local"
+    fallback_model_name: "adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M"
+  
+  decision:
+    provider_type: "ollama_cloud"
+    model_name: "deepseek-v3.1:671b-cloud"  # El más potente para decisiones críticas
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 150
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_local"
+    fallback_model_name: "qwen2.5:7b"
+
+  risk_manager:
+    provider_type: "ollama_cloud"
+    model_name: "nemotron-3-nano:30b-cloud"  # Rápido y eficiente para cálculos de riesgo
+    temperature: 0.1
+    max_tokens: 1000
+    timeout: 45
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    extra_config:
+      reasoning: "conservative"
+    fallback_provider_type: "ollama_local"
+    fallback_model_name: "qwen2.5:7b-instruct-q5_k_m"

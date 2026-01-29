@@ -209,3 +209,14 @@ local_config.yaml
 test_output/
 debug_*.log
 debug_*.py
+
+# ============================================================================
+# External AI Agent Files (Do not commit)
+# ============================================================================
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md

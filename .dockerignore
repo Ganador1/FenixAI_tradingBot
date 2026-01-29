@@ -1,0 +1,77 @@
+# ==============================================================================
+# FenixAI Trading Bot - Docker Ignore
+# ==============================================================================
+
+# Virtual environments
+fenix_env/
+.venv/
+venv/
+env/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Testing
+htmlcov/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.tox/
+
+# Logs (will be mounted as volume)
+logs/
+*.log
+
+# Data (will be mounted as volume)
+data/
+
+# Documentation artifacts
+docs/_build/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Environment files (secrets)
+.env
+.env.local
+.env.production
+
+# AI Agent files
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Sensitive config
+config/secrets/
+
+# Local development
+docker-compose.override.yml

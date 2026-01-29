@@ -1,0 +1,115 @@
+# ==============================================================================
+# FenixAI Trading Bot - Docker Compose
+# ==============================================================================
+# Usage: docker-compose up -d
+# ==============================================================================
+
+services:
+  # =============================================================================
+  # FenixAI API Server
+  # =============================================================================
+  fenix-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fenix-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Database
+      - DATABASE_URL=sqlite:///./data/fenix.db
+      # Secrets from .env file
+      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
+      - JWT_SECRET=${JWT_SECRET:-development-secret-change-in-production}
+      # Ollama connection (for local LLM)
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      # Prometheus
+      - PROMETHEUS_ENABLED=true
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - fenix-network
+    depends_on:
+      - prometheus
+
+  # =============================================================================
+  # Prometheus - Metrics Collection
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    container_name: fenix-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - fenix-network
+
+  # =============================================================================
+  # Grafana - Visualization
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:10.3.0
+    container_name: fenix-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-fenix2024}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - fenix-network
+    depends_on:
+      - prometheus
+
+  # =============================================================================
+  # Redis - Cache & Session Store (Optional)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: fenix-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - fenix-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  fenix-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  prometheus-data:
+  grafana-data:
+  redis-data:
