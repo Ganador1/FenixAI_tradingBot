@@ -20,6 +20,8 @@ from typing import Any, Callable
 
 import websockets
 
+from src.trading.binance_client import BinanceClient
+
 logger = logging.getLogger("FenixMarketData")
 
 
@@ -128,6 +130,9 @@ class MarketDataManager:
         
         self._running = True
         logger.info(f"Starting MarketDataManager for {self.symbol}")
+
+        # Prefill de velas históricas para evitar gráficos vacíos en timeframes cortos
+        await self._prefill_klines()
         
         # Iniciar tareas de WebSocket
         self._tasks = [
@@ -137,6 +142,50 @@ class MarketDataManager:
         ]
         
         logger.info("All WebSocket connections started")
+
+    async def _prefill_klines(self, limit: int = 200) -> None:
+        """Carga velas históricas al iniciar para llenar buffers y gráficos."""
+        try:
+            client = BinanceClient(testnet=self.use_testnet)
+            if not await client.connect():
+                logger.warning("Could not connect to Binance for prefill")
+                return
+
+            klines = await client.get_klines(self.symbol, self.timeframe, limit=limit)
+            if not klines:
+                logger.warning("No historical klines for prefill")
+                await client.close()
+                return
+
+            for k in klines:
+                kline_data = {
+                    "symbol": self.symbol,
+                    "timeframe": self.timeframe,
+                    "open_time": k.get("timestamp"),
+                    "close_time": k.get("close_time"),
+                    "open": float(k.get("open", 0)),
+                    "high": float(k.get("high", 0)),
+                    "low": float(k.get("low", 0)),
+                    "close": float(k.get("close", 0)),
+                    "volume": float(k.get("volume", 0)),
+                    "is_closed": False,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+                for callback in self._kline_callbacks:
+                    try:
+                        if asyncio.iscoroutinefunction(callback):
+                            await callback(kline_data)
+                        else:
+                            callback(kline_data)
+                    except Exception as e:
+                        logger.error(f"Error in kline prefill callback: {e}")
+
+            await client.close()
+            logger.info(f"Prefilled {len(klines)} historical klines")
+
+        except Exception as e:
+            logger.warning(f"Prefill klines failed: {e}")
     
     async def stop(self) -> None:
         """Detiene todas las conexiones."""

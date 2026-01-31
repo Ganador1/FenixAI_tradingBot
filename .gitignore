@@ -220,3 +220,11 @@ IDENTITY.md
 SOUL.md
 TOOLS.md
 USER.md
+
+# ============================================================================
+# Test Artifacts & Logs
+# ============================================================================
+FENIX_V3_TEST_OUTPUT_KIMI.txt
+startup_debug.log
+run_paper_test.sh
+run_v3_test.sh

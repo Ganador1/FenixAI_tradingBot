@@ -34,8 +34,8 @@ class JudgeModelConfig:
 def get_judge_model_config() -> JudgeModelConfig:
     """Read judge configuration from environment variables."""
 
-    provider = os.getenv("FENIX_JUDGE_PROVIDER", "ollama_cloud").strip() or "ollama_cloud"
-    model_id = os.getenv("FENIX_JUDGE_MODEL", "deepseek-v3.2:cloud").strip() or "deepseek-v3.2:cloud"
+    provider = os.getenv("FENIX_JUDGE_PROVIDER", "ollama").strip() or "ollama"
+    model_id = os.getenv("FENIX_JUDGE_MODEL", "nemotron-3-nano:30b-cloud").strip() or "nemotron-3-nano:30b-cloud"
     temperature = float(os.getenv("FENIX_JUDGE_TEMPERATURE", "0.1"))
     max_tokens = int(os.getenv("FENIX_JUDGE_MAX_TOKENS", "512"))
     system_prompt = os.getenv("FENIX_JUDGE_SYSTEM_PROMPT")

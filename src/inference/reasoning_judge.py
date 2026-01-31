@@ -184,21 +184,71 @@ class ReasoningLLMJudge:
     def _parse_response(self, text: str) -> Optional[Dict[str, Any]]:
         if not text:
             return None
+        
+        # First try direct parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Try to extract JSON substring
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                logger.debug("ReasoningLLMJudge: no JSON detected in response.")
-                return None
-            snippet = text[start : end + 1]
+            pass
+        
+        # Strip thinking markers if present (e.g., "Thinking...\n...done thinking.\n")
+        clean_text = text
+        if "...done thinking" in text:
+            parts = text.split("...done thinking")
+            if len(parts) > 1:
+                clean_text = parts[-1].strip()
+                if clean_text.startswith("."):
+                    clean_text = clean_text[1:].strip()
+        
+        # Try to find JSON in code blocks first (```json ... ```)
+        import re
+        json_block_match = re.search(r'```json\s*\n?(.*?)\n?```', clean_text, re.DOTALL)
+        if json_block_match:
             try:
-                return json.loads(snippet)
-            except Exception:
-                logger.debug("ReasoningLLMJudge: failed to parse JSON snippet.")
-                return None
+                return json.loads(json_block_match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+        
+        # Find all potential JSON objects by matching balanced braces
+        def find_json_objects(s: str) -> list:
+            objects = []
+            depth = 0
+            start = None
+            for i, char in enumerate(s):
+                if char == '{':
+                    if depth == 0:
+                        start = i
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        objects.append(s[start:i+1])
+                        start = None
+            return objects
+        
+        json_objects = find_json_objects(clean_text)
+        
+        # Try parsing from last to first (most recent JSON is likely the answer)
+        for obj_str in reversed(json_objects):
+            try:
+                parsed = json.loads(obj_str)
+                # Validate it has expected fields
+                if isinstance(parsed, dict) and "verdict" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        
+        # Fallback: try any valid JSON object
+        for obj_str in reversed(json_objects):
+            try:
+                parsed = json.loads(obj_str)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        
+        logger.debug("ReasoningLLMJudge: no valid JSON found in response.")
+        return None
 
 
 _judge_instance: Optional[ReasoningLLMJudge] = None

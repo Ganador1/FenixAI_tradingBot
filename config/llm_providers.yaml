@@ -335,6 +335,89 @@ all_cloud:
 # OLLAMA_CLOUD_URL=https://...    # Para provider_type: "ollama_cloud"
 
 # ============================================================================
+# PERFIL 7: OLLAMA 1MIN OPTIMIZED (Rotación de Modelos Analizada)
+# ============================================================================
+# Perfil optimizado para timeframe 1min basado en análisis de modelos.
+# Cada modelo fue seleccionado según su especialización y velocidad.
+#
+# Asignación por agente:
+# - Technical: ministral-3:14b-cloud (98/100) - Técnico/instruct
+# - Sentiment: glm-4.7:cloud (98/100) - Chat/multilingual
+# - QABBA: deepseek-v3.2:cloud (95/100) - Técnico/coding
+# - Visual: gemini-3-flash-preview:cloud (95/100) - Visión rápida
+# - Decision: minimax-m2.1:cloud (92/100) - Razonamiento/decisiones
+# - Risk: devstral-small-2:24b-cloud (95/100) - Razonamiento/técnico
+#
+# Latencia total estimada del pipeline: ~7-8 segundos
+# ============================================================================
+ollama_1min_optimized:
+  technical:
+    provider_type: "ollama_cloud"
+    model_name: "ministral-3:14b-cloud"
+    temperature: 0.05
+    max_tokens: 2500
+    timeout: 8
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "rnj-1:8b-cloud"
+
+  sentiment:
+    provider_type: "ollama_cloud"
+    model_name: "glm-4.7:cloud"
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 6
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "rnj-1:8b-cloud"
+
+  qabba:
+    provider_type: "ollama_cloud"
+    model_name: "deepseek-v3.2:cloud"
+    temperature: 0.05
+    max_tokens: 1200
+    timeout: 7
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "ministral-3:14b-cloud"
+
+  visual:
+    provider_type: "ollama_cloud"
+    model_name: "gemini-3-flash-preview:cloud"
+    temperature: 0.05
+    max_tokens: 1500
+    timeout: 10
+    supports_vision: true
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "ministral-3:14b-cloud"
+
+  decision:
+    provider_type: "ollama_cloud"
+    model_name: "minimax-m2.1:cloud"
+    temperature: 0.1
+    max_tokens: 2000
+    timeout: 12
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "devstral-small-2:24b-cloud"
+
+  risk_manager:
+    provider_type: "ollama_cloud"
+    model_name: "devstral-small-2:24b-cloud"
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 10
+    supports_vision: false
+    api_base: "http://localhost:11434"
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "ministral-3:14b-cloud"
+
+# ============================================================================
 # NOTAS DE CONFIGURACIÓN
 # ============================================================================
 # 1. Los valores de api_key se leen automáticamente desde variables de entorno
@@ -343,6 +426,7 @@ all_cloud:
 # 4. Puedes crear perfiles personalizados copiando uno existente
 # 5. Los timeouts son en segundos
 # 6. Temperature más bajo = respuestas más determinísticas
+# 7. Para evaluación continua de modelos, usa: src/core/model_rotation_production.py
 # ============================================================================
 # PERFIL 5: BENCH_HF (Pruebas HF Inference con Thinking models)
 # ============================================================================
@@ -438,69 +522,111 @@ bench_hf:
 # ============================================================================
 ollama_cloud:
   sentiment:
-    provider_type: "ollama_cloud"
-    model_name: "qwen3-next:80b-cloud"  # Excelente para análisis de texto y sentimiento
+    provider_type: "ollama_local"
+    model_name: "rnj-1:8b-cloud"
     temperature: 0.15
     max_tokens: 1500
     timeout: 60
     supports_vision: false
-    api_base: "http://localhost:11434"  # Ollama local conecta a cloud automáticamente
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen2.5:7b"
+    api_base: "http://localhost:11434"
   
   technical:
-    provider_type: "ollama_cloud"
-    model_name: "deepseek-v3.2:cloud"  # Óptimo para análisis numérico y técnico
+    provider_type: "ollama_local"
+    model_name: "nemotron-3-nano:30b-cloud"
     temperature: 0.1
     max_tokens: 2000
     timeout: 90
     supports_vision: false
     api_base: "http://localhost:11434"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "gemma3:1b"
   
   visual:
-    provider_type: "ollama_cloud"
-    model_name: "gemini-3-flash-preview:cloud"  # Modelo multimodal rápido
-    temperature: 0.1
-    max_tokens: 1200
-    timeout: 90
+    provider_type: "ollama_local"
+    model_name: "gemini-3-flash-preview:cloud"
+    temperature: 0.0
+    max_tokens: 16384
+    timeout: 120
     supports_vision: true
     api_base: "http://localhost:11434"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen2.5vl:7b-q4_K_M"
   
   qabba:
-    provider_type: "ollama_cloud"
-    model_name: "kimi-k2-thinking:cloud"  # Razonamiento profundo para análisis cuantitativo
+    provider_type: "ollama_local"
+    model_name: "nemotron-3-nano:30b-cloud"
     temperature: 0.05
     max_tokens: 900
-    timeout: 120
+    timeout: 90
     supports_vision: false
     api_base: "http://localhost:11434"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M"
   
   decision:
-    provider_type: "ollama_cloud"
-    model_name: "deepseek-v3.1:671b-cloud"  # El más potente para decisiones críticas
+    provider_type: "ollama_local"
+    model_name: "minimax-m2.1:cloud"
     temperature: 0.15
-    max_tokens: 1500
+    max_tokens: 2000
     timeout: 150
     supports_vision: false
     api_base: "http://localhost:11434"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen2.5:7b"
 
   risk_manager:
-    provider_type: "ollama_cloud"
-    model_name: "nemotron-3-nano:30b-cloud"  # Rápido y eficiente para cálculos de riesgo
+    provider_type: "ollama_local"
+    model_name: "devstral-small-2:24b-cloud"
     temperature: 0.1
     max_tokens: 1000
     timeout: 45
     supports_vision: false
     api_base: "http://localhost:11434"
-    extra_config:
-      reasoning: "conservative"
-    fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen2.5:7b-instruct-q5_k_m"
+
+# Alias para compatibilidad con env var en mayúsculas
+OLLAMA_CLOUD:
+  sentiment:
+    provider_type: "ollama_local"
+    model_name: "rnj-1:8b-cloud"
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 60
+    supports_vision: false
+    api_base: "http://localhost:11434"
+  
+  technical:
+    provider_type: "ollama_local"
+    model_name: "nemotron-3-nano:30b-cloud"
+    temperature: 0.1
+    max_tokens: 2000
+    timeout: 90
+    supports_vision: false
+    api_base: "http://localhost:11434"
+  
+  visual:
+    provider_type: "ollama_local"
+    model_name: "gemini-3-flash-preview:cloud"
+    temperature: 0.0
+    max_tokens: 16384
+    timeout: 120
+    supports_vision: true
+    api_base: "http://localhost:11434"
+  
+  qabba:
+    provider_type: "ollama_local"
+    model_name: "nemotron-3-nano:30b-cloud"
+    temperature: 0.05
+    max_tokens: 900
+    timeout: 90
+    supports_vision: false
+    api_base: "http://localhost:11434"
+  
+  decision:
+    provider_type: "ollama_local"
+    model_name: "minimax-m2.1:cloud"
+    temperature: 0.15
+    max_tokens: 2000
+    timeout: 150
+    supports_vision: false
+    api_base: "http://localhost:11434"
+
+  risk_manager:
+    provider_type: "ollama_local"
+    model_name: "devstral-small-2:24b-cloud"
+    temperature: 0.1
+    max_tokens: 1000
+    timeout: 45
+    supports_vision: false
+    api_base: "http://localhost:11434"

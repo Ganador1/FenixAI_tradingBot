@@ -8,5 +8,11 @@
     "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
     "DISABLE_MLX": "0"
   },
-  "git.ignoreLimitWarning": true
+  "git.ignoreLimitWarning": true,
+  "chat.tools.terminal.autoApprove": {
+    "wc": true,
+    "tail": true,
+    "cat": true,
+    "gtimeout": true
+  }
 }

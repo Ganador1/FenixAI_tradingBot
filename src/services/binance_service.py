@@ -56,7 +56,7 @@ class BinanceService:
             logger.warning("Binance client not available. Service will operate in mock mode.")
     
     def initialize(self) -> bool:
-        """Initialize Binance client and load exchange info"""
+        """Initialize Binance client and load exchange info (Futures)"""
         with self._lock:
             if self._initialized:
                 return True
@@ -66,27 +66,27 @@ class BinanceService:
                 return False
             
             try:
-                # Initialize client
+                # Initialize client for FUTURES
                 self._client = Client(
                     api_key=self.api_key,
                     api_secret=self.api_secret,
                     testnet=self.testnet
                 )
                 
-                # Load exchange info
-                self._exchange_info = self._client.get_exchange_info()
+                # Load exchange info for FUTURES
+                self._exchange_info = self._client.futures_exchange_info()
                 
                 # Process symbol filters
                 self._process_symbol_filters()
                 
                 self._initialized = True
-                logger.info("BinanceService initialized successfully")
+                logger.info(f"BinanceService initialized successfully (Testnet: {self.testnet})")
                 return True
                 
             except Exception as e:
                 logger.error(f"Failed to initialize BinanceService: {e}")
                 return False
-    
+
     def _process_symbol_filters(self) -> None:
         """Process symbol filters from exchange info"""
         if not self._exchange_info:
@@ -99,142 +99,191 @@ class BinanceService:
             self._symbol_filters[symbol] = filters
             
             # Create or update symbol configuration
+            # Note: Futures filters structure might differ slightly from Spot, ensuring compatibility
             config = SymbolConfig.from_filters(symbol, filters)
             self._symbol_configs[symbol] = config
             
             logger.debug(f"Processed filters for {symbol}")
-    
-    def is_initialized(self) -> bool:
-        """Check if service is initialized"""
-        with self._lock:
-            return self._initialized
-    
-    def get_client(self) -> Optional[Client]:
-        """Get Binance client instance"""
-        return self._client
-    
-    def get_symbol_filters(self, symbol: str) -> List[Dict[str, Any]]:
-        """Get symbol filters"""
-        with self._lock:
-            return self._symbol_filters.get(symbol, [])
-    
-    def get_symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
-        """Get symbol configuration"""
-        with self._lock:
-            return self._symbol_configs.get(symbol)
-    
-    def get_all_symbol_configs(self) -> Dict[str, SymbolConfig]:
-        """Get all symbol configurations"""
-        with self._lock:
-            return self._symbol_configs.copy()
-    
-    def get_tick_size(self, symbol: str) -> float:
-        """Get tick size for symbol"""
-        config = self.get_symbol_config(symbol)
-        return config.tick_size if config else 0.01
-    
-    def get_step_size(self, symbol: str) -> float:
-        """Get step size for symbol"""
-        config = self.get_symbol_config(symbol)
-        return config.step_size if config else 0.001
-    
-    def get_min_notional(self, symbol: str) -> float:
-        """Get minimum notional for symbol"""
-        config = self.get_symbol_config(symbol)
-        return config.min_notional if config else 10.0
-    
-    def get_price_precision(self, symbol: str) -> int:
-        """Get price precision for symbol"""
-        config = self.get_symbol_config(symbol)
-        return config.price_precision if config else 2
-    
-    def get_quantity_precision(self, symbol: str) -> int:
-        """Get quantity precision for symbol"""
-        config = self.get_symbol_config(symbol)
-        return config.quantity_precision if config else 3
-    
-    def format_price(self, symbol: str, price: float) -> str:
-        """Format price according to symbol precision"""
-        precision = self.get_price_precision(symbol)
-        return f"{price:.{precision}f}"
-    
-    def format_quantity(self, symbol: str, quantity: float) -> str:
-        """Format quantity according to symbol precision"""
-        precision = self.get_quantity_precision(symbol)
-        return f"{quantity:.{precision}f}"
-    
-    def validate_order(self, symbol: str, quantity: float, price: float) -> Dict[str, Any]:
-        """Validate order parameters against symbol filters"""
-        config = self.get_symbol_config(symbol)
-        if not config:
-            return {'valid': False, 'error': f'No configuration for symbol {symbol}'}
-        
-        errors = []
-        
-        # Check minimum notional
-        notional = quantity * price
-        if notional < config.min_notional:
-            errors.append(f"Notional {notional} < minimum {config.min_notional}")
-        
-        # Check price precision
-        price_str = str(price)
-        if '.' in price_str:
-            decimal_places = len(price_str.split('.')[1])
-            if decimal_places > config.price_precision:
-                errors.append(f"Price precision {decimal_places} > maximum {config.price_precision}")
-        
-        # Check quantity precision
-        quantity_str = str(quantity)
-        if '.' in quantity_str:
-            decimal_places = len(quantity_str.split('.')[1])
-            if decimal_places > config.quantity_precision:
-                errors.append(f"Quantity precision {decimal_places} > maximum {config.quantity_precision}")
-        
-        # Check tick size (price must be multiple of tick size)
-        if price % config.tick_size != 0:
-            errors.append(f"Price {price} not multiple of tick size {config.tick_size}")
-        
-        # Check step size (quantity must be multiple of step size)
-        if quantity % config.step_size != 0:
-            errors.append(f"Quantity {quantity} not multiple of step size {config.step_size}")
-        
-        if errors:
-            return {'valid': False, 'errors': errors}
-        
-        return {'valid': True}
-    
-    def get_symbol_info(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get symbol information from exchange info"""
-        if not self._exchange_info:
-            return None
-        
-        for symbol_info in self._exchange_info.get('symbols', []):
-            if symbol_info['symbol'] == symbol:
-                return symbol_info
-        
-        return None
-    
-    def get_server_time(self) -> Optional[int]:
-        """Get server time from Binance"""
-        if not self._client:
-            return None
-        
-        try:
-            return self._client.get_server_time()['serverTime']
-        except Exception as e:
-            logger.error(f"Failed to get server time: {e}")
-            return None
-    
+
     def get_account_info(self) -> Optional[Dict[str, Any]]:
-        """Get account information"""
+        """Get account information (Futures)"""
         if not self._client:
             return None
         
         try:
-            return self._client.get_account()
+            return self._client.futures_account()
         except Exception as e:
             logger.error(f"Failed to get account info: {e}")
             return None
+
+    def get_balance_usdt(self) -> float:
+        """Get USDT balance (Futures)"""
+        if not self._client:
+            logger.warning("Binance client not initialized when requesting balance")
+            return 0.0
+            
+        try:
+            # futures_account_balance returns list of assets
+            balances = self._client.futures_account_balance()
+            for balance in balances:
+                if balance['asset'] == 'USDT':
+                    wallet = float(balance.get('balance', 0.0))
+                    available = float(balance.get('availableBalance', 0.0))
+                    return max(wallet, available)
+            return 0.0
+        except Exception as e:
+            logger.error(f"Failed to get USDT balance: {e}")
+            return 0.0
+
+    def get_ticker_price(self, symbol: str) -> float:
+        """Get current ticker price (Futures)"""
+        if not self._client:
+            return 0.0
+            
+        try:
+            ticker = self._client.futures_symbol_ticker(symbol=symbol)
+            return float(ticker['price'])
+        except Exception as e:
+            logger.error(f"Failed to get ticker price for {symbol}: {e}")
+            return 0.0
+
+    def place_market_order(self, symbol: str, side: str, quantity: float, reduce_only: bool = False) -> Dict[str, Any]:
+        """Place a market order (Futures)"""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+            
+        try:
+            return self._client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=binance_enums.ORDER_TYPE_MARKET,
+                quantity=quantity,
+                reduceOnly=reduce_only
+            )
+        except Exception as e:
+            logger.error(f"Failed to place market order for {symbol}: {e}")
+            raise e
+
+    def place_algo_order(self, symbol: str, side: str, order_type: str, trigger_price: float, quantity: float | None = None, close_position: bool = False, working_type: str = 'MARK_PRICE') -> Dict[str, Any]:
+        """
+        Place an Algo Order (Conditional TP/SL) using /fapi/v1/algoOrder
+        Supported since Binance migration in Dec 2025 (error -4120 otherwise)
+        """
+        if not self._client:
+            raise Exception("Binance client not initialized")
+            
+        params = {
+            "algoType": "CONDITIONAL",
+            "symbol": symbol,
+            "side": side,
+            "type": order_type,
+            "triggerPrice": str(trigger_price),
+            "workingType": working_type
+        }
+        
+        if close_position:
+            params["closePosition"] = "true"
+        elif quantity:
+            params["quantity"] = str(quantity)
+            params["reduceOnly"] = "true"
+            
+        try:
+            # Use raw request since python-binance might not have a high-level wrapper for algoOrder yet
+            return self._client._request_futures_api("post", "algoOrder", True, data=params)
+        except Exception as e:
+            logger.error(f"Failed to place algo order ({order_type}) for {symbol}: {e}")
+            raise e
+
+    def place_stop_loss_market(self, symbol: str, side: str, quantity: float, stop_price: float) -> Dict[str, Any]:
+        """Place a stop loss market order (Futures) using Algos"""
+        return self.place_algo_order(
+            symbol=symbol,
+            side=side,
+            order_type='STOP_MARKET',
+            trigger_price=stop_price,
+            quantity=quantity,
+            close_position=True # Default to close position for safety
+        )
+
+    def place_take_profit_market(self, symbol: str, side: str, quantity: float, stop_price: float) -> Dict[str, Any]:
+        """Place a take profit market order (Futures) using Algos"""
+        return self.place_algo_order(
+            symbol=symbol,
+            side=side,
+            order_type='TAKE_PROFIT_MARKET',
+            trigger_price=stop_price,
+            quantity=quantity,
+            close_position=True
+        )
+
+    def get_order(self, symbol: str, order_id: int) -> Dict[str, Any]:
+        """Get order details (Futures)"""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+            
+        try:
+            return self._client.futures_get_order(symbol=symbol, orderId=order_id)
+        except Exception as e:
+            logger.error(f"Failed to get order {order_id}: {e}")
+            raise e
+
+    def cancel_order(self, symbol: str, order_id: int) -> Dict[str, Any]:
+        """Cancel an order (Futures)"""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+            
+        try:
+            return self._client.futures_cancel_order(symbol=symbol, orderId=order_id)
+        except Exception as e:
+            logger.error(f"Failed to cancel order {order_id}: {e}")
+            raise e
+
+    def cancel_all_open_orders(self, symbol: str) -> List[Dict[str, Any]]:
+        """Cancel all open orders (Futures)"""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+            
+        try:
+            return self._client.futures_cancel_all_open_orders(symbol=symbol)
+        except Exception as e:
+             logger.error(f"Failed to cancel all orders for {symbol}: {e}")
+             return []
+
+    def get_position(self, symbol: str) -> Dict[str, Any]:
+        """Get current position (Futures)"""
+        if not self._client:
+            return {}
+            
+        try:
+            positions = self._client.futures_position_information(symbol=symbol)
+            # futures_position_information normally returns a list (one for each margin mode if not specific? or just list of one)
+            # When symbol is provided, it returns a list of positions for that symbol (usually 1 unless hedge mode)
+            
+            for pos in positions:
+                # Return the detailed position info
+                # Logic: If hedge mode, might need to filter by positionSide. Assuming One-Way Mode for simplicity or taking the one with amount
+                if float(pos.get('positionAmt', 0)) != 0:
+                    return {
+                        'symbol': symbol,
+                        'positionAmt': float(pos['positionAmt']),
+                        'entryPrice': float(pos['entryPrice']),
+                        'unRealizedProfit': float(pos['unRealizedProfit']),
+                        'leverage': int(pos.get('leverage', 1))
+                    }
+            
+            # If no open position, return first with 0
+            if positions:
+                 return {
+                        'symbol': symbol,
+                        'positionAmt': 0.0,
+                        'entryPrice': 0.0,
+                        'unRealizedProfit': 0.0
+                    }
+            return {}
+        except Exception as e:
+            logger.error(f"Failed to get position for {symbol}: {e}")
+            return {}
+
     
     def close(self) -> None:
         """Close Binance client connections"""
@@ -249,25 +298,50 @@ class BinanceService:
                 self._initialized = False
 
 
-# Global service instance
-_binance_service: Optional[BinanceService] = None
+# Global service instances (separate for testnet and production)
+_binance_services: Dict[bool, Optional[BinanceService]] = {True: None, False: None}
 _service_lock = threading.Lock()
 
 
 def get_binance_service(api_key: Optional[str] = None, api_secret: Optional[str] = None, testnet: bool = False) -> BinanceService:
-    """Get or create the global Binance service instance"""
-    global _binance_service
-    if _binance_service is None:
+    """Get or create a Binance service instance (separate for testnet and production)"""
+    global _binance_services
+    
+    if _binance_services[testnet] is None:
         with _service_lock:
-            if _binance_service is None:
-                _binance_service = BinanceService(api_key, api_secret, testnet)
-    return _binance_service
+            if _binance_services[testnet] is None:
+                import os
+                # Use provided keys or fallback to env vars
+                if testnet:
+                    key = api_key or os.getenv("BINANCE_TESTNET_API_KEY")
+                    secret = api_secret or os.getenv("BINANCE_TESTNET_API_SECRET")
+                else:
+                    key = api_key or os.getenv("BINANCE_API_KEY")
+                    secret = api_secret or os.getenv("BINANCE_API_SECRET")
+                
+                service = BinanceService(key, secret, testnet)
+                # Auto-initialize the service
+                if service.initialize():
+                    logger.info(f"✅ BinanceService initialized (testnet={testnet})")
+                else:
+                    logger.error(f"❌ Failed to initialize BinanceService (testnet={testnet})")
+                
+                _binance_services[testnet] = service
+    
+    return _binance_services[testnet]
 
 
-def reset_binance_service() -> None:
+def reset_binance_service(testnet: bool = None) -> None:
     """Reset the global Binance service instance (for testing)"""
-    global _binance_service
+    global _binance_services
     with _service_lock:
-        if _binance_service:
-            _binance_service.close()
-        _binance_service = None
+        if testnet is None:
+            # Reset both
+            for key in [True, False]:
+                if _binance_services[key]:
+                    _binance_services[key].close()
+                _binance_services[key] = None
+        else:
+            if _binance_services[testnet]:
+                _binance_services[testnet].close()
+            _binance_services[testnet] = None

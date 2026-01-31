@@ -5,6 +5,7 @@ from typing import Dict, Deque, List, Optional, Any, Tuple
 import logging
 import threading
 import time
+import warnings
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ arch_available = False
 pd = None
 chaikin_money_flow = None
 arch_model = None
+ArchConvergenceWarning = None
 try:
     from ta.volume import chaikin_money_flow as _cmf
     import pandas as _pd
@@ -36,6 +38,11 @@ try:
     from arch import arch_model as _arch_model  # type: ignore
     arch_available = True
     arch_model = _arch_model
+    try:  # type: ignore
+        from arch.utility.exceptions import ConvergenceWarning as _ArchConvergenceWarning
+        ArchConvergenceWarning = _ArchConvergenceWarning
+    except Exception:
+        ArchConvergenceWarning = None
 except Exception:
     arch_available = False
     logger.warning("arch not available. GARCH volatility will not be calculated.")
@@ -484,7 +491,25 @@ def _calculate_and_store_all_indicators() -> None:
             if max_abs_return < 1:
                 returns = returns * 10
             am = arch_model(returns, vol='GARCH', p=1, q=1, dist='normal', rescale=False)
-            res = am.fit(disp='off')
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*optimizer returned code.*",
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*Positive directional derivative.*",
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*Iteration limit reached.*",
+                )
+                if ArchConvergenceWarning is not None:
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=ArchConvergenceWarning,
+                    )
+                res = am.fit(disp='off')
             forecast = res.forecast(horizon=1)
             garch_vol = np.sqrt(forecast.variance.values[-1, :][0])
             temp_cache["garch_volatility_forecast"] = float(garch_vol)

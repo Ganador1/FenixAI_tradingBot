@@ -21,6 +21,23 @@ except ImportError:
     NOTIFIER_AVAILABLE = False
     get_circuit_breaker_notifier = None
 
+try:
+    from src.risk.runtime_feedback import RiskFeedbackLoopConfig, RiskFeedbackStatus
+except ImportError:
+    # Fallback definitions
+    from dataclasses import dataclass as _dc
+    @_dc
+    class RiskFeedbackLoopConfig:
+        max_drawdown_pct: float = 10.0
+        max_daily_loss_pct: float = 5.0
+        max_consecutive_losses: int = 5
+        hot_streak_threshold: int = 3
+        
+    @_dc
+    class RiskFeedbackStatus:
+        mode: str = "NORMAL"
+        risk_bias: float = 1.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -218,12 +235,13 @@ class RuntimeRiskManager:
                 self.current_status = RiskFeedbackStatus(mode="NORMAL", risk_bias=1.0)
         
         # 1. Evaluar SEVERE drawdown (6.5%+)
-        if metrics["drawdown_pct"] >= self.config.severe_drawdown_pct:
+        drawdown_pct = metrics.get("drawdown_pct", 0.0)
+        if drawdown_pct >= self.config.severe_drawdown_pct:
             self.current_status = RiskFeedbackStatus(
                 mode="SEVERE",
                 risk_bias=self.config.drawdown_risk_bias,
                 block_trading=True,
-                reason=f"Drawdown {metrics['drawdown_pct']:.1f}% >= {self.config.severe_drawdown_pct}%",
+                reason=f"Drawdown {drawdown_pct:.1f}% >= {self.config.severe_drawdown_pct}%",
                 cooldown_seconds=self.config.severe_cooldown_seconds,
                 expires_at=datetime.now(timezone.utc).replace(
                     second=datetime.now(timezone.utc).second + self.config.severe_cooldown_seconds
@@ -235,12 +253,12 @@ class RuntimeRiskManager:
             return self.current_status
         
         # 2. Evaluar CAUTION drawdown (4%+)
-        if metrics["drawdown_pct"] >= self.config.caution_drawdown_pct:
+        if drawdown_pct >= self.config.caution_drawdown_pct:
             self.current_status = RiskFeedbackStatus(
                 mode="CAUTION",
                 risk_bias=self.config.cooldown_risk_bias,
                 block_trading=False,  # Solo reduce tamaño, no bloquea
-                reason=f"Drawdown {metrics['drawdown_pct']:.1f}% >= {self.config.caution_drawdown_pct}%",
+                reason=f"Drawdown {drawdown_pct:.1f}% >= {self.config.caution_drawdown_pct}%",
                 cooldown_seconds=self.config.caution_cooldown_seconds,
                 expires_at=datetime.now(timezone.utc).replace(
                     second=datetime.now(timezone.utc).second + self.config.caution_cooldown_seconds
@@ -252,12 +270,13 @@ class RuntimeRiskManager:
             return self.current_status
         
         # 3. Evaluar SEVERE daily loss (3.5%+)
-        if metrics["daily_loss_pct"] >= self.config.severe_daily_loss_pct:
+        daily_loss_pct = metrics.get("daily_loss_pct", 0.0)
+        if daily_loss_pct >= self.config.severe_daily_loss_pct:
             self.current_status = RiskFeedbackStatus(
                 mode="SEVERE",
                 risk_bias=self.config.drawdown_risk_bias,
                 block_trading=True,
-                reason=f"Daily loss {metrics['daily_loss_pct']:.1f}% >= {self.config.severe_daily_loss_pct}%",
+                reason=f"Daily loss {daily_loss_pct:.1f}% >= {self.config.severe_daily_loss_pct}%",
                 cooldown_seconds=self.config.severe_cooldown_seconds,
                 metrics_snapshot=metrics
             )
@@ -266,12 +285,12 @@ class RuntimeRiskManager:
             return self.current_status
         
         # 4. Evaluar CAUTION daily loss (2%+)
-        if metrics["daily_loss_pct"] >= self.config.caution_daily_loss_pct:
+        if daily_loss_pct >= self.config.caution_daily_loss_pct:
             self.current_status = RiskFeedbackStatus(
                 mode="CAUTION",
                 risk_bias=self.config.cooldown_risk_bias,
                 block_trading=False,
-                reason=f"Daily loss {metrics['daily_loss_pct']:.1f}% >= {self.config.caution_daily_loss_pct}%",
+                reason=f"Daily loss {daily_loss_pct:.1f}% >= {self.config.caution_daily_loss_pct}%",
                 cooldown_seconds=self.config.caution_cooldown_seconds,
                 metrics_snapshot=metrics
             )
@@ -280,12 +299,13 @@ class RuntimeRiskManager:
             return self.current_status
         
         # 5. Evaluar loss streak
-        if metrics["loss_streak"] >= self.config.loss_streak_halt:
+        loss_streak = metrics.get("loss_streak", 0)
+        if loss_streak >= self.config.loss_streak_halt:
             self.current_status = RiskFeedbackStatus(
                 mode="SEVERE",
                 risk_bias=self.config.drawdown_risk_bias,
                 block_trading=True,
-                reason=f"Loss streak {metrics['loss_streak']} >= {self.config.loss_streak_halt}",
+                reason=f"Loss streak {loss_streak} >= {self.config.loss_streak_halt}",
                 cooldown_seconds=self.config.severe_cooldown_seconds,
                 metrics_snapshot=metrics
             )
@@ -293,12 +313,12 @@ class RuntimeRiskManager:
             self._alert_severe(metrics)
             return self.current_status
         
-        if metrics["loss_streak"] >= self.config.loss_streak_caution:
+        if loss_streak >= self.config.loss_streak_caution:
             self.current_status = RiskFeedbackStatus(
                 mode="CAUTION",
                 risk_bias=self.config.cooldown_risk_bias,
                 block_trading=False,
-                reason=f"Loss streak {metrics['loss_streak']} >= {self.config.loss_streak_caution}",
+                reason=f"Loss streak {loss_streak} >= {self.config.loss_streak_caution}",
                 cooldown_seconds=self.config.caution_cooldown_seconds,
                 metrics_snapshot=metrics
             )
@@ -307,13 +327,16 @@ class RuntimeRiskManager:
             return self.current_status
         
         # 6. Evaluar hot streak (para aumentar apuestas)
-        if (metrics["win_rate"] >= self.config.hot_streak_win_rate and
-            metrics["total_trades"] >= self.config.hot_streak_min_trades and
-            metrics["avg_pnl"] >= self.config.hot_streak_min_avg_pnl):
+        win_rate = metrics.get("win_rate", 0.0)
+        total_trades = metrics.get("total_trades", 0)
+        avg_pnl = metrics.get("avg_pnl", 0.0)
+        if (win_rate >= self.config.hot_streak_win_rate and
+            total_trades >= self.config.hot_streak_min_trades and
+            avg_pnl >= self.config.hot_streak_min_avg_pnl):
             self.current_status = RiskFeedbackStatus(
                 mode="HOT",
                 risk_bias=self.config.hot_streak_risk_bias,
-                reason=f"Hot streak! Win rate {metrics['win_rate']:.1%}, Avg PnL ${metrics['avg_pnl']:.2f}",
+                reason=f"Hot streak! Win rate {win_rate:.1%}, Avg PnL ${avg_pnl:.2f}",
                 metrics_snapshot=metrics
             )
             return self.current_status

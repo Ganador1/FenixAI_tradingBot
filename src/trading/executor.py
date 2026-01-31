@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -29,8 +30,8 @@ class OrderResult:
     order_id: int | None = None
     entry_price: float = 0.0
     executed_qty: float = 0.0
-    sl_order_id: int | None = None
-    tp_order_id: int | None = None
+    sl_order_id: int | str | None = None
+    tp_order_id: int | str | None = None
     message: str = ""
     timestamp: str = ""
 
@@ -41,8 +42,8 @@ class OrderResult:
             "order_id": self.order_id,
             "entry_price": self.entry_price,
             "executed_qty": self.executed_qty,
-            "sl_order_id": self.sl_order_id,
-            "tp_order_id": self.tp_order_id,
+            "sl_order_id": str(self.sl_order_id) if self.sl_order_id else None,
+            "tp_order_id": str(self.tp_order_id) if self.tp_order_id else None,
             "message": self.message,
             "timestamp": self.timestamp,
         }
@@ -55,15 +56,19 @@ class CircuitBreaker:
         self,
         failure_threshold: int = 5,
         reset_timeout_seconds: int = 60,
+        enabled: bool = True,
     ):
         self.failure_threshold = failure_threshold
         self.reset_timeout = reset_timeout_seconds
         self.failures = 0
         self.last_failure_time: datetime | None = None
         self.is_open = False
+        self.enabled = enabled
 
     def record_failure(self) -> None:
         """Registra un fallo."""
+        if not self.enabled:
+            return
         self.failures += 1
         self.last_failure_time = datetime.now(timezone.utc)
 
@@ -75,11 +80,15 @@ class CircuitBreaker:
 
     def record_success(self) -> None:
         """Registra éxito y resetea contadores."""
+        if not self.enabled:
+            return
         self.failures = 0
         self.is_open = False
 
     def can_execute(self) -> bool:
         """Verifica si se puede ejecutar."""
+        if not self.enabled:
+            return True
         if not self.is_open:
             return True
 
@@ -112,22 +121,26 @@ class OrderExecutor:
         price_precision: int = 2,
         qty_precision: int = 3,
         min_notional: float = 5.0,
+        testnet: bool = True,
     ):
         self.symbol = symbol.upper()
         self.price_precision = price_precision
         self.qty_precision = qty_precision
         self.min_notional = min_notional
+        self.testnet = testnet
 
         self._service: BinanceService | None = None
-        self.circuit_breaker = CircuitBreaker()
+        disable_cb_env = os.getenv("DISABLE_CIRCUIT_BREAKER", "").lower() in ("1", "true", "yes")
+        cb_enabled = not (self.testnet or disable_cb_env)
+        self.circuit_breaker = CircuitBreaker(enabled=cb_enabled)
 
-        logger.info(f"OrderExecutor initialized for {symbol}")
+        logger.info(f"OrderExecutor initialized for {symbol} (testnet={testnet})")
 
     @property
     def service(self) -> BinanceService:
         """Lazy loading del servicio de Binance."""
         if self._service is None:
-            self._service = get_binance_service()
+            self._service = get_binance_service(testnet=self.testnet)
         return self._service
 
     def format_price(self, price: float) -> str:
@@ -225,7 +238,7 @@ class OrderExecutor:
             sl_order_id = None
             tp_order_id = None
 
-            if stop_loss and take_profit and not reduce_only:
+            if (stop_loss or take_profit) and not reduce_only:
                 sl_order_id, tp_order_id = await self._place_protective_orders(
                     entry_side=side,
                     quantity=executed_qty,
@@ -287,8 +300,8 @@ class OrderExecutor:
         self,
         entry_side: Literal["BUY", "SELL"],
         quantity: float,
-        stop_loss: float,
-        take_profit: float,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> tuple[int | None, int | None]:
         """Coloca órdenes de SL y TP."""
         # El lado del SL/TP es opuesto al de entrada
@@ -306,7 +319,7 @@ class OrderExecutor:
                 quantity=float(formatted_qty),
                 stop_price=stop_loss,
             )
-            sl_order_id = sl_response.get("orderId")
+            sl_order_id = sl_response.get("algoId") or sl_response.get("orderId")
             logger.info(f"SL placed: {sl_order_id} @ {stop_loss}")
 
         except Exception as e:
@@ -320,7 +333,7 @@ class OrderExecutor:
                 quantity=float(formatted_qty),
                 stop_price=take_profit,
             )
-            tp_order_id = tp_response.get("orderId")
+            tp_order_id = tp_response.get("algoId") or tp_response.get("orderId")
             logger.info(f"TP placed: {tp_order_id} @ {take_profit}")
 
         except Exception as e:

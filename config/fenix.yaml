@@ -27,12 +27,12 @@ agents:
 
 llm:
   default_provider: ollama_local
-  default_model: qwen2.5:7b
+  default_model: ministral-3:14b-cloud
   temperature: 0.1
   max_tokens: 500
   timeout_seconds: 30
   fallback_provider: ollama_local
-  fallback_model: gemma3:1b
+  fallback_model: kimi-k2.5:cloud
 
 binance:
   testnet: true  # IMPORTANTE: Cambiar a false para trading real

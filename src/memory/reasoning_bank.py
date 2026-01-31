@@ -726,9 +726,16 @@ _reasoning_bank_lock = threading.Lock()
 
 
 def get_reasoning_bank() -> ReasoningBank:
+    """Get singleton ReasoningBank instance.
+    
+    Note: Embeddings disabled by default to prevent memory issues on macOS.
+    Uses Jaccard similarity fallback instead.
+    """
     global _reasoning_bank
     if _reasoning_bank is None:
         with _reasoning_bank_lock:
             if _reasoning_bank is None:
-                _reasoning_bank = ReasoningBank()
+                # Disable embeddings to prevent memory issues with SentenceTransformer
+                # Jaccard similarity is used as fallback (fast, no RAM overhead)
+                _reasoning_bank = ReasoningBank(use_embeddings=False)
     return _reasoning_bank

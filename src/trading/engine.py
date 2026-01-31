@@ -1,12 +1,12 @@
 # src/trading/engine.py
 """
-Motor de Trading Principal para Fenix Trading Bot.
+Main Trading Engine for Fenix Trading Bot.
 
-Este es el núcleo refactorizado que orquesta:
-- Recepción de datos de mercado
-- Ejecución del grafo LangGraph de agentes
-- Gestión de decisiones y ejecución de órdenes
-- Logging y métricas
+This is the refactored core that orchestrates:
+- Market data reception
+- LangGraph agent graph execution
+- Decision management and order execution
+- Logging and metrics
 """
 from __future__ import annotations
 
@@ -14,15 +14,18 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from src.trading.market_data import MarketDataManager, get_market_data_manager
+from src.trading.binance_client import BinanceClient
 from src.trading.executor import OrderExecutor, OrderResult
 from src.tools.technical_tools import add_kline, get_current_indicators, close_buf, high_buf, low_buf, vol_buf, open_buf, timestamp_buf
 from src.tools.chart_generator import FenixChartGenerator
+from src.tools.professional_chart_generator import ProfessionalChartGenerator
 from src.tools.enhanced_news_scraper import EnhancedNewsScraper
 from src.tools.twitter_scraper import TwitterScraper
 from src.tools.reddit_scraper import RedditScraper
@@ -30,7 +33,7 @@ from src.tools.fear_greed import FearGreedTool
 from src.memory.reasoning_bank import get_reasoning_bank
 from src.prompts.agent_prompts import format_prompt
 
-# Importar LangGraph orchestrator
+# Import LangGraph orchestrator
 try:
     from src.core.langgraph_orchestrator import (
         FenixTradingGraph,
@@ -42,7 +45,7 @@ except ImportError:
     LANGGRAPH_AVAILABLE = False
     FenixTradingGraph = None
 
-# Configuración
+# Configuration
 try:
     from src.config.config_loader import APP_CONFIG
 except ImportError:
@@ -60,7 +63,7 @@ logger = logging.getLogger("FenixTradingEngine")
 
 @dataclass
 class TradingConfig:
-    """Configuración del motor de trading."""
+    """Trading engine configuration."""
     symbol: str = "BTCUSDT"
     interval: str = "15m"
     analysis_interval: int = 60
@@ -74,16 +77,16 @@ class TradingConfig:
 
 class TradingEngine:
     """
-    Motor principal de trading de Fenix.
+    Main Fenix Trading Engine.
 
-    Flujo de operación:
-    1. Recibe datos de mercado (klines, orderbook, trades)
-    2. Calcula indicadores técnicos
-    3. Ejecuta el grafo de agentes LangGraph
-    4. Procesa la decisión y ejecuta órdenes si corresponde
+    Operation flow:
+    1. Receives market data (klines, orderbook, trades)
+    2. Calculates technical indicators
+    3. Executes LangGraph agent graph
+    4. Processes decision and executes orders if applicable
 
-    Esta clase reemplaza el monolito live_trading.py con una
-    arquitectura limpia y modular.
+    This class replaces the monolithic live_trading.py with a
+    clean and modular architecture.
     """
 
     def __init__(
@@ -102,22 +105,29 @@ class TradingEngine:
         self.paper_trading = paper_trading
         self.allow_live_trading = allow_live_trading
 
-        # Componentes
+        # Components
         self.market_data = get_market_data_manager(
             symbol=symbol,
             timeframe=timeframe,
             use_testnet=use_testnet,
         )
-        self.executor = OrderExecutor(symbol=symbol)
+        self.executor = OrderExecutor(symbol=symbol, testnet=use_testnet)
         self.chart_generator = FenixChartGenerator()
+        self.pro_chart_generator = ProfessionalChartGenerator()  # New professional generator
         self.news_scraper = EnhancedNewsScraper()
         self.twitter_scraper = TwitterScraper()
         self.reddit_scraper = RedditScraper()
         self.fear_greed_tool = FearGreedTool()
         self.reasoning_bank = get_reasoning_bank()
-        self.on_agent_event = None  # Callback for frontend events
+        # Callback for frontend events - type hint for async callable
+        self.on_agent_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
 
-        # Estado
+        # Signal log path for persistence
+        project_root = Path(__file__).parent.parent.parent
+        self.signal_log_path = project_root / "logs" / "signals" / f"{symbol}_{timeframe}_signals.jsonl"
+        self.signal_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # State
         self._running = False
         self._last_decision_time: datetime | None = None
         self._consecutive_holds = 0
@@ -129,7 +139,7 @@ class TradingEngine:
         self.enable_visual = enable_visual_agent
         self.enable_sentiment = enable_sentiment_agent
 
-        # Inicializar RiskManager
+        # Initialize RiskManager
         self.risk_manager = get_risk_manager() if RISK_MANAGER_AVAILABLE else None
         if self.risk_manager:
             logger.info("✅ RuntimeRiskManager initialized")
@@ -142,11 +152,11 @@ class TradingEngine:
         )
 
     async def initialize(self) -> bool:
-        """Inicializa todos los componentes."""
+        """Initializes all components."""
         logger.info("Initializing TradingEngine components...")
 
         try:
-            # Inicializar LangGraph
+            # Initialize LangGraph
             if LANGGRAPH_AVAILABLE:
                 logger.info("Creating LangGraph trading graph...")
                 self._trading_graph = get_trading_graph(force_new=True)
@@ -154,7 +164,7 @@ class TradingEngine:
             else:
                 logger.warning("⚠️ LangGraph not available, using fallback mode")
 
-            # Registrar callbacks de market data
+            # Register market data callbacks
             self.market_data.on_kline(self._on_kline_received)
 
             logger.info("✅ TradingEngine initialized successfully")
@@ -165,7 +175,7 @@ class TradingEngine:
             return False
 
     async def start(self) -> None:
-        """Inicia el motor de trading."""
+        """Starts the trading engine."""
         if self._running:
             logger.warning("TradingEngine already running")
             return
@@ -180,18 +190,18 @@ class TradingEngine:
 
         self._running = True
 
-        # Inicializar componentes
+        # Initialize components
         if not await self.initialize():
             logger.error("Failed to initialize, aborting start")
             self._running = False
             return
 
-        # Iniciar market data streams
+        # Start market data streams
         await self.market_data.start()
 
         logger.info("🚀 TradingEngine started and listening for market data")
 
-        # Mantener el motor corriendo
+        # Keep engine running
         try:
             while self._running:
                 await asyncio.sleep(1)
@@ -201,19 +211,19 @@ class TradingEngine:
             await self.stop()
 
     async def stop(self) -> None:
-        """Detiene el motor de trading."""
+        """Stops the trading engine."""
         logger.info("Stopping TradingEngine...")
         self._running = False
 
-        # Detener market data
+        # Stop market data
         await self.market_data.stop()
 
         logger.info("TradingEngine stopped")
 
     async def _on_kline_received(self, kline_data: dict[str, Any]) -> None:
-        """Callback cuando se recibe una nueva kline."""
+        """Callback when a new kline is received."""
         try:
-            # Agregar kline al buffer de indicadores (with open and timestamp)
+            # Add kline to indicators buffer (with open and timestamp)
             add_kline(
                 close=kline_data["close"],
                 high=kline_data["high"],
@@ -224,7 +234,7 @@ class TradingEngine:
             )
             self._kline_count += 1
 
-            # Solo procesar cuando la vela cierra
+            # Only process when candle closes
             if not kline_data.get("is_closed", False):
                 return
 
@@ -233,51 +243,51 @@ class TradingEngine:
                 f"(H:{kline_data['high']:.2f} L:{kline_data['low']:.2f})"
             )
 
-            # Verificar mínimo de velas
+            # Verify minimum candles
             if self._kline_count < self._min_klines_to_start:
                 logger.info(
                     f"Warming up: {self._kline_count}/{self._min_klines_to_start} klines"
                 )
                 return
 
-            # Ejecutar análisis
+            # Execute analysis
             await self._run_analysis_cycle()
 
         except Exception as e:
             logger.error(f"Error processing kline: {e}", exc_info=True)
 
     async def _run_analysis_cycle(self) -> None:
-        """Ejecuta un ciclo completo de análisis."""
+        """Executes a full analysis cycle."""
         start_time = datetime.now(timezone.utc)
         logger.info("=" * 50)
         logger.info("🔄 Starting analysis cycle")
 
         try:
-            # 1. Obtener indicadores técnicos
+            # 1. Get technical indicators
             indicators = get_current_indicators()
             if not indicators:
                 logger.warning("No indicators available, skipping cycle")
                 return
 
-            # 2. Obtener métricas de microestructura
+            # 2. Get microstructure metrics
             micro = self.market_data.get_microstructure_metrics()
 
-            # 3. Obtener noticias (si está habilitado)
+            # 3. Get news (if enabled)
             news_data = []
             if self.enable_sentiment:
                 try:
                     news_data = self.news_scraper.fetch_crypto_news(limit=10)
                     logger.info(f"📰 Fetched {len(news_data)} news articles")
                 except Exception as e:
-                    logger.warning(f"Failed to fetch news: {e}")
+                    logger.warning("Failed to fetch news: %s", e)
                 # Send news update event to frontend
-                if self.on_agent_event:
-                    await self.on_agent_event("news_update", {
+                if (callback := self.on_agent_event) is not None:
+                    await callback("news_update", {
                         "news_data": news_data,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
             
-            # 4. Obtener social data (Twitter/Reddit) y fear & greed
+            # 4. Get social data (Twitter/Reddit) and Fear & Greed
             social_data = {}
             fear_greed_value = None
             if self.enable_sentiment:
@@ -305,13 +315,13 @@ class TradingEngine:
                     "reddit": reddit_data,
                 }
 
-            # 5. Ejecutar el grafo de agentes
+            # 5. Execute agent graph
             if self._trading_graph:
                 result = await self._execute_langgraph_analysis(indicators, micro, news_data, social_data, fear_greed_value)
             else:
                 result = await self._execute_fallback_analysis(indicators, micro)
 
-            # 5. Procesar decisión
+            # 6. Process decision
             await self._process_decision(result)
 
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -328,7 +338,7 @@ class TradingEngine:
         social_data: dict[str, Any] | None = None,
         fear_greed_value: str | None = None,
     ) -> FenixAgentState | dict[str, Any]:
-        """Ejecuta análisis usando LangGraph."""
+        """Executes analysis using LangGraph."""
         logger.info("🧠 Executing LangGraph multi-agent analysis...")
 
         try:
@@ -336,37 +346,100 @@ class TradingEngine:
             chart_b64 = None
             if self.enable_visual:
                 try:
-                    # Construct kline data from buffers with proper OHLCV and timestamps
-                    kline_data = {
-                        "open": list(open_buf),
-                        "close": list(close_buf),
-                        "high": list(high_buf),
-                        "low": list(low_buf),
-                        "volume": list(vol_buf),
-                        "datetime": list(timestamp_buf)  # Unix timestamps in milliseconds
+                    # If few candles or very short timeframe, use history to avoid empty charts
+                    kline_data = None
+                    timeframe_ms = {
+                        "1m": 60_000,
+                        "3m": 180_000,
+                        "5m": 300_000,
+                        "15m": 900_000,
+                        "30m": 1_800_000,
+                        "1h": 3_600_000,
+                        "4h": 14_400_000,
+                        "1d": 86_400_000,
                     }
-                    chart_result = self.chart_generator.generate_chart(
-                        kline_data=kline_data,
-                        symbol=self.symbol,
-                        timeframe=self.timeframe,
-                        last_n_candles=50
-                    )
-                    chart_b64 = chart_result.get("image_b64")
-                    if chart_b64:
-                        logger.info(f"🖼️ Chart generated successfully ({len(chart_b64)} chars)")
-                    else:
+                    base_ms = timeframe_ms.get(self.timeframe, 900_000)
+                    timestamps = list(timestamp_buf)
+                    span_ms = (timestamps[-1] - timestamps[0]) if len(timestamps) >= 2 else 0
+                    need_history = len(close_buf) < 50 or span_ms < base_ms * 50
+
+                    if need_history:
+                        try:
+                            client = BinanceClient(testnet=self.use_testnet)
+                            if await client.connect():
+                                klines = await client.get_klines(self.symbol, self.timeframe, limit=200)
+                                await client.close()
+                                if klines:
+                                    kline_data = {
+                                        "open": [k["open"] for k in klines],
+                                        "close": [k["close"] for k in klines],
+                                        "high": [k["high"] for k in klines],
+                                        "low": [k["low"] for k in klines],
+                                        "volume": [k["volume"] for k in klines],
+                                        "datetime": [k["timestamp"] for k in klines],
+                                    }
+                                    logger.info("Using historical klines for chart (%d)", len(klines))
+                        except Exception as hist_err:
+                            logger.warning("Historical klines fetch failed: %s", hist_err)
+
+                    # Construct kline data from buffers with proper OHLCV and timestamps
+                    if not kline_data:
+                        kline_data = {
+                            "open": list(open_buf),
+                            "close": list(close_buf),
+                            "high": list(high_buf),
+                            "low": list(low_buf),
+                            "volume": list(vol_buf),
+                            "datetime": list(timestamp_buf)  # Unix timestamps in milliseconds
+                        }
+                    
+                    # Try professional generator first (TradingView style)
+                    try:
+                        pro_result = self.pro_chart_generator.generate_chart(
+                            kline_data=kline_data,
+                            symbol=self.symbol,
+                            timeframe=self.timeframe,
+                            show_indicators=['ema_9', 'ema_21', 'bb_bands', 'vwap'],
+                            show_volume=True,
+                            show_rsi=True,
+                            show_macd=True
+                        )
+                        chart_b64 = pro_result.get("image_b64")
+                        if chart_b64:
+                            logger.info("🖼️ Professional chart generated (%d chars)", len(chart_b64))
+                    except Exception as pro_err:
+                        logger.warning("Professional chart failed, falling back: %s", pro_err)
+                        chart_b64 = None
+                    
+                    # Fallback to original generator if professional fails
+                    if not chart_b64:
+                        chart_result = self.chart_generator.generate_chart(
+                            kline_data=kline_data,
+                            symbol=self.symbol,
+                            timeframe=self.timeframe,
+                            last_n_candles=50
+                        )
+                        chart_b64 = chart_result.get("image_b64")
+                        if chart_b64:
+                            logger.info("🖼️ Fallback chart generated (%d chars)", len(chart_b64))
+                    
+                    if not chart_b64:
                         logger.warning("🖼️ Chart generation returned no image")
                         # Create a placeholder chart image to keep visual agent behavior consistent
                         try:
-                            placeholder = self.chart_generator.generate_placeholder(message="Insufficient market data for chart", symbol=self.symbol, timeframe=self.timeframe)
+                            placeholder = self.chart_generator.generate_placeholder(
+                                message="Insufficient market data for chart",
+                                symbol=self.symbol,
+                                timeframe=self.timeframe
+                            )
                             chart_b64 = placeholder.get('image_b64')
                             logger.info("🖼️ Placeholder chart generated for visual agent")
                         except Exception:
                             chart_b64 = None
                 except Exception as e:
-                    logger.error(f"Failed to generate chart: {e}")
+                    logger.error("Failed to generate chart: %s", e)
 
-                result = self._trading_graph.invoke(
+                result = await self._trading_graph.invoke(
                 symbol=self.symbol,
                 timeframe=self.timeframe,
                 indicators=indicators,
@@ -384,11 +457,12 @@ class TradingEngine:
                     news_data=news_data or [],
                     social_data=social_data or {},
                     fear_greed_value=fear_greed_value or "N/A",
-                thread_id=f"{self.symbol}_{self.timeframe}",
+                # thread_id argument removed as persistence is disabled
+                # thread_id=f"{self.symbol}_{self.timeframe}",
             )
 
             # Emit agent outputs to frontend
-            if self.on_agent_event:
+            if (callback := self.on_agent_event) is not None:
                 # Emit individual agent reports
                 for agent_name, report_key in [
                     ("Technical Analyst", "technical_report"),
@@ -408,16 +482,16 @@ class TradingEngine:
                         if agent_name == "Sentiment Agent":
                             payload["social_data"] = result.get("social_data")
                             payload["fear_greed_value"] = result.get("fear_greed_value")
-                        await self.on_agent_event("agent_output", payload)
+                        await callback("agent_output", payload)
                         # If the report stored a ReasoningBank digest, emit a reasoning:new event
                         if result[report_key].get("_reasoning_digest"):
-                            await self.on_agent_event("reasoning:new", {
+                            await callback("reasoning:new", {
                                 "agent_name": agent_name,
                                 "prompt_digest": result[report_key].get("_reasoning_digest"),
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             })
 
-            # Log resultados de cada agente
+            # Log individual agent results
             if result.get("technical_report"):
                 logger.info(f"📈 Technical: {result['technical_report'].get('signal', 'N/A')}")
             if result.get("qabba_report"):
@@ -438,10 +512,10 @@ class TradingEngine:
         indicators: dict[str, Any],
         micro: Any,
     ) -> dict[str, Any]:
-        """Análisis de fallback cuando LangGraph no está disponible."""
+        """Fallback analysis when LangGraph is unavailable."""
         logger.warning("Using fallback analysis (LangGraph unavailable)")
 
-        # Análisis simple basado en indicadores
+        # Simple analysis based on indicators
         rsi = indicators.get("rsi", 50)
         macd_hist = indicators.get("macd_hist", 0)
 
@@ -464,19 +538,19 @@ class TradingEngine:
         }
 
     async def _process_decision(self, result: dict[str, Any]) -> None:
-        """Procesa la decisión final y ejecuta si corresponde."""
+        """Processes the final decision and executes if applicable."""
         decision_data = result.get("final_trade_decision", {})
         decision = decision_data.get("final_decision", "HOLD").upper()
         confidence = decision_data.get("confidence_in_decision", "LOW")
         reasoning = decision_data.get("combined_reasoning", "No reasoning")
 
         logger.info("=" * 50)
-        logger.info(f"📋 FINAL DECISION: {decision} ({confidence})")
-        logger.info(f"📝 Reasoning: {reasoning[:200]}...")
+        logger.info("📋 FINAL DECISION: %s (%s)", decision, confidence)
+        logger.info("📝 Reasoning: %s...", reasoning[:200])
 
         # Emit final decision to frontend
-        if self.on_agent_event:
-            await self.on_agent_event("final_decision", {
+        if (callback := self.on_agent_event) is not None:
+            await callback("final_decision", {
                 "decision": decision,
                 "confidence": confidence,
                 "reasoning": reasoning,
@@ -484,10 +558,10 @@ class TradingEngine:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
-        # Log estructurado
+        # Structured log
         self._log_signal(decision, confidence, reasoning, result)
 
-        # Ejecutar si no es HOLD
+        # Execute if not HOLD
         if decision in ["BUY", "SELL"]:
             await self._execute_trade(decision, confidence, decision_data)
         else:
@@ -500,82 +574,80 @@ class TradingEngine:
         confidence: str,
         decision_data: dict[str, Any],
     ) -> None:
-        """Ejecuta un trade basado en la decisión con RiskManager activo."""
+        """Executes a trade based on decision with active RiskManager."""
         logger.info(f"🎯 Executing {decision} trade...")
 
         self._consecutive_holds = 0
         self._last_decision_time = datetime.now(timezone.utc)
 
-        # --- CIRCUIT BREAKER: Evaluar riesgo AVANZADO ---
+        # --- CIRCUIT BREAKER: ADVANCED Risk Evaluation ---
         if self.risk_manager and RISK_MANAGER_AVAILABLE:
-            # Actualizar balance para métricas de riesgo
+            # Update balance for risk metrics
             try:
                 if self.executor.get_balance():
                     self.risk_manager.update_balance(self.executor.get_balance())
             except Exception as e:
-                logger.warning(f"Could not update risk manager balance: {e}")
+                logger.warning("Could not update risk manager balance: %s", e)
             
-            # Verificar si el trade está permitido
+            # Check if trade is allowed
             base_size = decision_data.get("position_size", 1000)  # Default $1000
             allowed, risk_status = self.risk_manager.check_trade_allowed(self.symbol, base_size)
             
             if not allowed:
-                logger.critical(f"🚨 TRADE BLOCKED BY CIRCUIT BREAKER: {risk_status.describe()}")
-                if self.on_agent_event:
-                    await self.on_agent_event("risk:blocked", {
+                logger.critical("🚨 TRADE BLOCKED BY CIRCUIT BREAKER: %s", risk_status.describe())
+                if (callback := self.on_agent_event) is not None:
+                    await callback("risk:blocked", {
                         "status": risk_status.dict(),
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
                 return
             
-            # Aplicar risk_bias al tamaño
+            # Apply risk_bias to size
             adjusted_size = self.risk_manager.get_adjusted_size(base_size)
             if adjusted_size != base_size:
-                logger.info(f"Size adjusted by risk manager: ${base_size:.2f} → ${adjusted_size:.2f}")
-        # --- FIN CIRCUIT BREAKER ---
+                logger.info("Size adjusted by risk manager: $%.2f → $%.2f", base_size, adjusted_size)
+        # --- END CIRCUIT BREAKER ---
 
         if self.paper_trading:
-            logger.info(f"📝 PAPER TRADE: Would {decision} at {self.market_data.current_price}")
+            logger.info("📝 PAPER TRADE: Would %s at %s", decision, self.market_data.current_price)
             return
 
         if not self.allow_live_trading:
             logger.warning(
-                "Live trading bloqueado: allow_live_trading=False. Ejecuta con flag seguro para operar."
+                "Live trading blocked: allow_live_trading=False. Run with safety flag to operate."
             )
             return
 
-        # Obtener parámetros de riesgo
+        # Get risk parameters
         risk_data = decision_data.get("risk_assessment", {})
         entry_price = risk_data.get("entry_price", self.market_data.current_price)
         stop_loss = risk_data.get("stop_loss")
         take_profit = risk_data.get("take_profit")
 
-        # Calcular tamaño de posición (ajustado por RiskManager)
+        # Calculate position size (adjusted by RiskManager)
         balance = self.executor.get_balance()
         if balance is None:
             logger.error("Could not get balance, aborting trade")
             return
+        logger.info(f"Account balance (USDT): {balance:.2f}")
 
-        # Calcular cantidad basada en riesgo
-        if hasattr(self, 'adjusted_size') and adjusted_size:
-            position_size = adjusted_size
-        else:
-            position_size = balance * (APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01)
+        # Calculate quantity based on risk
+        position_size = adjusted_size if 'adjusted_size' in locals() else (balance * (APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01))
         
         quantity = position_size / entry_price
         
-        # Verificar min notional
+        # Verify min notional
         notional = quantity * entry_price
         if notional < self.executor.min_notional:
             logger.warning(f"Trade skipped: Notional {notional:.2f} < Min {self.executor.min_notional}")
             return
 
-        # Verificar balance suficiente
+        # Verify sufficient balance
         if decision == "BUY" and position_size > balance:
             logger.warning(f"Trade skipped: Insufficient balance {balance:.2f} < Required {position_size:.2f}")
             return
 
-        # Ejecutar orden
+        # Execute order
         result = await self.executor.execute_market_order(
             side=decision,
             quantity=quantity,
@@ -588,7 +660,7 @@ class TradingEngine:
                 f"✅ Trade executed: {decision} {result.executed_qty} @ {result.entry_price}"
             )
             
-            # --- ACTUALIZAR REASONING BANK ---
+            # --- UPDATE REASONING BANK ---
             try:
                 digest = decision_data.get('_reasoning_digest') or decision_data.get('reasoning_prompt_digest')
                 if digest:
@@ -603,10 +675,10 @@ class TradingEngine:
             except Exception as e:
                 logger.debug(f"Failed to attach trade outcome to ReasoningBank: {e}")
             
-            # --- ACTUALIZAR RISK MANAGER ---
+            # --- UPDATE RISK MANAGER ---
             if self.risk_manager and RISK_MANAGER_AVAILABLE:
                 try:
-                    # Crear record de trade para métricas
+                    # Create trade record for metrics
                     from src.risk.runtime_risk_manager import TradeRecord
                     trade_record = TradeRecord(
                         trade_id=str(result.order_id) if result.order_id else "paper_trade",
@@ -614,10 +686,10 @@ class TradingEngine:
                         symbol=self.symbol,
                         decision=decision,
                         entry_price=float(result.entry_price) if result.entry_price else 0.0,
-                        exit_price=None,  # Se actualizará cuando cierre
-                        pnl=0.0,  # Se actualizará cuando cierre
+                        exit_price=None,  # Will be updated on close
+                        pnl=0.0,  # Will be updated on close
                         pnl_pct=0.0,
-                        success=True,  # Se actualizará cuando sepa el resultado
+                        success=True,  # Will be updated when result is known
                         size=float(result.executed_qty) * float(result.entry_price) if result.executed_qty and result.entry_price else 0.0
                     )
                     self.risk_manager.record_trade(trade_record)
@@ -627,7 +699,7 @@ class TradingEngine:
         else:
             logger.error(f"❌ Trade failed: {result.status} - {result.message}")
             
-            # --- ACTUALIZAR REASONING BANK PARA TRADE FALLIDO ---
+            # --- UPDATE REASONING BANK FOR FAILED TRADE ---
             try:
                 digest = decision_data.get('_reasoning_digest') or decision_data.get('reasoning_prompt_digest')
                 if digest:
@@ -641,7 +713,7 @@ class TradingEngine:
             except Exception as e:
                 logger.debug(f"Failed to attach failed trade outcome to ReasoningBank: {e}")
             
-            # --- ACTUALIZAR RISK MANAGER PARA TRADE FALLIDO ---
+            # --- UPDATE RISK MANAGER FOR FAILED TRADE ---
             if self.risk_manager and RISK_MANAGER_AVAILABLE:
                 try:
                     from src.risk.runtime_risk_manager import TradeRecord
@@ -662,7 +734,7 @@ class TradingEngine:
                     logger.warning(f"Could not record failed trade: {e}")
 
     def get_risk_status(self) -> Optional[Dict[str, Any]]:
-        """Retorna el estado del RiskManager para el dashboard."""
+        """Returns RiskManager status for dashboard."""
         if self.risk_manager and RISK_MANAGER_AVAILABLE:
             return self.risk_manager.get_status_summary()
         return None
@@ -674,7 +746,7 @@ class TradingEngine:
         reasoning: str,
         full_result: dict[str, Any],
     ) -> None:
-        """Loguea señal para auditoría."""
+        """Logs signal for audit."""
         signal_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "symbol": self.symbol,
@@ -693,7 +765,7 @@ class TradingEngine:
             logger.error(f"Failed to log signal: {e}")
 
     def get_status(self) -> dict[str, Any]:
-        """Retorna el estado actual del motor."""
+        """Returns the current engine status."""
         return {
             "running": self._running,
             "symbol": self.symbol,
@@ -708,7 +780,7 @@ class TradingEngine:
 
 
 # ============================================================================
-# Función principal para ejecutar el motor
+# Main function to run the engine
 # ============================================================================
 
 async def run_trading_engine(
@@ -716,7 +788,7 @@ async def run_trading_engine(
     timeframe: str = "15m",
     paper_trading: bool = True,
 ) -> None:
-    """Función principal para ejecutar el motor de trading."""
+    """Main function to run the trading engine."""
     engine = TradingEngine(
         symbol=symbol,
         timeframe=timeframe,

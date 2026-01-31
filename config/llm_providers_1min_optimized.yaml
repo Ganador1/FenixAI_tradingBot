@@ -1,0 +1,60 @@
+# config/llm_providers.yaml
+# Configuración optimizada para timeframe 1min basada en análisis de modelos
+# Generado: 2026-01-31T01:17:00.520190
+#
+# ANÁLISIS:
+# - Prioridad: Velocidad > Razonamiento para 1min
+# - Modelos grandes (>80B) excluidos por latencia
+# - Especialización por agente según requisitos
+
+active_profile: 'ollama_1min_optimized'
+
+ollama_1min_optimized:
+  technical:
+    provider_type: 'ollama_cloud'
+    model_name: 'ministral-3:14b-cloud'  # Score: 98/100
+    temperature: 0.05
+    max_tokens: 2500
+    timeout: 8
+    api_base: 'http://localhost:11434'
+
+  sentiment:
+    provider_type: 'ollama_cloud'
+    model_name: 'glm-4.7:cloud'  # Score: 98/100
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 6
+    api_base: 'http://localhost:11434'
+
+  qabba:
+    provider_type: 'ollama_cloud'
+    model_name: 'deepseek-v3.2:cloud'  # Score: 95/100
+    temperature: 0.05
+    max_tokens: 1200
+    timeout: 7
+    api_base: 'http://localhost:11434'
+
+  visual:
+    provider_type: 'ollama_cloud'
+    model_name: 'gemini-3-flash-preview:cloud'  # Score: 95/100
+    temperature: 0.05
+    max_tokens: 1500
+    timeout: 10
+    api_base: 'http://localhost:11434'
+    supports_vision: true
+
+  decision:
+    provider_type: 'ollama_cloud'
+    model_name: 'minimax-m2.1:cloud'  # Score: 92/100
+    temperature: 0.1
+    max_tokens: 2000
+    timeout: 12
+    api_base: 'http://localhost:11434'
+
+  risk_manager:
+    provider_type: 'ollama_cloud'
+    model_name: 'devstral-small-2:24b-cloud'  # Score: 95/100
+    temperature: 0.15
+    max_tokens: 1500
+    timeout: 10
+    api_base: 'http://localhost:11434'

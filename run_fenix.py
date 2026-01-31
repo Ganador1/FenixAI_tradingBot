@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # run_fenix.py
 """
-Script principal de ejecución de Fenix Trading Bot.
+Main execution script for Fenix Trading Bot.
 
-Uso:
-    python run_fenix.py                    # Paper trading con Ollama
-    python run_fenix.py --mode live        # Trading real
-    python run_fenix.py --symbol ETHUSDT   # Otro par
-    python run_fenix.py --help             # Ver opciones
+Usage:
+    python run_fenix.py                    # Paper trading with Ollama
+    python run_fenix.py --mode live        # Live trading
+    python run_fenix.py --symbol ETHUSDT   # Different pair
+    python run_fenix.py --help             # See options
 """
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Crear directorio de logs si no existe
+# Create logs directory if it doesn't exist
 Path("logs").mkdir(exist_ok=True)
 
-# Configurar logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -35,17 +35,17 @@ logger = logging.getLogger("Fenix")
 
 
 def parse_args():
-    """Parsea argumentos de línea de comandos."""
+    """Parses command line arguments."""
     parser = argparse.ArgumentParser(
         description="Fenix AI Trading Bot - LangGraph Multi-Agent System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Ejemplos:
+Examples:
   python run_fenix.py                       # Paper trading, BTCUSDT, 15m
-  python run_fenix.py --mode live           # Trading real
-  python run_fenix.py --symbol ETHUSDT      # Otro par
-  python run_fenix.py --timeframe 5m        # Otro timeframe
-  python run_fenix.py --no-visual           # Sin agente visual
+  python run_fenix.py --mode live           # Live trading
+  python run_fenix.py --symbol ETHUSDT      # Different pair
+  python run_fenix.py --timeframe 5m        # Different timeframe
+  python run_fenix.py --no-visual           # Without visual agent
         """,
     )
     
@@ -53,71 +53,76 @@ Ejemplos:
         "--mode",
         choices=["paper", "live"],
         default="paper",
-        help="Modo de trading (default: paper)",
+        help="Trading mode (default: paper)",
     )
     parser.add_argument(
         "--allow-live",
         action="store_true",
-        help="Requerido para ejecutar en modo live y prevenir operaciones accidentales",
+        help="Required for live mode execution to prevent accidental trades",
+    )
+    parser.add_argument(
+        "--testnet",
+        action="store_true",
+        help="Use Binance Futures Testnet (for risk-free testing)",
     )
     parser.add_argument(
         "--symbol",
         default="BTCUSDT",
-        help="Par a tradear (default: BTCUSDT)",
+        help="Trading pair (default: BTCUSDT)",
     )
     parser.add_argument(
         "--timeframe",
         default="15m",
-        help="Timeframe de análisis (default: 15m)",
+        help="Analysis timeframe (default: 15m)",
     )
     parser.add_argument(
         "--model",
         default="qwen2.5:7b",
-        help="Modelo Ollama a usar (default: qwen2.5:7b)",
+        help="Ollama model to use (default: qwen2.5:7b)",
     )
     parser.add_argument(
         "--interval",
         type=int,
         default=60,
-        help="Intervalo entre análisis en segundos (default: 60)",
+        help="Interval between analysis in seconds (default: 60)",
     )
     parser.add_argument(
         "--no-visual",
         action="store_true",
-        help="Desactivar agente visual",
+        help="Disable visual agent",
     )
     parser.add_argument(
         "--no-sentiment",
         action="store_true",
-        help="Desactivar agente de sentimiento",
+        help="Disable sentiment agent",
     )
     parser.add_argument(
         "--max-risk",
         type=float,
         default=2.0,
-        help="Máximo riesgo por trade en %% (default: 2.0)",
+        help="Max risk per trade in %% (default: 2.0)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Solo simular, no ejecutar órdenes",
+        help="Simulate only, do not execute orders",
     )
     parser.add_argument(
         "--api",
         action="store_true",
-        help="Iniciar servidor API (FastAPI + Socket.IO) para el frontend",
+        help="Start API server (FastAPI + Socket.IO) for frontend",
     )
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="Host para bind del servidor API (default: 127.0.0.1, no expuesto públicamente)",
+        help="Host to bind API server (default: 127.0.0.1, not exposed publicly)",
     )
     
     return parser.parse_args()
 
 
 async def main():
-    """Función principal."""
+    """Main function."""
     args = parse_args()
     
     print("""
@@ -129,76 +134,77 @@ async def main():
     ╚═══════════════════════════════════════════════════════════════╝
     """)
     
-    logger.info("Iniciando Fenix Trading Bot")
-    logger.info(f"  Modo: {args.mode.upper()}")
-    logger.info(f"  Símbolo: {args.symbol}")
+    logger.info("Starting Fenix Trading Bot")
+    logger.info(f"  Mode: {args.mode.upper()}")
+    logger.info(f"  Symbol: {args.symbol}")
     logger.info(f"  Timeframe: {args.timeframe}")
-    logger.info(f"  Modelo: {args.model}")
-    logger.info(f"  Intervalo: {args.interval}s")
-    logger.info(f"  Visual: {'Sí' if not args.no_visual else 'No'}")
-    logger.info(f"  Sentiment: {'Sí' if not args.no_sentiment else 'No'}")
+    logger.info(f"  Model: {args.model}")
+    logger.info(f"  Interval: {args.interval}s")
+    logger.info(f"  Visual: {'Yes' if not args.no_visual else 'No'}")
+    logger.info(f"  Sentiment: {'Yes' if not args.no_sentiment else 'No'}")
 
     if args.mode == "live" and not args.allow_live:
-        logger.error("Modo live solicitado pero --allow-live no fue proporcionado. Abortando por seguridad.")
+        logger.error("Live mode requested but --allow-live not provided. Aborting for safety.")
         return 1
     
-    # Verificar Ollama
-    logger.info("Verificando conexión a Ollama...")
+    # Verify Ollama
+    logger.info("Verifying Ollama connection...")
     try:
         import httpx
         response = httpx.get("http://localhost:11434/api/tags", timeout=5)
         if response.status_code != 200:
-            logger.error("Ollama no está disponible. Ejecuta: ollama serve")
+            logger.error("Ollama is not available. Run: ollama serve")
             return 1
         
         models = [m["name"] for m in response.json().get("models", [])]
         if args.model not in models and not any(args.model.split(":")[0] in m for m in models):
-            logger.warning(f"Modelo {args.model} no encontrado. Disponibles: {models[:5]}")
+            logger.warning(f"Model {args.model} not found. Available: {models[:5]}")
             args.model = models[0] if models else "gemma3:1b"
-            logger.info(f"Usando modelo alternativo: {args.model}")
+            logger.info(f"Using alternative model: {args.model}")
         
-        logger.info(f"✅ Ollama OK - Modelo: {args.model}")
+        logger.info(f"✅ Ollama OK - Model: {args.model}")
         
     except Exception as e:
-        logger.error(f"Error conectando a Ollama: {e}")
+        logger.error(f"Error connecting to Ollama: {e}")
         return 1
     
-    # Verificar Binance
-    logger.info("Verificando conexión a Binance...")
+    # Verify Binance
+    use_testnet = args.mode == "paper" or args.testnet
+    logger.info(f"Verifying Binance connection {'(TESTNET)' if use_testnet else '(PRODUCTION)'}...")
     try:
         from src.trading.binance_client import BinanceClient
         
-        testnet = args.mode == "paper"
-        client = BinanceClient(testnet=testnet)
+        client = BinanceClient(testnet=use_testnet)
         connected = await client.connect()
         
         if connected:
             price = await client.get_price(args.symbol)
             if price:
-                logger.info(f"✅ Binance OK - {args.symbol}: ${price:,.2f}")
+                mode_str = "TESTNET" if use_testnet else "LIVE"
+                logger.info(f"✅ Binance {mode_str} OK - {args.symbol}: ${price:,.2f}")
             else:
-                logger.warning(f"No se pudo obtener precio de {args.symbol}")
+                logger.warning(f"Could not get price for {args.symbol}")
         else:
-            logger.warning("No se pudo conectar a Binance, continuando en modo simulado")
+            logger.warning("Could not connect to Binance, continuing in simulated mode")
         
         await client.close()
         
     except ImportError:
-        logger.warning("Cliente Binance no disponible, continuando en modo simulado")
+        logger.warning("Binance client not available, continuing in simulated mode")
     except Exception as e:
-        logger.warning(f"Error conectando a Binance: {e}")
+        logger.warning(f"Error connecting to Binance: {e}")
     
-    # Iniciar servidor API si se solicita
+    # Start API server if requested
     if args.api:
-        logger.info("🚀 Iniciando servidor API (Frontend Backend)...")
+        logger.info("🚀 Starting API server (Frontend Backend)...")
         import uvicorn
         # Importar app_socketio desde el nuevo módulo server
         # Nota: uvicorn necesita el import string "src.api.server:app_socketio"
         uvicorn.run("src.api.server:app_socketio", host=args.host, port=8000, reload=False)
         return 0
 
-    # Iniciar motor de trading estándar (CLI mode)
-    logger.info("Iniciando motor de trading (CLI Mode)...")
+    # Start standard trading engine (CLI mode)
+    logger.info("Starting trading engine (CLI Mode)...")
     
     try:
         from src.trading.engine import TradingEngine
@@ -206,71 +212,71 @@ async def main():
         engine = TradingEngine(
             symbol=args.symbol,
             timeframe=args.timeframe,
-            use_testnet=args.mode == "paper",
+            use_testnet=args.mode == "paper" or args.testnet,
             paper_trading=args.mode == "paper" or args.dry_run,
             enable_visual_agent=not args.no_visual,
             enable_sentiment_agent=not args.no_sentiment,
             allow_live_trading=args.allow_live,
         )
         
-        # Manejo de señales de sistema
+        # Signal handling
         stop_event = asyncio.Event()
         
         def signal_handler(sig, frame):
-            logger.info("Señal de interrupción recibida, deteniendo...")
+            logger.info("Interrupt signal received, stopping...")
             stop_event.set()
         
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # Iniciar
-        logger.info("✅ Motor de trading listo")
+        # Start
+        logger.info("✅ Trading engine ready")
         
-        # Ejecutar
+        # Execute
         await engine.start()
         
         return 0
         
     except ImportError as e:
-        logger.error(f"Error importando motor de trading: {e}")
-        logger.info("Ejecutando en modo de prueba simplificado...")
+        logger.error(f"Error importing trading engine: {e}")
+        logger.info("Running in simplified test mode...")
         
-        # Modo de prueba simplificado
+        # Simplified test mode
         return await run_simple_test(args)
 
 
 async def run_simple_test(args):
-    """Ejecuta un test simplificado sin el motor completo."""
-    logger.info("=== Modo de Prueba Simplificado ===")
+    """Executes a simplified test without the full engine."""
+    logger.info("=== Simplified Test Mode ===")
     
     from src.prompts.agent_prompts import format_prompt
     from langchain_ollama import ChatOllama
     from langchain_core.messages import SystemMessage, HumanMessage
     from src.trading.binance_client import BinanceClient
     
-    # Conectar a Binance
+    # Connect to Binance
     client = BinanceClient(testnet=True)
     await client.connect()
     
-    # Obtener datos reales
+    # Get real data
     price = await client.get_price(args.symbol)
     klines = await client.get_klines(args.symbol, args.timeframe, limit=50)
     
-    logger.info(f"Datos recibidos: {args.symbol} @ ${price:,.2f}")
-    logger.info(f"Klines: {len(klines)} velas")
+    logger.info(f"Data received: {args.symbol} @ ${price:,.2f}")
+    logger.info(f"Klines: {len(klines)} candles")
     
-    # Calcular indicadores simples
+    # Calculate simple indicators
     if klines:
         closes = [k["close"] for k in klines]
         
-        # RSI simple
+        # Simple RSI
         gains = [max(0, closes[i] - closes[i-1]) for i in range(1, len(closes))]
         losses = [max(0, closes[i-1] - closes[i]) for i in range(1, len(closes))]
         avg_gain = sum(gains[-14:]) / 14 if len(gains) >= 14 else 0
         avg_loss = sum(losses[-14:]) / 14 if len(losses) >= 14 else 0.0001
         rsi = 100 - (100 / (1 + avg_gain / avg_loss))
         
-        # EMA simple
+        # Simple EMA
         ema_9 = sum(closes[-9:]) / 9 if len(closes) >= 9 else closes[-1]
         ema_21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]
         
@@ -281,12 +287,12 @@ async def run_simple_test(args):
             "price": price,
         }
         
-        logger.info(f"Indicadores: RSI={rsi:.1f}, EMA9={ema_9:.0f}, EMA21={ema_21:.0f}")
+        logger.info(f"Indicators: RSI={rsi:.1f}, EMA9={ema_9:.0f}, EMA21={ema_21:.0f}")
     else:
         indicators = {"rsi": 50, "price": price}
     
-    # Ejecutar análisis con LLM
-    logger.info("Ejecutando análisis con LLM...")
+    # Run analysis with LLM
+    logger.info("Running analysis with LLM...")
     
     messages = format_prompt(
         "technical_analyst",
@@ -307,7 +313,7 @@ async def run_simple_test(args):
         HumanMessage(content=messages[1]["content"]),
     ])
     
-    logger.info("=== Respuesta del Agente Técnico ===")
+    logger.info("=== Technical Agent Response ===")
     print(response.content[:1000])
     
     await client.close()
@@ -319,7 +325,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     if args.api:
-        print("🚀 Iniciando servidor API (Frontend Backend)...")
+        print("🚀 Starting API server (Frontend Backend)...")
         import uvicorn
         host = args.host or "127.0.0.1"
         if host == "0.0.0.0":
@@ -339,5 +345,5 @@ if __name__ == "__main__":
         exit_code = asyncio.run(main())
         sys.exit(exit_code)
     except KeyboardInterrupt:
-        print("\nInterrumpido por usuario")
+        print("\nInterrupted by user")
         sys.exit(0)
