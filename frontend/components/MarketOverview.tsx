@@ -90,7 +90,7 @@ export function MarketOverview() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-40 text-slate-400 text-sm">Cargando mercado en vivo...</div>
+      <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading live market data...</div>
     );
   }
 
@@ -168,7 +168,7 @@ export function MarketOverview() {
 
           <div className="h-64">
             {chartLoading ? (
-              <div className="flex items-center justify-center h-full text-slate-400 text-sm">Cargando serie...</div>
+              <div className="flex items-center justify-center h-full text-gray-400 text-sm">Loading chart...</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
@@ -191,7 +191,7 @@ export function MarketOverview() {
                       border: '1px solid #ccc',
                       borderRadius: '8px'
                     }}
-                    formatter={(value: number) => [`$${value.toLocaleString()}`, 'Precio']}
+                    formatter={(value: number) => [`$${value.toLocaleString()}`, 'Price']}
                     labelFormatter={(val) => new Date(val).toLocaleString()}
                   />
                   <Line

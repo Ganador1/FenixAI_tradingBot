@@ -15,16 +15,21 @@ services:
     container_name: fenix-api
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       # Database
-      - DATABASE_URL=sqlite:///./data/fenix.db
+      - DATABASE_URL=sqlite+aiosqlite:///./data/fenix.db
       # Secrets from .env file
       - BINANCE_API_KEY=${BINANCE_API_KEY:-}
       - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
       - JWT_SECRET=${JWT_SECRET:-development-secret-change-in-production}
       # Ollama connection (for local LLM)
       - OLLAMA_HOST=http://host.docker.internal:11434
+      - CREATE_DEMO_USERS=${CREATE_DEMO_USERS:-false}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-}
+      - DEFAULT_DEMO_PASSWORD=${DEFAULT_DEMO_PASSWORD:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
       # Prometheus
       - PROMETHEUS_ENABLED=true
     volumes:

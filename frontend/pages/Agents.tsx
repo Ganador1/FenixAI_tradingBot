@@ -341,22 +341,22 @@ export const Agents: React.FC = () => {
       <Card>
         <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <CardTitle>Panel de Control en Vivo</CardTitle>
-            <p className="text-sm text-gray-500">Cambia símbolo, timeframe y agentes activos. Reinicia el motor automáticamente.</p>
+            <CardTitle>Live Control Panel</CardTitle>
+            <p className="text-sm text-gray-500">Change symbol, timeframe and active agents. Engine restarts automatically.</p>
           </div>
           <div className="flex items-center gap-3">
             <Badge variant={configDraft.paper_trading ? 'success' : 'warning'}>
               {configDraft.paper_trading ? 'Paper trading' : 'Live ready'}
             </Badge>
             <Badge variant={configDraft.allow_live_trading ? 'error' : 'default'}>
-              {configDraft.allow_live_trading ? 'Live permitido' : 'Live bloqueado'}
+              {configDraft.allow_live_trading ? 'Live enabled' : 'Live blocked'}
             </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Símbolo</label>
+              <label className="block text-sm font-medium mb-1">Symbol</label>
               <Input
                 value={configDraft.symbol}
                 onChange={(e) => setConfigDraft(prev => ({ ...prev, symbol: e.target.value.toUpperCase() }))}
@@ -376,8 +376,8 @@ export const Agents: React.FC = () => {
             </div>
             <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
               <div>
-                <p className="text-sm font-medium">Agente Visual</p>
-                <p className="text-xs text-gray-500">Reconocimiento de patrones</p>
+                <p className="text-sm font-medium">Visual Agent</p>
+                <p className="text-xs text-gray-500">Pattern recognition</p>
               </div>
               <Switch
                 checked={configDraft.enable_visual_agent}
@@ -386,8 +386,8 @@ export const Agents: React.FC = () => {
             </div>
             <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
               <div>
-                <p className="text-sm font-medium">Agente Sentiment</p>
-                <p className="text-xs text-gray-500">Noticias y redes</p>
+                <p className="text-sm font-medium">Sentiment Agent</p>
+                <p className="text-xs text-gray-500">News & social media</p>
               </div>
               <Switch
                 checked={configDraft.enable_sentiment_agent}
@@ -400,7 +400,7 @@ export const Agents: React.FC = () => {
             <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
               <div>
                 <p className="text-sm font-medium">Paper Trading</p>
-                <p className="text-xs text-gray-500">Operaciones simuladas</p>
+                <p className="text-xs text-gray-500">Simulated trades</p>
               </div>
               <Switch
                 checked={configDraft.paper_trading}
@@ -409,8 +409,8 @@ export const Agents: React.FC = () => {
             </div>
             <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
               <div>
-                <p className="text-sm font-medium">Permitir Live</p>
-                <p className="text-xs text-gray-500">Requiere confirmación manual</p>
+                <p className="text-sm font-medium">Allow Live</p>
+                <p className="text-xs text-gray-500">Requires manual confirmation</p>
               </div>
               <Switch
                 checked={configDraft.allow_live_trading}
@@ -420,7 +420,7 @@ export const Agents: React.FC = () => {
             <div className="flex items-center justify-end gap-3">
               <Button variant="outline" onClick={() => fetchEngineConfig()}>Reset</Button>
               <Button onClick={handleSaveConfig} disabled={isSavingConfig} className="bg-indigo-600 hover:bg-indigo-700">
-                {isSavingConfig ? 'Aplicando...' : 'Aplicar y reiniciar'}
+                {isSavingConfig ? 'Applying...' : 'Apply & restart'}
               </Button>
             </div>
           </div>

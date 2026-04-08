@@ -16,8 +16,7 @@ export function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="relative flex h-screen w-full overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(56,189,248,0.08),transparent_35%),radial-gradient(circle_at_80%_0%,rgba(14,165,233,0.12),transparent_30%)]" />
+    <div className="relative flex h-screen w-full overflow-hidden bg-gray-50">
       <Sidebar />
       <div className="relative z-10 flex-1 flex flex-col overflow-hidden">
         <Header />
