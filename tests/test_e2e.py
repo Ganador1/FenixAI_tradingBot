@@ -283,7 +283,7 @@ class TestEndToEndConfigValidation:
         from pathlib import Path
         import yaml
         
-        base_path = Path("/Volumes/Ganador disk/Fenix unic agent/FenixAI")
+        base_path = Path(__file__).resolve().parent.parent
         
         # Verificar que existen archivos de configuración
         config_files = [

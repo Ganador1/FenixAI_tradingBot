@@ -1,8 +1,7 @@
-import os
-import json
 import base64
+import json
 import logging
-from typing import Optional
+import os
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -16,19 +15,23 @@ try:
         get_secrets_manager,
         migrate_env_secrets,
     )
+
     _SECURE_SM_AVAILABLE = True
 except Exception:
     # No bloquear si el módulo seguro no está disponible
     _SECURE_SM_AVAILABLE = False
 
+
 class SecretsManager:
-    def __init__(self, secrets_file: str = 'config/encrypted_secrets.json', password: Optional[str] = None):
+    def __init__(
+        self, secrets_file: str = "config/encrypted_secrets.json", password: str | None = None
+    ):
         self.logger = logging.getLogger(__name__)
         self.secrets_file = secrets_file
-        self.password = password or os.getenv('SECRETS_PASSWORD')
+        self.password = password or os.getenv("SECRETS_PASSWORD")
 
         # Si existe el SecureSecretsManager, delegar en él para evitar duplicación
-        self._delegate: Optional[SecureSecretsManager] = None
+        self._delegate: SecureSecretsManager | None = None
         if _SECURE_SM_AVAILABLE:
             try:
                 self._delegate = get_secrets_manager()
@@ -38,15 +41,21 @@ class SecretsManager:
                 except Exception:
                     # No crítico; continuar
                     pass
-                self.logger.info("SecretsManager delegando en SecureSecretsManager (vault encriptado).")
+                self.logger.info(
+                    "SecretsManager delegando en SecureSecretsManager (vault encriptado)."
+                )
             except Exception as e:
-                self.logger.warning(f"Fallo inicializando SecureSecretsManager, usando modo local: {e}")
+                self.logger.warning(
+                    f"Fallo inicializando SecureSecretsManager, usando modo local: {e}"
+                )
                 self._delegate = None
 
         # Fallback local (compatibilidad histórica)
         if self._delegate is None:
             if not self.password:
-                self.logger.warning("SECRETS_PASSWORD no está configurado; usando solo variables de entorno como fallback.")
+                self.logger.warning(
+                    "SECRETS_PASSWORD no está configurado; usando solo variables de entorno como fallback."
+                )
                 self.fernet = None
                 self.secrets = {}
             else:
@@ -57,7 +66,7 @@ class SecretsManager:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b'salt_',
+            salt=b"salt_",
             iterations=390000,
         )
         key = base64.urlsafe_b64encode(kdf.derive(self.password.encode()))
@@ -66,7 +75,7 @@ class SecretsManager:
     def _load_secrets(self):
         if self.fernet and os.path.exists(self.secrets_file):
             try:
-                with open(self.secrets_file, 'rb') as f:
+                with open(self.secrets_file, "rb") as f:
                     encrypted = f.read()
                 decrypted = self.fernet.decrypt(encrypted)
                 return json.loads(decrypted)
@@ -79,10 +88,15 @@ class SecretsManager:
         # Mapear alias comunes para credenciales críticas
         aliases = [key]
         # Binance
-        if key.upper() == 'BINANCE_API_KEY':
-            aliases += ['binance_api_key', 'BINANCE_TESTNET_API_KEY']
-        if key.upper() == 'BINANCE_API_SECRET':
-            aliases += ['binance_api_secret', 'BINANCE_SECRET_KEY', 'binance_secret_key', 'BINANCE_TESTNET_API_SECRET']
+        if key.upper() == "BINANCE_API_KEY":
+            aliases += ["binance_api_key", "BINANCE_TESTNET_API_KEY"]
+        if key.upper() == "BINANCE_API_SECRET":
+            aliases += [
+                "binance_api_secret",
+                "BINANCE_SECRET_KEY",
+                "binance_secret_key",
+                "BINANCE_TESTNET_API_SECRET",
+            ]
         return aliases
 
     def get_secret(self, key, default=None):
@@ -98,7 +112,7 @@ class SecretsManager:
                 if value:
                     return value
         # 1) Buscar en almacén cifrado local (si existe)
-        if hasattr(self, 'secrets') and isinstance(self.secrets, dict):
+        if hasattr(self, "secrets") and isinstance(self.secrets, dict):
             for alias in self._key_aliases(key):
                 if alias in self.secrets:
                     return self.secrets.get(alias)
@@ -109,7 +123,7 @@ class SecretsManager:
                 return val
         return default
 
-    def set_secret(self, key, value, ttl_seconds: Optional[int] = None):
+    def set_secret(self, key, value, ttl_seconds: int | None = None):
         # Si hay delegado seguro, almacenar allí (TTL opcional)
         if self._delegate is not None:
             try:
@@ -122,7 +136,7 @@ class SecretsManager:
                 # Si falla el delegado, continuar con almacenamiento local
 
         # Modo local (compatibilidad)
-        if not hasattr(self, 'secrets'):
+        if not hasattr(self, "secrets"):
             self.secrets = {}
         self.secrets[key] = value
         self._save_secrets()
@@ -132,13 +146,15 @@ class SecretsManager:
         if self._delegate is not None:
             # El delegado maneja persistencia segura; no guardar duplicado
             return
-        if not getattr(self, 'fernet', None):
+        if not getattr(self, "fernet", None):
             # Sin password: no podemos guardar cifrado; advertir y salir
-            self.logger.warning("No se guardan secretos: SECRETS_PASSWORD no configurado (modo solo entorno).")
+            self.logger.warning(
+                "No se guardan secretos: SECRETS_PASSWORD no configurado (modo solo entorno)."
+            )
             return
         try:
             encrypted = self.fernet.encrypt(json.dumps(self.secrets).encode())
-            with open(self.secrets_file, 'wb') as f:
+            with open(self.secrets_file, "wb") as f:
                 f.write(encrypted)
             self.logger.info(f"Secrets guardados en {self.secrets_file}")
         except Exception as e:
@@ -148,12 +164,16 @@ class SecretsManager:
         if self._delegate is not None:
             try:
                 # El SecureSecretsManager maneja rotaciones por servicio; aquí no hay rotación general
-                self.logger.info("Rotación gestionada por SecureSecretsManager (use rotate_credentials por servicio).")
+                self.logger.info(
+                    "Rotación gestionada por SecureSecretsManager (use rotate_credentials por servicio)."
+                )
                 return True
             except Exception:
                 pass
         # Lógica simple de rotación local: regenerar Fernet con nueva password
-        self.logger.warning("Rotación de keys local no implementada completamente. Actualice SECRETS_PASSWORD manualmente.")
+        self.logger.warning(
+            "Rotación de keys local no implementada completamente. Actualice SECRETS_PASSWORD manualmente."
+        )
         return False
 
     # Métodos opcionales de compatibilidad para integraciones avanzadas
@@ -164,7 +184,7 @@ class SecretsManager:
             except Exception:
                 return False
         # En modo local, consideramos integridad como existencia del archivo si hay password
-        if getattr(self, 'fernet', None):
+        if getattr(self, "fernet", None):
             return os.path.exists(self.secrets_file)
         return True
 
@@ -176,10 +196,11 @@ class SecretsManager:
                 pass
         # Limpiar memoria local
         try:
-            if hasattr(self, 'secrets'):
+            if hasattr(self, "secrets"):
                 self.secrets.clear()
         except Exception:
             pass
+
 
 # Instancia global (usar con precaución)
 # secrets_manager = SecretsManager()

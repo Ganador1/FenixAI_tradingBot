@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import subprocess
-import shlex
 import json
+import shlex
+import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from src.inference.providers.base import InferenceProvider, GenerationParams, ProviderError, _metadata
+from src.inference.providers.base import (
+    GenerationParams,
+    InferenceProvider,
+    ProviderError,
+    _metadata,
+)
 
 
 class OllamaProvider(InferenceProvider):
@@ -30,12 +35,12 @@ class OllamaProvider(InferenceProvider):
     def name(self) -> str:
         return "ollama"
 
-    def capabilities(self) -> Dict[str, bool]:
+    def capabilities(self) -> dict[str, bool]:
         return {
-            'supports_chat': True,
-            'supports_text': True,
-            'supports_vision': True,
-            'supports_tools': False
+            "supports_chat": True,
+            "supports_text": True,
+            "supports_vision": True,
+            "supports_tools": False,
         }
 
     def _ensure_cli(self) -> None:
@@ -60,18 +65,18 @@ class OllamaProvider(InferenceProvider):
                 if proc2.returncode != 0:
                     raise ProviderError(f"Ollama CLI run failed: {proc2.stderr or proc.stderr}")
                 else:
-                    out = proc2.stdout or ''
+                    out = proc2.stdout or ""
             else:
-                out = proc.stdout or ''
+                out = proc.stdout or ""
 
             # Ollama may return plain text or JSON; attempt to parse
             try:
                 data = json.loads(out)
                 # If JSON, common field is 'output' or 'text'
-                if isinstance(data, dict) and 'output' in data:
-                    return data['output']
-                if isinstance(data, dict) and 'text' in data:
-                    return data['text']
+                if isinstance(data, dict) and "output" in data:
+                    return data["output"]
+                if isinstance(data, dict) and "text" in data:
+                    return data["text"]
                 # Otherwise return raw JSON string
                 return json.dumps(data)
             except Exception:
@@ -82,37 +87,41 @@ class OllamaProvider(InferenceProvider):
         except Exception as e:
             raise ProviderError(f"Ollama CLI error: {e}", cause=e)
 
-    def generate_text(self, model_id: str, prompt: str, params: GenerationParams) -> Dict[str, Any]:
+    def generate_text(self, model_id: str, prompt: str, params: GenerationParams) -> dict[str, Any]:
         start_ts = time.time()
         try:
             txt = self._run_ollama_cli(model_id, prompt, timeout=params.timeout or 30.0)
-            return {
-                'text': txt,
-                'metadata': _metadata(self.name(), model_id, start_ts)
-            }
+            return {"text": txt, "metadata": _metadata(self.name(), model_id, start_ts)}
         except ProviderError:
             raise
         except Exception as e:
             raise ProviderError(f"Ollama generate_text failed: {e}", cause=e)
 
-    def chat_completions(self, model_id: str, messages: List[Dict[str, str]], params: GenerationParams) -> Dict[str, Any]:
+    def chat_completions(
+        self, model_id: str, messages: list[dict[str, str]], params: GenerationParams
+    ) -> dict[str, Any]:
         start_ts = time.time()
         # Convert messages to a simple prompt
         try:
-            sys_msg = (params.extra or {}).get('system', '')
+            sys_msg = (params.extra or {}).get("system", "")
             prompt_lines = []
             if sys_msg:
                 prompt_lines.append(f"System: {sys_msg}")
             for m in messages:
-                role = m.get('role', 'user')
-                content = m.get('content', '')
+                role = m.get("role", "user")
+                content = m.get("content", "")
                 prompt_lines.append(f"{role.capitalize()}: {content}")
             prompt = "\n".join(prompt_lines)
-            return {'text': self._run_ollama_cli(model_id, prompt, timeout=params.timeout or 30.0), 'metadata': _metadata(self.name(), model_id, start_ts)}
+            return {
+                "text": self._run_ollama_cli(model_id, prompt, timeout=params.timeout or 30.0),
+                "metadata": _metadata(self.name(), model_id, start_ts),
+            }
         except Exception as e:
             raise ProviderError(f"Ollama chat failed: {e}", cause=e)
 
-    def generate_with_vision(self, model_id: str, prompt: str, images: List[str], params: GenerationParams) -> Dict[str, Any]:
+    def generate_with_vision(
+        self, model_id: str, prompt: str, images: list[str], params: GenerationParams
+    ) -> dict[str, Any]:
         start = time.time()
         # Ollama CLI doesn't support file uploads directly via CLI in many versions;
         # we fallback to attaching image URIs/paths in the prompt for models that accept it.
@@ -121,8 +130,8 @@ class OllamaProvider(InferenceProvider):
             combined_prompt = f"{prompt}\n{refs}" if refs else prompt
             text = self._run_ollama_cli(model_id, combined_prompt, timeout=params.timeout or 60.0)
             return {
-                'text': text,
-                'metadata': _metadata(self.name(), model_id, start, images_provided=len(images))
+                "text": text,
+                "metadata": _metadata(self.name(), model_id, start, images_provided=len(images)),
             }
         except Exception as e:
             raise ProviderError(f"Ollama vision generation failed: {e}", cause=e)

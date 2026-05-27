@@ -8,19 +8,19 @@ Este módulo convierte salidas heterogéneas del Decision Agent a un esquema com
   ... (otras claves originales preservadas)
 }
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict
-
+from typing import Any
 
 CANONICAL_KEYS = {
-    'decision': ('decision', 'final_decision', 'action'),
-    'reasoning': ('reasoning', 'combined_reasoning', 'reason'),
-    'confidence': ('confidence', 'confidence_in_decision'),
+    "decision": ("decision", "final_decision", "action"),
+    "reasoning": ("reasoning", "combined_reasoning", "reason"),
+    "confidence": ("confidence", "confidence_in_decision"),
 }
 
 
-def normalize_decision_output(result: Any) -> Dict[str, Any]:
+def normalize_decision_output(result: Any) -> dict[str, Any]:
     """Normaliza la salida del Decision Agent a un dict con claves canónicas.
 
     - Acepta dicts u objetos con atributos.
@@ -32,7 +32,7 @@ def normalize_decision_output(result: Any) -> Dict[str, Any]:
 
     # Convertir a dict si es un objeto con atributos esperados
     if not isinstance(result, dict):
-        obj_dict: Dict[str, Any] = {}
+        obj_dict: dict[str, Any] = {}
         for variants in CANONICAL_KEYS.values():
             for v in variants:
                 if hasattr(result, v):
@@ -45,27 +45,27 @@ def normalize_decision_output(result: Any) -> Dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError(f"Invalid decision type: {type(result)}")
 
-    normalized: Dict[str, Any] = dict(result)  # copia superficial
+    normalized: dict[str, Any] = dict(result)  # copia superficial
 
     # Mapear claves canónicas
-    decision_val = _first_key(result, CANONICAL_KEYS['decision'])
+    decision_val = _first_key(result, CANONICAL_KEYS["decision"])
     if decision_val is not None:
-        normalized['decision'] = str(decision_val).upper()
+        normalized["decision"] = str(decision_val).upper()
 
-    reasoning_val = _first_key(result, CANONICAL_KEYS['reasoning'])
+    reasoning_val = _first_key(result, CANONICAL_KEYS["reasoning"])
     if reasoning_val is not None:
-        normalized['reasoning'] = reasoning_val
+        normalized["reasoning"] = reasoning_val
 
-    confidence_val = _first_key(result, CANONICAL_KEYS['confidence'])
+    confidence_val = _first_key(result, CANONICAL_KEYS["confidence"])
     if confidence_val is not None:
-        normalized['confidence'] = confidence_val
+        normalized["confidence"] = confidence_val
 
     # Validación mínima
-    if 'decision' not in normalized:
+    if "decision" not in normalized:
         raise ValueError(f"Invalid decision format: {result}")
 
     return normalized
 
 
-def _first_key(d: Dict[str, Any], keys: tuple) -> Any:
+def _first_key(d: dict[str, Any], keys: tuple) -> Any:
     return next((d[k] for k in keys if k in d), None)

@@ -8,6 +8,7 @@ Proporciona visualización en tiempo real de:
 - Decisiones y señales
 - Estadísticas del ReasoningBank
 """
+
 from __future__ import annotations
 
 import logging
@@ -147,7 +148,7 @@ class TradingDashboard:
 
         # Mantener límite de historial
         if len(self.decision_history) > self.max_history:
-            self.decision_history = self.decision_history[-self.max_history:]
+            self.decision_history = self.decision_history[-self.max_history :]
 
     def _summarize_state(self, state: dict[str, Any]) -> dict[str, Any]:
         """Resume el estado para almacenamiento."""
@@ -237,9 +238,9 @@ class TradingDashboard:
         total_signals = dist["buy"] + dist["sell"] + dist["hold"]
         if total_signals > 0:
             print("\n  📊 Signal Distribution:")
-            print(f"    BUY:  {dist['buy']:4} ({dist['buy']/total_signals*100:.1f}%)")
-            print(f"    SELL: {dist['sell']:4} ({dist['sell']/total_signals*100:.1f}%)")
-            print(f"    HOLD: {dist['hold']:4} ({dist['hold']/total_signals*100:.1f}%)")
+            print(f"    BUY:  {dist['buy']:4} ({dist['buy'] / total_signals * 100:.1f}%)")
+            print(f"    SELL: {dist['sell']:4} ({dist['sell'] / total_signals * 100:.1f}%)")
+            print(f"    HOLD: {dist['hold']:4} ({dist['hold'] / total_signals * 100:.1f}%)")
 
         # Decisiones recientes
         recent = data["recent_decisions"]

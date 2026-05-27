@@ -53,6 +53,16 @@ class TestHelperFunctions:
 
         assert result == [1, 2, 3, 4]
 
+    def test_normalize_technical_report_adds_numeric_confidence(self):
+        """Verificar normalización de confianza técnica."""
+        from src.core.langgraph_orchestrator import _normalize_technical_report
+
+        report = {"signal": "BUY", "confidence_level": "HIGH"}
+        normalized = _normalize_technical_report(report)
+
+        assert normalized["confidence"] == pytest.approx(0.85)
+        assert normalized["confidence_level"] == "HIGH"
+
 
 class TestReasoningBankHelpers:
     """Tests para helpers de ReasoningBank."""
@@ -84,6 +94,61 @@ class TestReasoningBankHelpers:
         )
 
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_risk_node_uses_live_symbol_and_entry_price(monkeypatch):
+    from src.core import langgraph_orchestrator as mod
+
+    captured: dict[str, object] = {}
+
+    def fake_format_prompt(agent_name: str, **kwargs):
+        captured["agent_name"] = agent_name
+        captured["kwargs"] = kwargs
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]
+
+    async def fake_invoke_with_retry_and_validation(**kwargs):
+        return (
+            {
+                "verdict": "APPROVE",
+                "risk_score": 3.0,
+                "order_details": {
+                    "approved_size": 1.0,
+                    "stop_loss": 86.0,
+                    "take_profit": 89.0,
+                    "max_loss_usd": 0.5,
+                },
+            },
+            1,
+            [],
+        )
+
+    monkeypatch.setattr(mod, "format_prompt", fake_format_prompt)
+    monkeypatch.setattr(mod, "invoke_with_retry_and_validation", fake_invoke_with_retry_and_validation)
+    monkeypatch.setattr(mod, "save_legacy_agent_log", lambda *args, **kwargs: None)
+
+    node = mod.create_risk_agent_node(llm=object(), reasoning_bank=None)
+    state = {
+        "symbol": "SOLUSDT",
+        "current_price": 87.28,
+        "account_balance_usdt": 60.25,
+        "open_positions": 1,
+        "daily_pnl": 0.1,
+        "current_drawdown": "0.5%",
+        "indicators": {"atr": 0.61},
+        "final_trade_decision": {"final_decision": "BUY", "confidence_in_decision": "MEDIUM"},
+    }
+
+    result = await node(state)
+
+    assert captured["agent_name"] == "risk_manager"
+    assert captured["kwargs"]["symbol"] == "SOLUSDT"
+    assert captured["kwargs"]["entry_price"] == "87.28"
+    assert captured["kwargs"]["balance"] == "60.25"
+    assert result["risk_assessment"]["verdict"] == "APPROVE"
 
 
 class TestFenixTradingGraph:

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List
+from typing import Any
 
-from src.inference.providers.base import InferenceProvider, GenerationParams, ProviderError, _metadata
+from src.inference.providers.base import (
+    GenerationParams,
+    InferenceProvider,
+    ProviderError,
+    _metadata,
+)
 
 
 class MLXProvider(InferenceProvider):
@@ -19,15 +24,15 @@ class MLXProvider(InferenceProvider):
     def name(self) -> str:
         return "mlx"
 
-    def capabilities(self) -> Dict[str, bool]:
+    def capabilities(self) -> dict[str, bool]:
         return {
-            'supports_chat': True,
-            'supports_text': True,
-            'supports_vision': False,  # Vision path is prompt-based until a true vision model is added
-            'supports_tools': False,
+            "supports_chat": True,
+            "supports_text": True,
+            "supports_vision": False,  # Vision path is prompt-based until a true vision model is added
+            "supports_tools": False,
         }
 
-    def generate_text(self, model_id: str, prompt: str, params: GenerationParams) -> Dict[str, Any]:
+    def generate_text(self, model_id: str, prompt: str, params: GenerationParams) -> dict[str, Any]:
         client = self._get_client()
         start_ts = time.time()
         try:
@@ -37,15 +42,17 @@ class MLXProvider(InferenceProvider):
                 max_tokens=params.max_tokens or 1024,
                 temperature=params.temperature or 0.3,
             )
-            text = getattr(resp, 'content', '') or ''
+            text = getattr(resp, "content", "") or ""
             return {
-                'text': text,
-                'metadata': _metadata(self.name(), model_id, start_ts),
+                "text": text,
+                "metadata": _metadata(self.name(), model_id, start_ts),
             }
         except Exception as e:
             raise ProviderError(f"MLX generate failed: {e}", cause=e)
 
-    def chat_completions(self, model_id: str, messages: List[Dict[str, str]], params: GenerationParams) -> Dict[str, Any]:
+    def chat_completions(
+        self, model_id: str, messages: list[dict[str, str]], params: GenerationParams
+    ) -> dict[str, Any]:
         client = self._get_client()
         start_ts = time.time()
         try:
@@ -55,15 +62,17 @@ class MLXProvider(InferenceProvider):
                 max_tokens=params.max_tokens or 1024,
                 temperature=params.temperature or 0.3,
             )
-            text = getattr(resp, 'content', '') or ''
+            text = getattr(resp, "content", "") or ""
             return {
-                'text': text,
-                'metadata': _metadata(self.name(), model_id, start_ts),
+                "text": text,
+                "metadata": _metadata(self.name(), model_id, start_ts),
             }
         except Exception as e:
             raise ProviderError(f"MLX chat failed: {e}", cause=e)
 
-    def generate_with_vision(self, model_id: str, prompt: str, images: List[str], params: GenerationParams) -> Dict[str, Any]:
+    def generate_with_vision(
+        self, model_id: str, prompt: str, images: list[str], params: GenerationParams
+    ) -> dict[str, Any]:
         # MLX vision: attach image references into the prompt for now
         refs = "\n".join([f"[image]: {u}" for u in images])
         combined_prompt = f"{prompt}\n{refs}" if refs else prompt

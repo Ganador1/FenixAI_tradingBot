@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fenix-trading-bot"
-version = "0.1.0"
-description = "Fenix 2.0 trading system with modular AI agents and live execution."
+version = "2.5.0"
+description = "FenixAI v2.5 trading research bot with modular AI agents, paper/live execution and multi-timeframe orchestration."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -26,11 +26,15 @@ dependencies = [
     "websockets>=11.0",
     "ccxt>=4.0",
     "sqlalchemy>=2.0",
+    "aiosqlite>=0.19",
+    "greenlet>=3.0",
     "redis>=4.6",
     "arch>=8.0",
     "PyYAML>=6.0",
     "watchdog>=3.0",
     "python-binance>=1.0.19",
+    "python-jose[cryptography]>=3.3",
+    "passlib>=1.7",
     "ta>=0.11",
     "networkx>=3.0",
     "dash-bootstrap-components>=2.0",
@@ -82,7 +86,16 @@ where = ["src"]
 
 # Exclude legacy and backup files from packaging
 [tool.setuptools.exclude-package-data]
-"*" = ["*.bak", "legacy/**/*", "backups/**/*"]
+"*" = [
+    "*.bak",
+    "legacy/**/*",
+    "backups/**/*",
+    "logs/**/*",
+    "llm_responses/**/*",
+    "src/logs/**/*",
+    "*.pkl",
+    "*.pickle",
+]
 
 # --- Testing Configuration ---
 [tool.pytest.ini_options]
@@ -142,6 +155,7 @@ select = [
 ]
 ignore = [
     "E501",  # line length (ya lo gestiona black/line-length)
+    "B007", "B008", "B904", "E402", "E712", "E721", "E722", "E731", "E741", "F401", "F402", "F601", "F811", "F841", "B905", "I001", "W291", "B023"
 ]
 
 [tool.ruff.lint.isort]
@@ -172,4 +186,3 @@ skip_covered = false
 
 [tool.coverage.html]
 directory = "htmlcov"
-

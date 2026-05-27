@@ -1,0 +1,244 @@
+# ============================================================================
+# CONFIGURACIÓN PRODUCCIÓN — Modelos SOTA testeados 2026-04-12
+# Basado en benchmarks: gemma4:31b domina todos los roles
+# ============================================================================
+# Test results (latency, JSON compliance, signal quality):
+#   gemma4:31b:cloud     → Decision 1.6s ✅, Risk 2.0s ✅, Technical 2.9s ✅, QABBA 2.6s ✅
+#   deepseek-v3.1:671b:cloud → Decision 1.8s ✅, Risk 2.6s ✅, Technical 9.5s ✅, QABBA 4.4s ✅
+#   cogito-2.1:671b:cloud    → Decision 2.1s ✅, Risk N/A, Technical N/A, QABBA 5.0s ✅
+#   glm-5.1:cloud        → 17-38s ❌ NO JSON
+#   minimax-m2.5:cloud   → 5.8s ⚠️ inconsistent JSON
+#   qwen3.5:cloud        → 45s ❌ TIMEOUT
+# ============================================================================
+
+active_profile: "ollama_cloud_production"
+
+ollama_cloud_production:
+
+  # ========================================================================
+  # DECISION: Gemma 4 31B — 1.6s, BUY 0.62, best overall
+  # Fallback: DeepSeek V3.1 671B — 1.8s, HOLD 0.55, good reasoning
+  # ========================================================================
+  decision:
+    provider_type: "ollama_cloud"
+    model_name: "gemma4:31b:cloud"
+    temperature: 0.15
+    max_tokens: 400
+    timeout: 25
+    num_ctx: 4096
+    
+    system_prompt: |
+      You are the final decision agent in a multi-agent crypto trading system.
+      Synthesize analysis from specialist agents and make a trading decision.
+      
+      CRITICAL RULES:
+      1. ALWAYS respond with VALID JSON only — no markdown, no code blocks, no extra text
+      2. Decision must be EXACTLY: "BUY", "SELL", or "HOLD"
+      3. Confidence must be a float between 0.0 and 1.0
+      4. Reasoning must be brief and in English
+      
+      REQUIRED JSON FORMAT:
+      {"decision": "BUY", "confidence": 0.7, "reasoning": "brief explanation"}
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "deepseek-v3.1:671b:cloud"
+    fallback_temperature: 0.15
+    fallback_timeout: 30
+    
+    api_key_rotation: "round_robin"
+
+  # ========================================================================
+  # RISK: Gemma 4 31B — 2.0s, VETO (conservative, as it should be)
+  # Fallback: DeepSeek V3.1 671B — 2.6s
+  # ========================================================================
+  risk:
+    provider_type: "ollama_cloud"
+    model_name: "gemma4:31b:cloud"
+    temperature: 0.10
+    max_tokens: 300
+    timeout: 25
+    num_ctx: 4096
+    
+    system_prompt: |
+      You are the risk manager of an automated crypto trading system.
+      Your primary goal is capital preservation. Be skeptical of trades by default.
+      
+      CRITICAL RULES:
+      1. ALWAYS respond with VALID JSON only — no markdown, no code blocks
+      2. Verdict must be EXACTLY: "APPROVE", "VETO", or "DELAY"
+      3. Position size as percentage (0.0-0.15)
+      
+      REQUIRED JSON FORMAT:
+      {"verdict": "APPROVE", "position_size_pct": 0.06, "stop_loss_pct": 0.02, "take_profit_pct": 0.04, "reasoning": "brief explanation"}
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "deepseek-v3.1:671b:cloud"
+    fallback_temperature: 0.05
+    fallback_timeout: 30
+    
+    api_key_rotation: "round_robin"
+
+  # ========================================================================
+  # TECHNICAL: Gemma 4 31B — 2.9s, HOLD HIGH (cautious with analysis)
+  # Fallback: DeepSeek V3.1 671B — 9.5s (slower but thorough)
+  # ========================================================================
+  technical:
+    provider_type: "ollama_cloud"
+    model_name: "gemma4:31b:cloud"
+    temperature: 0.10
+    max_tokens: 500
+    timeout: 25
+    num_ctx: 4096
+    
+    system_prompt: |
+      You are an expert HFT technical analyst for cryptocurrency markets.
+      Analyze technical indicators and generate precise trading signals.
+      
+      CRITICAL RULES:
+      1. ALWAYS respond with VALID JSON only — no markdown, no code blocks
+      2. Signal must be EXACTLY: "BUY", "SELL", or "HOLD"
+      3. Confidence must be EXACTLY: "HIGH", "MEDIUM", or "LOW"
+      4. Consider ALL provided indicators before making a decision
+      
+      REQUIRED JSON FORMAT:
+      {"signal": "BUY", "confidence_level": "MEDIUM", "reasoning": "explanation", "key_indicators": {"rsi": {"value": 45.5, "interpretation": "neutral"}}, "support_level": 70900.0, "resistance_level": 71200.0, "risk_reward_ratio": 2.5}
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "deepseek-v3.1:671b:cloud"
+    fallback_temperature: 0.10
+    fallback_timeout: 30
+    
+    api_key_rotation: "round_robin"
+
+  # ========================================================================
+  # QABBA (Order Flow): Gemma 4 31B — 2.6s, BUY 0.68
+  # Alternative: Cogito 2.1 671B — 5.0s, deeper reasoning
+  # ========================================================================
+  qabba:
+    provider_type: "ollama_cloud"
+    model_name: "gemma4:31b:cloud"
+    temperature: 0.05
+    max_tokens: 400
+    timeout: 25
+    num_ctx: 4096
+    
+    system_prompt: |
+      You are a quantitative analyst specializing in market microstructure and order flow analysis.
+      Analyze order book, trade flow, and microstructure data to generate trading signals.
+      
+      CRITICAL RULES:
+      1. ALWAYS respond with VALID JSON only — no markdown, no code blocks
+      2. Signal must be EXACTLY: "STRONG_BUY", "BUY", "HOLD", "SELL", or "STRONG_SELL"
+      3. Confidence must be a float between 0.0 and 1.0
+      
+      REQUIRED JSON FORMAT:
+      {"signal": "BUY", "confidence": 0.65, "micro_bias": "slight_buy", "reasoning": "explanation", "liquidation_risk": "LOW"}
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "cogito-2.1:671b:cloud"
+    fallback_temperature: 0.05
+    fallback_timeout: 30
+    
+    api_key_rotation: "round_robin"
+
+  # ========================================================================
+  # SENTIMENT: Gemma 4 31B — fast, good at text analysis
+  # ========================================================================
+  sentiment:
+    provider_type: "ollama_cloud"
+    model_name: "gemma4:31b:cloud"
+    temperature: 0.20
+    max_tokens: 300
+    timeout: 20
+    num_ctx: 4096
+    
+    system_prompt: |
+      You are a market sentiment analyst for cryptocurrency markets.
+      Analyze news, social media, funding rates, and market mood.
+      
+      CRITICAL RULES:
+      1. ALWAYS respond with VALID JSON only — no markdown, no code blocks
+      2. Sentiment must be EXACTLY: "BULLISH", "BEARISH", or "NEUTRAL"
+      3. Strength must be a float between 0.0 and 1.0
+      
+      REQUIRED JSON FORMAT:
+      {"sentiment": "BULLISH", "strength": 0.7, "key_topics": ["topic1"], "reasoning": "brief explanation"}
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "deepseek-v3.1:671b:cloud"
+    fallback_temperature: 0.15
+    fallback_timeout: 25
+    
+    api_key_rotation: "round_robin"
+
+  # ========================================================================
+  # VISUAL: Cogito 2.1 671B — reasoning model, good at pattern analysis
+  # ========================================================================
+  visual:
+    provider_type: "ollama_cloud"
+    model_name: "qwen3-vl:235b-cloud"
+    temperature: 0.15
+    max_tokens: 700
+    timeout: 25
+    num_ctx: 4096
+    supports_vision: true  # Qwen3-VL supports vision natively in Ollama Cloud
+    
+    system_prompt: |
+      You are an expert chart pattern analyst for cryptocurrency markets.
+      Analyze price action descriptions and identify patterns, trends, and key levels.
+      
+      CRITICAL RULES:
+      1. ALWAYS respond with VALID JSON only — no markdown, no code blocks
+      2. Bias must be EXACTLY: "UP", "DOWN", or "SIDEWAYS"
+      3. Confidence must be a float between 0.0 and 1.0
+      
+      REQUIRED JSON FORMAT:
+      {"bias": "UP", "confidence": 0.7, "pattern_detected": "ascending triangle", "risk_assessment": "LOW", "reasoning": "brief explanation"}
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "gemma4:31b:cloud"
+    fallback_temperature: 0.15
+    fallback_timeout: 25
+    
+    api_key_rotation: "round_robin"
+
+
+# ============================================================================
+# OLLAMA CLOUD API CONFIGURATION
+# ============================================================================
+ollama_cloud_config:
+  primary_endpoint: "https://api.ollama.com"
+  key_rotation_strategy: "round_robin"
+  requests_per_minute_per_key: 60
+  tokens_per_minute_per_key: 100000
+  max_retries_per_key: 2
+  retry_delay_seconds: 1.5
+  
+  # Circuit breaker
+  circuit_breaker_failures: 5
+  circuit_breaker_timeout: 30
+
+
+# ============================================================================
+# FALLBACK CHAINS (per agent)
+# ============================================================================
+fallback_configuration:
+  fallback_chain:
+    decision: ["gemma4:31b:cloud", "deepseek-v3.1:671b:cloud", "cogito-2.1:671b:cloud"]
+    risk: ["gemma4:31b:cloud", "deepseek-v3.1:671b:cloud"]
+    technical: ["gemma4:31b:cloud", "deepseek-v3.1:671b:cloud"]
+    qabba: ["gemma4:31b:cloud", "cogito-2.1:671b:cloud", "deepseek-v3.1:671b:cloud"]
+    sentiment: ["gemma4:31b:cloud", "deepseek-v3.1:671b:cloud"]
+    visual: ["cogito-2.1:671b:cloud", "gemma4:31b:cloud", "deepseek-v3.1:671b:cloud"]
+
+
+# ============================================================================
+# MONITORING
+# ============================================================================
+monitoring:
+  log_model_performance: true
+  log_latency_percentiles: [50, 90, 95, 99]
+  log_token_usage: true
+  alert_on_high_latency: 15
+  alert_on_low_confidence: 0.3
+  alert_on_repeated_fallbacks: 3

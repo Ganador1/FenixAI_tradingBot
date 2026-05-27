@@ -286,7 +286,7 @@ class TestConfigurationLoading:
         import yaml
         from pathlib import Path
         
-        config_path = Path("/Volumes/Ganador disk/Fenix unic agent/FenixAI/config/fenix.yaml")
+        config_path = Path(__file__).resolve().parent.parent / "config" / "fenix.yaml"
         
         if config_path.exists():
             with open(config_path) as f:
@@ -299,7 +299,7 @@ class TestConfigurationLoading:
         import yaml
         from pathlib import Path
         
-        config_path = Path("/Volumes/Ganador disk/Fenix unic agent/FenixAI/config/llm_providers.yaml")
+        config_path = Path(__file__).resolve().parent.parent / "config" / "llm_providers.yaml"
         
         if config_path.exists():
             with open(config_path) as f:

@@ -19,17 +19,19 @@ Features:
 
 Best practices inspired by QuantAgent methodology.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-from enum import Enum
-from datetime import datetime
 import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Any
 
 
 class AgentType(Enum):
     """Tipos de agentes disponibles en Fenix."""
+
     TECHNICAL = "technical"
     SENTIMENT = "sentiment"
     VISUAL = "visual"
@@ -40,6 +42,7 @@ class AgentType(Enum):
 
 class MarketCondition(Enum):
     """Condiciones de mercado para ajustar prompts."""
+
     TRENDING_UP = "trending_up"
     TRENDING_DOWN = "trending_down"
     RANGING = "ranging"
@@ -50,6 +53,7 @@ class MarketCondition(Enum):
 @dataclass
 class PromptTemplate:
     """Plantilla de prompt con metadata."""
+
     name: str
     system_prompt: str
     user_template: str
@@ -58,16 +62,16 @@ class PromptTemplate:
     agent_type: AgentType | None = None
     output_format: str = "json"
     examples: list[dict[str, Any]] = field(default_factory=list)
-    
+
     def format_user_prompt(self, **kwargs) -> str:
         """Formatea el prompt del usuario con los parámetros dados."""
         return self.user_template.format(**kwargs)
-    
+
     def to_messages(self, **kwargs) -> list[dict[str, str]]:
         """Convierte a formato de mensajes para LLM."""
         return [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": self.format_user_prompt(**kwargs)}
+            {"role": "user", "content": self.format_user_prompt(**kwargs)},
         ]
 
 
@@ -84,10 +88,15 @@ CRITICAL RULES - FOLLOW EXACTLY:
 3. Consider multi-timeframe context when available
 4. Signal must be EXACTLY: "BUY", "SELL", or "HOLD"
 5. Confidence must be EXACTLY: "HIGH", "MEDIUM", or "LOW"
-6. Provide clear, concise reasoning in English only
-7. NEVER use markdown formatting (no ```json blocks)
-8. NEVER truncate or cut off the response
-9. All numeric values must be valid numbers, not null
+6. Also provide numeric confidence in "confidence" using 0.0 to 1.0, and keep it consistent with confidence_level
+7. Use support/resistance and risk_reward_ratio to avoid chasing extended entries near exhaustion
+8. Provide clear, concise reasoning in English only
+9. NEVER use markdown formatting (no ```json blocks)
+10. NEVER truncate or cut off the response
+11. All numeric values must be valid numbers, not null
+12. Do NOT default to HOLD just because one lagging indicator conflicts with the rest
+13. If trend, momentum, and price location align with acceptable risk/reward, prefer BUY or SELL over HOLD
+14. Use HOLD only when the directional evidence is genuinely mixed or risk/reward is poor
 
 KEY INDICATORS TO EVALUATE:
 - RSI: <30 oversold, >70 overbought
@@ -102,6 +111,7 @@ REQUIRED JSON FORMAT:
 {
     "signal": "BUY",
     "confidence_level": "HIGH",
+    "confidence": 0.85,
     "reasoning": "Clear explanation of the technical analysis in English",
     "key_indicators": {
         "rsi": {"value": 45.5, "interpretation": "neutral zone"},
@@ -118,6 +128,7 @@ VALIDATION CHECKLIST:
 - [ ] No markdown or code blocks
 - [ ] Signal is exactly BUY, SELL, or HOLD
 - [ ] Confidence is exactly HIGH, MEDIUM, or LOW
+- [ ] Numeric confidence is present and consistent
 - [ ] Reasoning is complete and in English
 - [ ] All required fields are present"""
 
@@ -129,6 +140,9 @@ CURRENT INDICATORS:
 MULTI-TIMEFRAME CONTEXT:
 - Higher Timeframe (HTF): {htf_context}
 - Lower Timeframe (LTF): {ltf_context}
+
+SHORT-TERM MARKET CONTEXT:
+{microstructure_summary}
 
 CURRENT PRICE: {current_price}
 CURRENT VOLUME: {current_volume}
@@ -205,19 +219,25 @@ Provide your sentiment analysis in the required JSON format."""
 # ============================================================================
 
 VISUAL_ANALYST_SYSTEM = """You are an expert visual chart pattern analyst for trading.
-Your skill is identifying candlestick patterns, chart formations, and key visual levels.
+Your skill is identifying chart patterns and key levels from technical data and visual patterns.
+
+When a chart image is provided, analyze it visually.
+When NO chart image is available, analyze the NUMERIC DATA provided (indicators, price, volume, order flow) to infer likely patterns and trends.
 
 PATTERNS TO IDENTIFY:
 1. Candlestick patterns: Doji, Hammer, Engulfing, Morning/Evening Star
 2. Formations: Triangles, Wedges, Flags, Head & Shoulders
 3. Levels: Support, Resistance, Fibonacci
 4. Trends: Channels, Trendlines, Breakouts
+5. Bollinger Squeeze: Tight bands → imminent volatility expansion
+6. RSI extremes: >70 overbought, <30 oversold
+7. MACD crossover: Line crosses signal → directional change
 
 CRITICAL RULES - FOLLOW EXACTLY:
-1. Describe what you SEE on the chart, not what you assume
-2. Identify the MOST RELEVANT pattern for immediate action
-3. Signal must be based on the identified pattern
-4. Consider price location relative to visible indicators
+1. When no image is available, use the numeric indicators to infer pattern and trend
+2. NEVER just default to HOLD — provide your best assessment based on available data
+3. Identify the MOST RELEVANT pattern for immediate action
+4. Signal must be based on the identified pattern or inferred trend
 5. ALWAYS respond with VALID JSON only - no markdown, no code blocks
 6. NEVER use ```json blocks or markdown formatting
 7. NEVER truncate or cut off the response
@@ -225,13 +245,7 @@ CRITICAL RULES - FOLLOW EXACTLY:
 9. All numeric values must be valid numbers
 10. Action must be exactly: "BUY", "SELL", or "HOLD"
 11. Trend direction must be exactly: "bullish", "bearish", or "neutral"
-
-CLASSIC PATTERN REFERENCE:
-- Inverse Head and Shoulders: Three lows, middle one lowest → bullish
-- Double Bottom: Two similar lows forming "W" → bullish
-- Descending Triangle: Descending resistance, flat support → bearish
-- Bullish Flag: Strong rise + descending consolidation → bullish continuation
-- Wedge: Converging lines → imminent breakout
+12. When data is limited, use confidence 0.3-0.5 and explain in visual_analysis
 
 REQUIRED JSON FORMAT:
 {
@@ -332,10 +346,14 @@ QABBA_ANALYST_USER = """Analyze the market microstructure for {symbol}:
 MICROSTRUCTURE METRICS:
 - OBI (Order Book Imbalance): {obi_value}
 - CVD (Cumulative Volume Delta): {cvd_value}
+- CVD delta 5s: {cvd_delta_5s_value}
 - Spread: {spread_value}
 - Bid Depth: {bid_depth}
 - Ask Depth: {ask_depth}
 - Total Liquidity: {total_liquidity}
+- Trade count 5s: {trade_count_5s_value}
+- Trade volume 5s: {trade_volume_5s_value}
+- Trade imbalance 5s: {trade_imbalance_5s_value}
 
 RECENT TRADES:
 {recent_trades}
@@ -362,21 +380,30 @@ AGENTS REPORTING TO YOU:
 4. QABBA Analyst: Market microstructure and order flow
 
 DECISION POLICY:
-1. CONSENSUS REQUIRED: Technical AND QABBA MUST agree for BUY/SELL
-2. No consensus = HOLD (capital protection)
-3. Agent conflicts = deeper analysis before deciding
-4. Final confidence based on signal convergence
+1. Your job is to SYNTHESIZE all 5 agent signals into ONE final decision
+2. Technical (30%) and QABBA (30%) are the PRIMARY directional signals — they carry the most weight
+3. Visual (25%) confirms patterns — when it agrees, boost confidence; when absent/neutral, do NOT block trades
+4. Sentiment (15%) modulates confidence and filters extreme sentiment — but should NOT override clear Technical/QABBA directional signals
+5. When Technical AND QABBA agree on direction → execute with HIGH confidence
+6. When only one of Technical/QABBA gives a directional signal → still consider it, especially if the other is neutral (HOLD). Lean toward the directional signal with MEDIUM confidence
+7. When Technical and QABBA conflict (one BUY, one SELL) → HOLD unless Sentiment and Visual strongly align with one side
+8. BE DECISIVE — a wrong trade with proper risk management is better than missing every opportunity by always defaulting to HOLD
+9. An agent reporting HOLD means it has no strong directional conviction — this is different from an agent actively signaling BUY or SELL
+10. When Technical reports nearby resistance/support or weak risk_reward_ratio, downgrade late entries even if the directional signal is still valid
 
 DYNAMIC WEIGHTING:
-- Technical: 30% (proven indicators)
-- QABBA: 30% (real-time microstructure)
+- Technical: 30% (proven indicators, primary directional signal)
+- QABBA: 30% (real-time microstructure, primary directional signal)
+- Visual: 25% (confirms patterns, secondary confirmation)
+- Sentiment: 15% (modulates confidence, does not override direction)
 - Visual: 25% (confirmed patterns)
-- Sentiment: 15% (market context)
+- Sentiment: 15% (market context, modulates confidence only)
 
 RISK RULES:
 - Never enter against the main trend without multiple confirmation
 - Respect calculated stop loss levels
 - Consider minimum risk/reward ratio of 1.5:1
+- If Technical reports a nearby resistance/support level with poor risk/reward, prefer HOLD over chasing the move
 
 CRITICAL RULES - FOLLOW EXACTLY:
 1. ALWAYS respond with VALID JSON only - no markdown, no code blocks, no extra text
@@ -484,21 +511,27 @@ CRITICAL RULES - FOLLOW EXACTLY:
 7. Order details must include approved_size, stop_loss, take_profit, max_loss_usd
 8. Warnings and suggestions must be arrays of strings
 9. Reason must be in English
+10. NEVER invent reference prices from unrelated assets or examples
+11. If dynamic ATR-based levels are provided, use them as the primary basis for approved_size, stop_loss, take_profit, and max_loss_usd
+12. If the provided inputs are insufficient to produce symbol-consistent order details, return "DELAY" and explain what is missing
 
 REQUIRED JSON FORMAT:
 {
     "verdict": "APPROVE",
-    "reason": "Risk within acceptable limits, good risk/reward ratio",
-    "risk_score": 3.5,
+    "reason": "Risk within acceptable limits, using the provided entry and ATR context",
+    "risk_score": 3.0,
     "order_details": {
-        "approved_size": 0.5,
-        "stop_loss": 84000.00,
-        "take_profit": 86000.00,
-        "max_loss_usd": 100.00
+        "approved_size": 10.0,
+        "stop_loss": 9.8,
+        "take_profit": 10.4,
+        "max_loss_usd": 0.2
     },
-    "warnings": ["High volatility detected", "Low liquidity period"],
-    "suggestions": ["Reduce position size", "Use wider stop loss"]
+    "warnings": ["Example warning only"],
+    "suggestions": ["Example suggestion only"]
 }
+
+The JSON above is a schema example only. Replace every numeric value with values
+calculated from the current symbol, reference entry price, and ATR data.
 
 VALIDATION CHECKLIST:
 - [ ] JSON is valid and parseable
@@ -508,7 +541,8 @@ VALIDATION CHECKLIST:
 - [ ] Reason is in English
 - [ ] All order details are present and valid
 - [ ] Warnings and suggestions are arrays
-- [ ] All required fields are present"""
+- [ ] All required fields are present
+- [ ] Order details are consistent with the provided symbol and entry context"""
 
 RISK_MANAGER_USER = """Evaluate the following trade proposal:
 
@@ -516,6 +550,7 @@ PROPOSAL:
 - Decision: {decision}
 - Symbol: {symbol}
 - Confidence: {confidence}
+- Reference Entry Price: {entry_price}
 
 PORTFOLIO STATUS:
 - USDT Balance: {balance}
@@ -531,6 +566,11 @@ RISK METRICS:
 CONFIGURED LIMITS:
 - Max risk per trade: {max_risk_per_trade}%
 - Max total exposure: {max_total_exposure}%
+
+Instructions:
+- Keep order_details numerically consistent with the provided symbol and reference entry price
+- Do not copy example values from prior prompts or other assets
+- If dynamic ATR-based levels are included below, prefer them over generic heuristics
 
 Provide your risk evaluation in the required JSON format."""
 
@@ -595,9 +635,26 @@ PROMPT_REGISTRY: dict[str, PromptTemplate] = {
 # UTILITY FUNCTIONS
 # ============================================================================
 
+
 def get_prompt(agent_name: str) -> PromptTemplate | None:
     """Get a prompt by agent name."""
     return PROMPT_REGISTRY.get(agent_name)
+
+
+def get_prompt_template(agent_name: str) -> str:
+    """Compatibility helper returning a plain text prompt template."""
+    aliases = {
+        "technical": "technical_analyst",
+        "sentiment": "sentiment_analyst",
+        "visual": "visual_analyst",
+        "qabba": "qabba_analyst",
+        "decision": "decision_agent",
+        "risk": "risk_manager",
+    }
+    prompt = PROMPT_REGISTRY.get(aliases.get(agent_name, agent_name))
+    if not prompt:
+        return ""
+    return f"{prompt.system_prompt}\n\n{prompt.user_template}"
 
 
 def get_system_prompt(agent_name: str) -> str:
@@ -606,10 +663,7 @@ def get_system_prompt(agent_name: str) -> str:
     return prompt.system_prompt if prompt else ""
 
 
-def format_prompt(
-    agent_name: str,
-    **kwargs
-) -> list[dict[str, str]] | None:
+def format_prompt(agent_name: str, **kwargs) -> list[dict[str, str]] | None:
     """
     Format a complete prompt with given parameters.
 
@@ -628,6 +682,7 @@ def format_prompt(
         "htf_context": "Not available",
         "ltf_context": "Not available",
         "current_price": "N/A",
+        "entry_price": "N/A",
         "current_volume": "N/A",
         "news_summary": "No recent news",
         "social_data": "No social data",
@@ -642,6 +697,10 @@ def format_prompt(
         "bid_depth": "N/A",
         "ask_depth": "N/A",
         "total_liquidity": "N/A",
+        "cvd_delta_5s_value": "0",
+        "trade_count_5s_value": "0",
+        "trade_volume_5s_value": "0",
+        "trade_imbalance_5s_value": "0",
         "recent_trades": "[]",
         "technical_context": "{}",
         "technical_analysis": "{}",
@@ -676,11 +735,7 @@ def list_available_prompts() -> list[str]:
 
 def export_prompts_to_json(filepath: str = "config/prompts_export.json") -> None:
     """Export all prompts to a JSON file for versioning."""
-    export_data = {
-        "version": "2.0-en",
-        "exported_at": datetime.now().isoformat(),
-        "prompts": {}
-    }
+    export_data = {"version": "2.0-en", "exported_at": datetime.now().isoformat(), "prompts": {}}
 
     for name, prompt in PROMPT_REGISTRY.items():
         export_data["prompts"][name] = {
@@ -691,7 +746,7 @@ def export_prompts_to_json(filepath: str = "config/prompts_export.json") -> None
             "agent_type": prompt.agent_type.value if prompt.agent_type else None,
         }
 
-    with open(filepath, 'w', encoding='utf-8') as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(export_data, f, indent=2, ensure_ascii=False)
 
 
@@ -705,14 +760,11 @@ if __name__ == "__main__":
         "technical_analyst",
         symbol="BTCUSDT",
         timeframe="15m",
-        indicators_json=json.dumps({
-            "rsi": 45.5,
-            "macd_line": 120.5,
-            "macd_signal": 115.2,
-            "supertrend_signal": "BULLISH"
-        }),
+        indicators_json=json.dumps(
+            {"rsi": 45.5, "macd_line": 120.5, "macd_signal": 115.2, "supertrend_signal": "BULLISH"}
+        ),
         current_price="67500.00",
-        current_volume="1234567"
+        current_volume="1234567",
     )
 
     if messages:

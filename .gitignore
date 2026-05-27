@@ -91,6 +91,7 @@ fenix_trading.db
 # Logs & Monitoring
 # ============================================================================
 logs/
+src/logs/
 *.log
 *.jsonl
 **/*.log
@@ -228,3 +229,146 @@ FENIX_V3_TEST_OUTPUT_KIMI.txt
 startup_debug.log
 run_paper_test.sh
 run_v3_test.sh
+
+# ============================================================================
+# v2.5 release exclusions
+# ============================================================================
+# Older NanoFenix codebases kept locally as reproducibility artifacts.
+# Public v2.5 ships only nanofenixv3 (the active version). v1/v2 and the
+# unsuffixed `nanofenix/` are superseded.
+nanofenix/
+nanofenixv1/
+nanofenixv2/
+
+# Vendored third-party clone (not part of v2.5)
+binance-skills-hub-main/
+
+# Root launchers for the ignored experimental dirs (kept local only)
+run_nanofenix.py
+run_nanofenixv1.py
+run_nanofenixv2.py
+run_nanofenix_live.py
+
+# Temporary inference patch (decide later if it ships)
+src/inference/dual_key_patch.py
+
+# Tests that exercise ignored experimental codebases
+tests/test_nanofenix.py
+
+# --- nanofenixv3 (release content) -----------------------------------
+# Ship code + a curated set of pretrained models. Everything else
+# (runtime checkpoints, backups, benchmarks, temp files, live signals)
+# stays local.
+nanofenixv3/predictor.py.bak
+nanofenixv3/bench_*.pkl
+nanofenixv3/runtime_*.pkl
+nanofenixv3/*_backup.pkl
+nanofenixv3/*.pkl.tmp
+nanofenixv3/*.pkl.bak
+nanofenixv3/signals/
+nanofenixv3/__pycache__/
+
+# Whitelist the curated pretrained models (the global `*.pkl` rule would
+# otherwise hide them).
+!nanofenixv3/pretrained_btcusdc.pkl
+!nanofenixv3/pretrained_btcusdt.pkl
+!nanofenixv3/pretrained_btcusdt_5s.pkl
+!nanofenixv3/pretrained_ethusdt.pkl
+!nanofenixv3/pretrained_solusdt.pkl
+
+# --- minifenix (release content) -------------------------------------
+# Ship the README + active code + the pretrained joblib starter. Drop
+# the runtime-regenerated joblib and the orphan/legacy helpers.
+minifenix/sota_model.joblib
+minifenix/__pycache__/
+minifenix/real_ml_model.py
+minifenix/quant_math.py
+minifenix/analyze_performance.py
+minifenix/multi_symbol_trader.py
+
+# Session / agent metadata (Claude Code, AGENTS.md and related notes)
+memory/
+plans/
+tools/
+.claude/worktrees/
+
+# Local notes and superseded research drafts left in the repo root or docs/
+DOCUMENTACION_CAMBIOS_NANOFENIX_HTF_v2.5.md
+docs/ESTADO_FINAL.txt
+docs/analisis_*.md
+docs/resultados_*.md
+docs/benchmark_historico_*.md
+docs/benchmark_status_*.md
+docs/benchmark_analysis_early_*.md
+docs/cogito_fullfix_status*.md
+docs/decision_agent_fixes_*.md
+docs/status_final_*.md
+docs/IMPROVEMENTS_v21.md
+docs/IMPLEMENTATION_SUMMARY.md
+docs/LIVE_TESTING_SYSTEM.md
+docs/PERFORMANCE_ANALYSIS.md
+docs/Research_Summary.md
+docs/SL_TP_TIMEFRAME_ADJUSTMENT.md
+docs/CHOP_DONCHIAN_KELTNER_INTEGRATION.md
+docs/run_decision_benchmark_parallel.md
+docs/FenixAI_Benchmark_Paper.md
+docs/FenixAI_Evolutionary_Paper_Draft.md
+docs/BENCHMARK_PROTOCOL_PAPER.md
+
+# Internal analysis and benchmark output trees
+docs/analysis/
+docs/benchmarks/
+docs/research/
+docs/superpowers/
+
+# Historical / internal launcher and analysis scripts (not public surface)
+scripts/_*.py
+scripts/analysis/
+scripts/fixes/
+scripts/analyze_*.py
+scripts/deep_analyze_signals.py
+scripts/generate_*.py
+scripts/run_decision_benchmark_*.py
+scripts/run_decision_benchmark_*.sh
+scripts/run_risk_*.py
+scripts/run_risk_*.sh
+scripts/run_team_*.sh
+scripts/run_v21_*.py
+scripts/run_v21_*.sh
+scripts/run_hybrid_10h_mix.py
+scripts/run_hybrid_hourly_models.py
+scripts/run_improved_test.py
+scripts/run_live_web3_monitor.py
+scripts/run_llmfit_probe.sh
+scripts/run_massive_model_benchmark_r18.py
+scripts/run_split_keys_risk_local_smoke.sh
+scripts/launch_dreamteam_r19.sh
+scripts/launch_dualkey_*.sh
+scripts/launch_fenix_r*.sh
+scripts/launch_fenix_testnet_r*.sh
+scripts/launch_fenix_v25_paper_*.sh
+scripts/launch_fenix_v26_*.sh
+scripts/launch_fenix_v27_*.sh
+scripts/launch_fenix_v28_*.sh
+scripts/launch_fenix_v31*.sh
+scripts/launch_multisymbol.sh
+scripts/launch_nanofenix_*.sh
+scripts/launch_benchmark_*.sh
+scripts/launch_v21_*.py
+scripts/launch_v21_*.sh
+scripts/test_dual_key_simple.sh
+scripts/test_trade_manager.py
+scripts/monitor_nocturno.sh
+scripts/fenix_manual_competitor.py
+scripts/fenix_multi_monitor.py
+scripts/fenix_multi_monitor_v2.py
+scripts/fenix_opportunity_scanner.py
+scripts/fenix_tp_sl_escalonado_monitor.py
+scripts/fenix_trade_monitor.py
+scripts/massive_benchmark_analysis.py
+scripts/restart_optimized_fusion.sh
+scripts/start_nanofenix_long_run.sh
+scripts/implementar_nanofenix_htf_v3.5.sh
+scripts/verify_improvements.sh
+scripts/patch_*.py
+ruff_*.txt

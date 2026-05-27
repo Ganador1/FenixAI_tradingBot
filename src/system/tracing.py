@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Optional
 
 try:
     from opentelemetry import trace
@@ -10,6 +9,7 @@ try:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
     _OTEL_AVAILABLE = True
 except ModuleNotFoundError:
     trace = None  # type: ignore
@@ -53,7 +53,9 @@ def _configure_tracing(service_name: str) -> None:
     if not _OTEL_AVAILABLE:
         return
     # Only configure OTLP exporter if endpoint is explicitly provided
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_HTTP_ENDPOINT")
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or os.getenv(
+        "OTEL_EXPORTER_OTLP_HTTP_ENDPOINT"
+    )
     if not endpoint:
         # No collector endpoint specified, do not initialize exporter
         return
@@ -71,7 +73,7 @@ def init_tracing(service_name: str = "fenix-trading-bot") -> None:
     _configure_tracing(service_name)
 
 
-def get_tracer(name: Optional[str] = None):
+def get_tracer(name: str | None = None):
     """Return a tracer, ensuring the provider is initialized."""
     init_tracing()
     if not _OTEL_AVAILABLE or trace is None:

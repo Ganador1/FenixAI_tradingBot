@@ -1,4 +1,6 @@
-# 🚀 FenixAI v2.0 - Quick Start Guide
+# 🚀 FenixAI v2.5 Release Candidate - Quick Start Guide
+
+This guide starts FenixAI in local paper mode by default. v2.5 is a release candidate, so validate behavior in paper mode before enabling live trading.
 
 ## Prerequisites
 
@@ -12,7 +14,7 @@
 ## 1. Clone and Setup
 
 ```bash
-# Clone the repository
+# Clone the repository after v2.5 is published
 git clone https://github.com/Ganador1/FenixAI_tradingBot.git
 cd FenixAI_tradingBot
 
@@ -139,7 +141,7 @@ curl http://localhost:8000/health
 Expected output:
 
 ```json
-{"status": "healthy", "version": "2.0.0"}
+{"status": "healthy", "version": "2.x"}
 ```
 
 ---

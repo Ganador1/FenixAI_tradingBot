@@ -5,15 +5,16 @@ Calcula métricas estándar de trading:
 - Max Drawdown, Payoff Ratio
 - Métricas de agente (accuracy por tipo)
 """
+
 from __future__ import annotations
 
-import math
 import json
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TradeMetrics:
     """Métricas calculadas sobre trades."""
+
     total_trades: int
     winning_trades: int
     losing_trades: int
@@ -42,6 +44,7 @@ class TradeMetrics:
 @dataclass
 class AgentMetrics:
     """Métricas por agente."""
+
     agent_name: str
     total_decisions: int
     correct_decisions: int  # Contra ground truth o eval
@@ -54,55 +57,64 @@ class AgentMetrics:
 class TradingMetricsDashboard:
     """
     Dashboard de métricas de trading.
-    
+
     Calcula métricas financieras estándar y mantiene historial.
     """
-    
+
     def __init__(self, storage_path: str = "logs/metrics.jsonl"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self._pnl_history: List[float] = []
-        self._return_history: List[float] = []  # Returns como %
-    
-    def calculate_trade_metrics(self, trades: List[Dict[str, Any]]) -> TradeMetrics:
+        self._pnl_history: list[float] = []
+        self._return_history: list[float] = []  # Returns como %
+
+    def calculate_trade_metrics(self, trades: list[dict[str, Any]]) -> TradeMetrics:
         """Calcula métricas financieras desde lista de trades."""
         if not trades:
-            return TradeMetrics(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        
+            return TradeMetrics(
+                0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            )
+
         total_trades = len(trades)
-        
-        # Separar ganadores y perdedores
-        wins = [t for t in trades if t.get("pnl", 0) > 0]
-        losses = [t for t in trades if t.get("pnl", 0) <= 0]
-        
+
+        # Separar ganadores y perdedores. Prefer the explicit success flag when present
+        # because flat-but-successful exits should count as wins for win-rate reporting.
+        wins = [t for t in trades if bool(t.get("success", t.get("pnl", 0) > 0))]
+        losses = [t for t in trades if not bool(t.get("success", t.get("pnl", 0) > 0))]
+
         winning_trades = len(wins)
         losing_trades = len(losses)
         win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
-        
+
         # P&L
-        total_wins = sum(t.get("pnl", 0) for t in wins)
-        total_losses = abs(sum(t.get("pnl", 0) for t in losses))
-        total_pnl = total_wins - total_losses
+        total_wins = sum(max(float(t.get("pnl", 0) or 0), 0.0) for t in wins)
+        total_losses = abs(sum(min(float(t.get("pnl", 0) or 0), 0.0) for t in losses))
+        total_pnl = sum(float(t.get("pnl", 0) or 0) for t in trades)
         avg_pnl = total_pnl / total_trades if total_trades > 0 else 0.0
-        
+
         # Promedios
         avg_win = total_wins / winning_trades if winning_trades > 0 else 0.0
         avg_loss = -(total_losses / losing_trades) if losing_trades > 0 else 0.0  # Negativo
         win_loss_ratio = avg_win / abs(avg_loss) if avg_loss != 0 else 0.0
         payoff_ratio = win_loss_ratio
-        
+
         # Profit Factor
-        profit_factor = total_wins / total_losses if total_losses > 0 else float('inf') if total_wins > 0 else 0.0
-        
+        profit_factor = (
+            total_wins / total_losses
+            if total_losses > 0
+            else float("inf")
+            if total_wins > 0
+            else 0.0
+        )
+
         # Expectancy
         expectancy = (win_rate * avg_win) - ((1 - win_rate) * abs(avg_loss))
-        
+
         # Sharpe Ratio (retornos diarios)
         sharpe = self._calculate_sharpe(trades)
-        
+
         # Drawdown
         max_dd_pct, max_dd_dol, curr_dd_pct = self._calculate_drawdown(trades)
-        
+
         return TradeMetrics(
             total_trades=total_trades,
             winning_trades=winning_trades,
@@ -121,8 +133,8 @@ class TradingMetricsDashboard:
             avg_pnl=avg_pnl,
             expectancy=expectancy,
         )
-    
-    def _calculate_sharpe(self, trades: List[Dict[str, Any]], risk_free_rate: float = 0.0) -> float:
+
+    def _calculate_sharpe(self, trades: list[dict[str, Any]], risk_free_rate: float = 0.0) -> float:
         """Calcula Sharpe Ratio asumiendo retornos diarios."""
         returns = []
         for trade in trades:
@@ -131,36 +143,36 @@ class TradingMetricsDashboard:
             pnl = trade.get("pnl", 0)
             if capital > 0:
                 returns.append(pnl / capital)
-        
+
         if len(returns) < 10:  # Necesitamos suficientes datos
             return 0.0
-        
+
         avg_return = sum(returns) / len(returns)
         variance = sum((r - avg_return) ** 2 for r in returns) / len(returns)
         std_dev = math.sqrt(variance)
-        
+
         if std_dev == 0:
             return 0.0
-        
+
         # Sharpe = (mean_return - risk_free) / std_dev
         # Ajustado a período (asumiendo 252 días trading si es por día)
         sharpe = (avg_return - risk_free_rate) / std_dev
         return sharpe * math.sqrt(252)  # Annualizado
-    
-    def _calculate_drawdown(self, trades: List[Dict[str, Any]]) -> Tuple[float, float, float]:
+
+    def _calculate_drawdown(self, trades: list[dict[str, Any]]) -> tuple[float, float, float]:
         """Calcula drawdown máximo y actual."""
         if not trades:
             return 0.0, 0.0, 0.0
-        
+
         # Equity curve
         equity = [0.0]
         for trade in trades:
             equity.append(equity[-1] + trade.get("pnl", 0))
-        
+
         peak = equity[0]
         max_drawdown_pct = 0.0
         max_drawdown_dollars = 0.0
-        
+
         for val in equity:
             if val > peak:
                 peak = val
@@ -170,50 +182,45 @@ class TradingMetricsDashboard:
                 if dd > max_drawdown_pct:
                     max_drawdown_pct = dd
                     max_drawdown_dollars = dd_dol
-        
+
         # Drawdown actual
         current = equity[-1]
         current_dd_pct = (peak - current) / peak if peak > 0 else 0.0
-        
+
         return max_drawdown_pct * 100, max_drawdown_dollars, current_dd_pct * 100
-    
+
     def calculate_agent_metrics(
-        self,
-        reasoning_bank: Any,
-        agent_name: str,
-        lookback: int = 50
+        self, reasoning_bank: Any, agent_name: str, lookback: int = 50
     ) -> AgentMetrics:
         """Calcula métricas para un agente específico."""
         if not reasoning_bank:
             return AgentMetrics(agent_name, 0, 0, 0.0, 0.0, 0.0, 0.0)
-        
+
         try:
-            from src.memory.reasoning_bank import ReasoningEntry
             entries = reasoning_bank.get_recent(agent_name, lookback)
         except Exception:
-            from src.memory.reasoning_bank_optimized import ReasoningEntryOptimized
             entries = reasoning_bank.get_recent(agent_name, lookback)
-        
+
         total = len(entries)
         if total == 0:
             return AgentMetrics(agent_name, 0, 0, 0.0, 0.0, 0.0, 0.0)
-        
+
         # Calcular éxitos
         successful = [e for e in entries if e.success is True]
         success_rate = len(successful) / total if successful else 0.0
-        
+
         # Confidence promedio
         avg_confidence = sum(e.confidence for e in entries) / total
-        
+
         # Latency promedio
         lats = [e.latency_ms for e in entries if e.latency_ms is not None]
         avg_latency = sum(lats) / len(lats) if lats else 0.0
-        
+
         # Accuracy (contra outcomes)
         evaluated = [e for e in entries if e.success is not None]
         correct = len([e for e in evaluated if e.success])
         accuracy = correct / len(evaluated) if evaluated else 0.0
-        
+
         return AgentMetrics(
             agent_name=agent_name,
             total_decisions=total,
@@ -223,14 +230,15 @@ class TradingMetricsDashboard:
             avg_latency_ms=avg_latency,
             success_rate=success_rate,
         )
-    
-    def generate_dashboard(self, trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+    def generate_dashboard(self, trades: list[dict[str, Any]]) -> dict[str, Any]:
         """Genera dashboard completo de métricas."""
         metrics = self.calculate_trade_metrics(trades)
-        
+
         # Métricas por agente (si hay reasoning bank)
         try:
             from src.memory.reasoning_bank import get_reasoning_bank
+
             bank = get_reasoning_bank()
             agent_metrics = {
                 "technical": self.calculate_agent_metrics(bank, "technical_agent", 50),
@@ -239,11 +247,11 @@ class TradingMetricsDashboard:
             }
         except Exception:
             agent_metrics = {}
-        
+
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "trading_metrics": {
-                "total_trades": metrics.total_trades,
+                "total_trades": str(metrics.total_trades),
                 "win_rate": f"{metrics.win_rate:.1%}",
                 "profit_factor": f"{metrics.profit_factor:.2f}",
                 "sharpe_ratio": f"{metrics.sharpe_ratio:.2f}",
@@ -263,10 +271,10 @@ class TradingMetricsDashboard:
                 }
                 for name, m in agent_metrics.items()
             },
-            "raw": metrics,  # Para cálculos
+            "raw": asdict(metrics),  # Para cálculos
         }
-    
-    def save_metrics(self, dashboard: Dict[str, Any]) -> None:
+
+    def save_metrics(self, dashboard: dict[str, Any]) -> None:
         """Persiste métricas a JSONL."""
         try:
             with open(self.storage_path, "a") as f:
@@ -276,7 +284,7 @@ class TradingMetricsDashboard:
 
 
 # Singleton
-_dashboard: Optional[TradingMetricsDashboard] = None
+_dashboard: TradingMetricsDashboard | None = None
 
 
 def get_metrics_dashboard() -> TradingMetricsDashboard:

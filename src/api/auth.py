@@ -1,16 +1,18 @@
+import os
+import uuid
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.config.database import get_db
 from src.models.user import User
-import os
-import uuid
 
 # Security Config
 SECRET_KEY = os.getenv("JWT_SECRET")
@@ -23,58 +25,68 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 import logging
+
 logger = logging.getLogger("FenixAuth")
 
 if not SECRET_KEY:
     logger.warning("JWT_SECRET no está configurado; los endpoints de auth devolverán error 500.")
+
 
 # --- Schemas ---
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+
 class TokenData(BaseModel):
-    username: Optional[str] = None
+    username: str | None = None
+
 
 class UserResponse(BaseModel):
     id: str
     email: str
-    full_name: Optional[str] = None
+    full_name: str | None = None
     role: str
     is_active: bool
-    
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
 
+
 class UserProfile(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    phone: Optional[str] = None
-    department: Optional[str] = None
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
+    department: str | None = None
+
 
 class UserSettings(BaseModel):
     notifications_enabled: bool = True
     two_factor_enabled: bool = False
     theme: str = "auto"
 
+
 class UserAdminPayload(BaseModel):
     email: str
     username: str
     role: str
     status: str
-    profile: Optional[UserProfile] = None
-    settings: Optional[UserSettings] = None
+    profile: UserProfile | None = None
+    settings: UserSettings | None = None
+
 
 class RoleInfo(BaseModel):
     id: str
     name: str
     description: str
-    permissions: List[str]
+    permissions: list[str]
     is_system: bool
 
+
 # --- In-memory admin data (demo for UI) ---
-ROLE_STORE: Dict[str, RoleInfo] = {
+ROLE_STORE: dict[str, RoleInfo] = {
     "admin": RoleInfo(
         id="admin",
         name="Admin",
@@ -98,7 +110,7 @@ ROLE_STORE: Dict[str, RoleInfo] = {
     ),
 }
 
-USER_STORE: Dict[str, Dict[str, Any]] = {
+USER_STORE: dict[str, dict[str, Any]] = {
     "1": {
         "id": "1",
         "email": "admin@fenix.ai",
@@ -125,9 +137,11 @@ USER_STORE: Dict[str, Dict[str, Any]] = {
     },
 }
 
+
 # --- Helpers ---
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
+
 
 def get_password_hash(password: str) -> str:
     """Hash a password and return the string.
@@ -141,7 +155,9 @@ def get_password_hash(password: str) -> str:
         return pwd_context.hash(password)
     except Exception as e:
         logger = logging.getLogger("FenixAuth")
-        logger.warning(f"Password hashing failed with default scheme: {e}. Trying explicit pbkdf2_sha256.")
+        logger.warning(
+            f"Password hashing failed with default scheme: {e}. Trying explicit pbkdf2_sha256."
+        )
         # Explicit fallback to pbkdf2_sha256
         try:
             return pwd_context.hash(password, scheme="pbkdf2_sha256")
@@ -150,7 +166,8 @@ def get_password_hash(password: str) -> str:
             # Re-raise to let the caller handle failure and to avoid silently storing plain text
             raise
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
     if not SECRET_KEY:
         raise HTTPException(status_code=500, detail="JWT_SECRET is not configured")
     to_encode = data.copy()
@@ -179,7 +196,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-        
+
     result = await db.execute(select(User).where(User.email == token_data.username))
     user = result.scalar_one_or_none()
     if user is None:
@@ -195,17 +212,18 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 
 # --- Admin endpoints for Users page (demo) ---
 
-@router.get("/roles", response_model=List[RoleInfo])
+
+@router.get("/roles", response_model=list[RoleInfo])
 async def list_roles(_: User = Depends(get_current_active_user)):
     return list(ROLE_STORE.values())
 
 
-@router.get("/users", response_model=List[Dict[str, Any]])
+@router.get("/users", response_model=list[dict[str, Any]])
 async def list_users(_: User = Depends(get_current_active_user)):
     return list(USER_STORE.values())
 
 
-@router.post("/users", response_model=Dict[str, Any])
+@router.post("/users", response_model=dict[str, Any])
 async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_active_user)):
     user_id = uuid.uuid4().hex
     role_permissions = ROLE_STORE.get(payload.role, ROLE_STORE["viewer"]).permissions
@@ -219,7 +237,9 @@ async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_a
         "last_login": None,
         "permissions": role_permissions,
         "profile": payload.profile.dict() if payload.profile else {},
-        "settings": payload.settings.dict() if payload.settings else {
+        "settings": payload.settings.dict()
+        if payload.settings
+        else {
             "notifications_enabled": True,
             "two_factor_enabled": False,
             "theme": "auto",
@@ -229,21 +249,27 @@ async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_a
     return user_data
 
 
-@router.put("/users/{user_id}", response_model=Dict[str, Any])
-async def update_user(user_id: str, payload: UserAdminPayload, _: User = Depends(get_current_active_user)):
+@router.put("/users/{user_id}", response_model=dict[str, Any])
+async def update_user(
+    user_id: str, payload: UserAdminPayload, _: User = Depends(get_current_active_user)
+):
     if user_id not in USER_STORE:
         raise HTTPException(status_code=404, detail="User not found")
     role_permissions = ROLE_STORE.get(payload.role, ROLE_STORE["viewer"]).permissions
     user_data = USER_STORE[user_id]
-    user_data.update({
-        "email": payload.email,
-        "username": payload.username,
-        "role": payload.role,
-        "status": payload.status,
-        "permissions": role_permissions,
-        "profile": payload.profile.dict() if payload.profile else user_data.get("profile", {}),
-        "settings": payload.settings.dict() if payload.settings else user_data.get("settings", {}),
-    })
+    user_data.update(
+        {
+            "email": payload.email,
+            "username": payload.username,
+            "role": payload.role,
+            "status": payload.status,
+            "permissions": role_permissions,
+            "profile": payload.profile.dict() if payload.profile else user_data.get("profile", {}),
+            "settings": payload.settings.dict()
+            if payload.settings
+            else user_data.get("settings", {}),
+        }
+    )
     return user_data
 
 
@@ -266,8 +292,10 @@ class TwoFactorPayload(BaseModel):
     enabled: bool
 
 
-@router.put("/users/{user_id}/two-factor", response_model=Dict[str, Any])
-async def toggle_two_factor(user_id: str, payload: TwoFactorPayload, _: User = Depends(get_current_active_user)):
+@router.put("/users/{user_id}/two-factor", response_model=dict[str, Any])
+async def toggle_two_factor(
+    user_id: str, payload: TwoFactorPayload, _: User = Depends(get_current_active_user)
+):
     if user_id not in USER_STORE:
         raise HTTPException(status_code=404, detail="User not found")
     user_data = USER_STORE[user_id]
@@ -276,12 +304,20 @@ async def toggle_two_factor(user_id: str, payload: TwoFactorPayload, _: User = D
     user_data["settings"] = settings
     return user_data
 
+
 # --- Routes ---
 
-@router.post("/login", response_model=dict) # Changed response model to dict to match frontend expectation
-async def login_for_access_token(form_data: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+
+@router.post(
+    "/login", response_model=dict
+)  # Changed response model to dict to match frontend expectation
+async def login_for_access_token(
+    form_data: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)
+):
     # Note: Frontend sends JSON body {email, password}, not Form data
-    logger.info(f"Login attempt for email={form_data.email} from={request.client.host if request.client else 'unknown'}")
+    logger.info(
+        f"Login attempt for email={form_data.email} from={request.client.host if request.client else 'unknown'}"
+    )
     result = await db.execute(select(User).where(User.email == form_data.email))
     user = result.scalar_one_or_none()
     logger.debug(f"User lookup: {user.email if user else 'not found'}")
@@ -295,31 +331,34 @@ async def login_for_access_token(form_data: LoginRequest, request: Request, db: 
         )
 
     if not verify_password(form_data.password, user.hashed_password):
-        logger.warning(f"Authentication failed: password verification failed for email={form_data.email}")
+        logger.warning(
+            f"Authentication failed: password verification failed for email={form_data.email}"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email, "role": user.role, "userId": user.id}, 
-        expires_delta=access_token_expires
+        data={"sub": user.email, "role": user.role, "userId": user.id},
+        expires_delta=access_token_expires,
     )
-    
+
     # Return structure matching what frontend expects (referencing api/src/routes/auth.ts lines 100-108)
     return {
         "success": True,
-        "token": access_token, # Frontend expects 'token' or 'accessToken' in root or data? Checking authStore.ts line 54: data.token
+        "token": access_token,  # Frontend expects 'token' or 'accessToken' in root or data? Checking authStore.ts line 54: data.token
         "user": {
             "id": user.id,
             "email": user.email,
             "name": user.full_name,
             "role": user.role,
-            "is_active": user.is_active
-        }
+            "is_active": user.is_active,
+        },
     }
+
 
 @router.get("/me", response_model=dict)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
@@ -331,29 +370,32 @@ async def read_users_me(current_user: User = Depends(get_current_active_user)):
                 "email": current_user.email,
                 "name": current_user.full_name,
                 "role": current_user.role,
-                "is_active": current_user.is_active
+                "is_active": current_user.is_active,
             },
-             # Mock permissions based on role
-            "permissions": ["read:trading", "write:trading"] if current_user.role == "admin" else ["read:trading"]
-        }
+            # Mock permissions based on role
+            "permissions": ["read:trading", "write:trading"]
+            if current_user.role == "admin"
+            else ["read:trading"],
+        },
     }
+
 
 # Standard OAuth2 route (good for swagger UI)
 @router.post("/token", response_model=Token)
-async def login_swagger(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+async def login_swagger(
+    form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)
+):
     # This endpoint is kept for Swagger UI compatibility
     result = await db.execute(select(User).where(User.email == form_data.username))
     user = result.scalar_one_or_none()
-    
+
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
     return {"access_token": access_token, "token_type": "bearer"}

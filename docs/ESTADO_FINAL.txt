@@ -152,7 +152,7 @@ FRONTEND (ACTUALMENTE EN VIVO):
 
 BACKEND (PRÓXIMO PASO):
   └─ Terminal nueva:
-     cd "/Volumes/Ganador disk/Fenix unic agent/FenixAI"
+     cd "."
      npm install --legacy-peer-deps
      npm run server:dev
   

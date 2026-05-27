@@ -36,38 +36,40 @@ class TestCircuitBreakerReal:
     """Comprehensive tests for circuit breaker with real behavior."""
     
     @pytest.fixture
-def temp_dir(self):
-    """Create temporary directory for test data."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+    def temp_dir(self):
+        """Create temporary directory for test data."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
     
     
     @pytest.fixture
-def fresh_manager(self, temp_dir):
-    """Create fresh RiskManager for each test."""
-    config = RiskFeedbackLoopConfig(
-        enabled=True,
-        lookback_trades=12,
-        caution_drawdown_pct=4.0,
-        severe_drawdown_pct=6.5,
-        caution_daily_loss_pct=2.0,
-        severe_daily_loss_pct=3.5,
-        loss_streak_caution=3,
-        loss_streak_halt=5,
-        hot_streak_win_rate=0.68,
-        hot_streak_min_trades=6,
-        hot_streak_min_avg_pnl=12.0,
-        caution_cooldown_seconds=300,  # 5 min
-        severe_cooldown_seconds=900,   # 15 min
-        cooldown_risk_bias=0.7,
-        drawdown_risk_bias=0.45,
-        hot_streak_risk_bias=1.12,
-    )
-    storage_path = os.path.join(temp_dir, "risk.jsonl")
-    return RuntimeRiskManager(config=config, storage_path=storage_path)
+    def fresh_manager(self, temp_dir):
+        """Create fresh RiskManager for each test."""
+        config = RiskFeedbackLoopConfig(
+            enabled=True,
+            lookback_trades=12,
+            caution_drawdown_pct=4.0,
+            severe_drawdown_pct=6.5,
+            caution_daily_loss_pct=2.0,
+            severe_daily_loss_pct=3.5,
+            loss_streak_caution=3,
+            loss_streak_halt=5,
+            hot_streak_win_rate=0.68,
+            hot_streak_min_trades=6,
+            hot_streak_min_avg_pnl=12.0,
+            caution_cooldown_seconds=300,  # 5 min
+            severe_cooldown_seconds=900,   # 15 min
+            cooldown_risk_bias=0.7,
+            drawdown_risk_bias=0.45,
+            hot_streak_risk_bias=1.12,
+        )
+        storage_path = os.path.join(temp_dir, "risk.jsonl")
+        return RuntimeRiskManager(config=config, storage_path=storage_path)
     
     def test_severe_mode_after_five_consecutive_losses(self, fresh_manager):
         """CRITICAL: SEVERE mode activates after 5 consecutive losses."""
+        fresh_manager.config.caution_daily_loss_pct = 999.0
+        fresh_manager.config.severe_daily_loss_pct = 999.0
         fresh_manager.update_balance(10000.0)
         
         # Record 5 losing trades consecutively
@@ -494,7 +496,7 @@ def fresh_manager(self, temp_dir):
         """Win streak is correctly counted from most recent."""
         win_trades = [
             {"pnl": 50, "success": False},  # Not part of streak
-            {"pnl": 100, "success": True},""",  # Start of win streak
+            {"pnl": 100, "success": True},  # Start of win streak
             {"pnl": 120, "success": True},
             {"pnl": 80, "success": True},
         ]

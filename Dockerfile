@@ -26,16 +26,27 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy dependency files first for caching
 COPY pyproject.toml ./
 COPY README.md ./
+COPY LICENSE ./
+COPY src/ ./src/
 
 # Install Python dependencies
 RUN pip install --upgrade pip wheel setuptools && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir ".[vision,monitoring]"
 
-# Install additional runtime dependencies
+# Install additional runtime dependencies (some missing from pyproject.toml)
 RUN pip install --no-cache-dir \
     uvicorn[standard] \
     gunicorn \
-    prometheus-client
+    prometheus-client \
+    aiosqlite \
+    python-multipart \
+    python-socketio \
+    python-jose[cryptography] \
+    passlib[bcrypt] \
+    apscheduler \
+    beautifulsoup4 \
+    feedparser \
+    scipy
 
 # ==============================================================================
 # Stage 2: Runtime - Minimal production image

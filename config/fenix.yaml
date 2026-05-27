@@ -18,12 +18,15 @@ agents:
   enable_qabba: true
   enable_visual: true  # Activado para pruebas completas
   enable_sentiment: true  # Activado para pruebas completas
-  technical_weight: 0.30
-  qabba_weight: 0.30
+  technical_weight: 0.35
+  qabba_weight: 0.35
   visual_weight: 0.25
-  sentiment_weight: 0.15
+  sentiment_weight: 0.05
   consensus_threshold: 0.65
   min_confidence_to_trade: MEDIUM
+  sentiment_timeout_short: 8
+  sentiment_cache_ttl: 900
+  trailing_stop_escalated: true
 
 llm:
   default_provider: ollama_local

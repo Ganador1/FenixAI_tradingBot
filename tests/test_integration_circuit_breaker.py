@@ -134,8 +134,8 @@ class TestCircuitBreakerIntegration:
             decision="BUY",
             entry_price=67000.0,
             exit_price=None,
-            pnl=-50.0,
-            pnl_pct=-0.5,
+            pnl=-20.0,
+            pnl_pct=-0.2,
             success=False,
             size=1000.0,
         )

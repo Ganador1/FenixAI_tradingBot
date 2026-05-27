@@ -28,17 +28,19 @@ Modelos disponibles en Ollama Cloud:
 13. qwen3-next:80b-cloud       - 80B, gran capacidad
 14. gemini-3-flash-preview     - Vision + Flash = rápido
 """
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
 class ModelProfile:
     """Perfil de un modelo LLM."""
+
     name: str
     params_b: float  # Parámetros en billones
     architecture: str  # dense, moe, unknown
@@ -63,7 +65,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["decision", "risk_manager"],  # Requiere más reasoning
         score_1min_tf=85,  # Muy rápido, bueno para 1min
     ),
-
     "ministral-3:14b-cloud": ModelProfile(
         name="ministral-3:14b-cloud",
         params_b=14,
@@ -75,7 +76,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=[],
         score_1min_tf=92,  # Excelente balance velocidad/calidad
     ),
-
     "devstral-small-2:24b-cloud": ModelProfile(
         name="devstral-small-2:24b-cloud",
         params_b=24,
@@ -87,7 +87,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["sentiment"],  # Overkill para sentimiento
         score_1min_tf=88,  # Bueno para reasoning, pero más lento
     ),
-
     "nemotron-3-nano:30b-cloud": ModelProfile(
         name="nemotron-3-nano:30b-cloud",
         params_b=30,
@@ -99,7 +98,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["sentiment"],
         score_1min_tf=85,
     ),
-
     "kimi-k2.5:cloud": ModelProfile(
         name="kimi-k2.5:cloud",
         params_b=32,  # Estimado
@@ -111,7 +109,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["sentiment", "technical"],
         score_1min_tf=82,
     ),
-
     "kimi-k2-thinking:cloud": ModelProfile(
         name="kimi-k2-thinking:cloud",
         params_b=32,  # Estimado
@@ -123,7 +120,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["technical", "sentiment", "qabba", "risk_manager"],
         score_1min_tf=70,  # Thinking es lento para 1min
     ),
-
     "deepseek-v3.2:cloud": ModelProfile(
         name="deepseek-v3.2:cloud",
         params_b=16,  # Estimado (version pequeña)
@@ -135,7 +131,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=[],
         score_1min_tf=90,
     ),
-
     "minimax-m2.1:cloud": ModelProfile(
         name="minimax-m2.1:cloud",
         params_b=24,  # Estimado
@@ -147,7 +142,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["sentiment"],
         score_1min_tf=86,
     ),
-
     "glm-4.7:cloud": ModelProfile(
         name="glm-4.7:cloud",
         params_b=9,  # Estimado
@@ -159,7 +153,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["technical", "decision"],
         score_1min_tf=88,
     ),
-
     # Modelos GRANDES (lentos, no recomendados para 1min pero útiles para referencia)
     "deepseek-v3.1:671b-cloud": ModelProfile(
         name="deepseek-v3.1:671b-cloud",
@@ -169,10 +162,16 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         expected_latency_1k_tokens=8000,  # ~8s muy lento
         throughput_tokens_per_sec=120,
         best_for=[],  # No recomendado para 1min
-        not_recommended_for=["technical", "sentiment", "qabba", "decision", "risk_manager", "visual"],
+        not_recommended_for=[
+            "technical",
+            "sentiment",
+            "qabba",
+            "decision",
+            "risk_manager",
+            "visual",
+        ],
         score_1min_tf=30,  # Demasiado lento para 1min
     ),
-
     "gpt-oss:120b-cloud": ModelProfile(
         name="gpt-oss:120b-cloud",
         params_b=120,
@@ -184,7 +183,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["technical", "sentiment", "qabba", "decision", "risk_manager"],
         score_1min_tf=45,
     ),
-
     "qwen3-coder:480b-cloud": ModelProfile(
         name="qwen3-coder:480b-cloud",
         params_b=480,
@@ -193,10 +191,16 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         expected_latency_1k_tokens=6000,
         throughput_tokens_per_sec=160,
         best_for=[],  # Especializado en código, no trading
-        not_recommended_for=["technical", "sentiment", "qabba", "decision", "risk_manager", "visual"],
+        not_recommended_for=[
+            "technical",
+            "sentiment",
+            "qabba",
+            "decision",
+            "risk_manager",
+            "visual",
+        ],
         score_1min_tf=35,
     ),
-
     "qwen3-next:80b-cloud": ModelProfile(
         name="qwen3-next:80b-cloud",
         params_b=80,
@@ -208,7 +212,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         not_recommended_for=["technical", "sentiment", "qabba"],
         score_1min_tf=65,
     ),
-
     # Vision
     "gemini-3-flash-preview:cloud": ModelProfile(
         name="gemini-3-flash-preview:cloud",
@@ -315,7 +318,9 @@ def score_model_for_agent(model: ModelProfile, agent: str) -> tuple[float, str]:
     else:
         speed_score = 10  # Lento
     score += speed_score
-    reasons.append(f"Velocidad: {speed_score}/40 (latencia: {model.expected_latency_1k_tokens:.0f}ms)")
+    reasons.append(
+        f"Velocidad: {speed_score}/40 (latencia: {model.expected_latency_1k_tokens:.0f}ms)"
+    )
 
     # 3. Score general del modelo para 1min (20%)
     model_score = (model.score_1min_tf / 100) * 20
@@ -346,13 +351,15 @@ def generate_recommendations() -> dict[str, Any]:
 
         for model_name, profile in MODEL_PROFILES.items():
             score, reasoning = score_model_for_agent(profile, agent)
-            agent_recs.append({
-                "model": model_name,
-                "score": score,
-                "reasoning": reasoning,
-                "params_b": profile.params_b,
-                "expected_latency_ms": profile.expected_latency_1k_tokens,
-            })
+            agent_recs.append(
+                {
+                    "model": model_name,
+                    "score": score,
+                    "reasoning": reasoning,
+                    "params_b": profile.params_b,
+                    "expected_latency_ms": profile.expected_latency_1k_tokens,
+                }
+            )
 
         # Ordenar por score
         agent_recs.sort(key=lambda x: x["score"], reverse=True)
@@ -432,18 +439,20 @@ def generate_yaml_config(recommendations: dict) -> str:
 
         yaml_name = agent_yaml_names.get(agent, agent)
 
-        lines.extend([
-            f"  {yaml_name}:",
-            f"    provider_type: 'ollama_cloud'",
-            f"    model_name: '{model}'  # Score: {score:.0f}/100",
-            f"    temperature: {temp}",
-            f"    max_tokens: {max_tokens}",
-            f"    timeout: {timeout}",
-            f"    api_base: 'http://localhost:11434'",
-        ])
+        lines.extend(
+            [
+                f"  {yaml_name}:",
+                "    provider_type: 'ollama_cloud'",
+                f"    model_name: '{model}'  # Score: {score:.0f}/100",
+                f"    temperature: {temp}",
+                f"    max_tokens: {max_tokens}",
+                f"    timeout: {timeout}",
+                "    api_base: 'http://localhost:11434'",
+            ]
+        )
 
         if agent == "visual":
-            lines.append(f"    supports_vision: true")
+            lines.append("    supports_vision: true")
 
         lines.append("")
 
@@ -452,24 +461,28 @@ def generate_yaml_config(recommendations: dict) -> str:
 
 def print_analysis(recommendations: dict):
     """Imprime análisis detallado."""
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
     print("📊 ANÁLISIS COMPARATIVO DE MODELOS - RECOMENDACIÓN PARA TIMEFRAME 1min")
-    print("="*90)
+    print("=" * 90)
 
-    print("\n" + "-"*90)
+    print("\n" + "-" * 90)
     print("RESUMEN DE MODELOS DISPONIBLES:")
-    print("-"*90)
+    print("-" * 90)
     print(f"{'Modelo':<35} {'Params':<10} {'Latencia':<12} {'Score 1min':<12} {'Especialización'}")
-    print("-"*90)
+    print("-" * 90)
 
-    for name, profile in sorted(MODEL_PROFILES.items(), key=lambda x: x[1].score_1min_tf, reverse=True):
+    for name, profile in sorted(
+        MODEL_PROFILES.items(), key=lambda x: x[1].score_1min_tf, reverse=True
+    ):
         spec = ", ".join(profile.specialization[:2])
-        print(f"{name:<35} {profile.params_b:<10.0f}B {profile.expected_latency_1k_tokens:<12.0f}ms "
-              f"{profile.score_1min_tf:<12.0f} {spec}")
+        print(
+            f"{name:<35} {profile.params_b:<10.0f}B {profile.expected_latency_1k_tokens:<12.0f}ms "
+            f"{profile.score_1min_tf:<12.0f} {spec}"
+        )
 
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
     print("RECOMENDACIONES POR AGENTE:")
-    print("="*90)
+    print("=" * 90)
 
     for agent, rec in recommendations.items():
         print(f"\n📌 {agent.upper()}")
@@ -477,21 +490,23 @@ def print_analysis(recommendations: dict):
         print(f"   Requisitos: {', '.join(rec['requirements'])}")
         print()
         print(f"   {'Rank':<6} {'Modelo':<35} {'Score':<10} {'Latencia':<12}")
-        print(f"   {'-'*65}")
+        print(f"   {'-' * 65}")
 
         for i, model_rec in enumerate(rec["top_3_models"][:3], 1):
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-            print(f"   {medal} {i:<4} {model_rec['model']:<35} {model_rec['score']:<10.0f} "
-                  f"{model_rec['expected_latency_ms']:<12.0f}ms")
+            print(
+                f"   {medal} {i:<4} {model_rec['model']:<35} {model_rec['score']:<10.0f} "
+                f"{model_rec['expected_latency_ms']:<12.0f}ms"
+            )
 
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
 
 
 def main():
     """Función principal."""
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
     print("🔬 ANÁLISIS TEÓRICO DE MODELOS LLM PARA FENIX TRADING BOT")
-    print("="*90)
+    print("=" * 90)
     print("\nObjetivo: Optimizar asignación de modelos para timeframe 1min")
     print("Criterio: Velocidad (40%) + Especialización (30%) + Score 1min (20%) + Throughput (10%)")
 
@@ -504,9 +519,9 @@ def main():
     # Generar YAML
     yaml_config = generate_yaml_config(recommendations)
 
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
     print("⚙️ CONFIGURACIÓN YAML RECOMENDADA:")
-    print("="*90)
+    print("=" * 90)
     print(yaml_config)
 
     # Guardar a archivo
@@ -519,27 +534,35 @@ def main():
     # Guardar JSON detallado
     json_path = "logs/model_analysis_recommendation.json"
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "timestamp": datetime.now().isoformat(),
-            "timeframe": "1m",
-            "recommendations": recommendations,
-            "model_profiles": {k: {
-                "name": v.name,
-                "params_b": v.params_b,
-                "architecture": v.architecture,
-                "specialization": v.specialization,
-                "expected_latency_1k_tokens": v.expected_latency_1k_tokens,
-                "throughput_tokens_per_sec": v.throughput_tokens_per_sec,
-                "score_1min_tf": v.score_1min_tf,
-            } for k, v in MODEL_PROFILES.items()},
-        }, f, indent=2, ensure_ascii=False)
+        json.dump(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "timeframe": "1m",
+                "recommendations": recommendations,
+                "model_profiles": {
+                    k: {
+                        "name": v.name,
+                        "params_b": v.params_b,
+                        "architecture": v.architecture,
+                        "specialization": v.specialization,
+                        "expected_latency_1k_tokens": v.expected_latency_1k_tokens,
+                        "throughput_tokens_per_sec": v.throughput_tokens_per_sec,
+                        "score_1min_tf": v.score_1min_tf,
+                    }
+                    for k, v in MODEL_PROFILES.items()
+                },
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
 
     print(f"💾 Análisis detallado guardado en: {json_path}")
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
 
     # Consejos finales
     print("\n📋 CONSEJOS PARA IMPLEMENTACIÓN:")
-    print("-"*90)
+    print("-" * 90)
     print("""
 1. PRIORIDAD VELOCIDAD: En timeframe 1min, cada segundo cuenta. Los modelos 8B-14B
    son ideales para agentes paralelos (technical, sentiment, qabba).
@@ -562,7 +585,7 @@ def main():
 7. FALLBACKS: Configurar siempre modelos fallback más ligeros por si el
    modelo principal falla o está sobrecargado.
 """)
-    print("="*90)
+    print("=" * 90)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,384 @@
+# ============================================================================
+# CONFIGURACIÓN OLLAMA CLOUD - MODELOS AVANZADOS v2.5
+# GLM-5.1 y Gemma 4 31B con thinking mode
+# ============================================================================
+# Esta configuración está optimizada para uso con Ollama Cloud + doble API key
+# Fecha: 2026-04-10
+# ============================================================================
+
+active_profile: "ollama_cloud_advanced"
+
+# ============================================================================
+# PERFIL: OLLAMA CLOUD ADVANCED
+# Modelos de última generación con doble key para distribución de carga
+# ============================================================================
+ollama_cloud_advanced:
+  
+  # ========================================================================
+  # GLM-5.1: Agente de Decisión Principal
+  # Performance similar a Claude Opus 4.6, optimizado para trading
+  # ========================================================================
+  decision:
+    provider_type: "ollama_cloud"
+    model_name: "glm-5.1:cloud"
+    
+    # Parámetros de sampling optimizados
+    temperature: 0.15          # Balance entre creatividad y determinismo
+    max_tokens: 800            # Respuestas concisas para trading
+    top_p: 0.90               # Nucleus sampling conservador
+    top_k: 40                 # Evita tokens muy raros
+    repeat_penalty: 1.05      # Penalización ligera por repetición
+    
+    # Contexto y performance
+    num_ctx: 8192             # 8K suficiente para análisis técnico
+    timeout: 25               # Segundos (ajustar según experiencia)
+    
+    # System prompt optimizado para GLM-5.1
+    system_prompt: |
+      You are an expert quantitative trading decision agent specializing in 
+      cryptocurrency markets. Your task is to analyze technical indicators, 
+      market structure, and microstructure data to make trading decisions.
+      
+      Rules:
+      1. Be decisive - provide clear BUY, SELL, or HOLD signals
+      2. Confidence must reflect uncertainty accurately (0.0-1.0 scale)
+      3. Always consider risk-reward ratio
+      4. Avoid overtrading - quality over quantity
+      5. Structure output as JSON with: decision, confidence, reasoning
+      
+      Current market context: {market_context}
+    
+    # Fallback por si GLM-5.1 no responde
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "nemotron-3-nano:30b-cloud"
+    fallback_temperature: 0.2
+    fallback_timeout: 15
+    
+    # Configuración especial para doble key
+    api_key_rotation: "round_robin"  # Alterna entre key1 y key2
+    retry_on_timeout: true
+    max_retries: 2
+
+  # ========================================================================
+  # GEMMA 4 31B: Agente de Riesgo con Thinking Mode
+  # Usa <|think|> para razonamiento profundo antes de decidir
+  # ========================================================================
+  risk:
+    provider_type: "ollama_cloud"
+    model_name: "gemma4:31b-cloud"
+    
+    # Parámetros conservadores para gestión de riesgo
+    temperature: 0.10          # Muy conservador para riesgo
+    max_tokens: 600            # Limitado para respuestas rápidas
+    top_p: 0.85               # Más restrictivo
+    top_k: 32                 # Menos variabilidad
+    repeat_penalty: 1.08      # Evita repetición
+    
+    # Contexto mayor para análisis de riesgo completo
+    num_ctx: 16384            # 16K para análisis multi-factor
+    timeout: 30               # Gemma 4 31B necesita más tiempo
+    
+    # THINKING MODE ACTIVADO
+    # El token <|think|> al inicio activa el modo razonamiento
+    system_prompt: |
+      <|think|>
+      You are a conservative risk management agent for cryptocurrency futures trading.
+      Your primary goal is capital preservation. Be skeptical of trades by default.
+      
+      Analysis framework:
+      1. Evaluate current volatility regime (LOW/MEDIUM/HIGH)
+      2. Assess market liquidity and spread conditions
+      3. Calculate maximum acceptable position size based on ATR
+      4. Determine if proposed trade direction aligns with market structure
+      5. Consider recent win/loss streak (avoid revenge trading)
+      
+      Verdict options:
+      - APPROVE: Trade meets all criteria, size appropriate
+      - VETO: Trade too risky, wrong timing, or conditions unfavorable
+      - DELAY: Uncertain conditions, wait for better setup
+      
+      Output JSON with: verdict, position_size_pct, stop_loss_pct, take_profit_pct, reasoning
+      
+      Current portfolio state: {portfolio_state}
+      Market regime: {market_regime}
+    
+    # Parseo especial para separar thinking de respuesta
+    parse_thinking_mode: true
+    thinking_start_token: "<|channel>thought\\n"
+    thinking_end_token: "<channel|>"
+    
+    # Fallback más conservador
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "devstral-small-2:24b-cloud"
+    fallback_temperature: 0.05
+
+  # ========================================================================
+  # TÉCNICO: Nemotron-3-Nano (probado y estable)
+  # ========================================================================
+  technical:
+    provider_type: "ollama_cloud"
+    model_name: "nemotron-3-nano:30b-cloud"
+    temperature: 0.10
+    max_tokens: 1000
+    timeout: 20
+    num_ctx: 4096
+    top_p: 0.92
+    top_k: 40
+    
+    system_prompt: |
+      You are a technical analysis expert. Analyze price action, indicators, 
+      and market structure. Provide clear directional bias with confidence level.
+      Output: direction (BULLISH/BEARISH/NEUTRAL), confidence (0-1), key_levels[]
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "ministral-3:14b-cloud"
+
+  # ========================================================================
+  # QABBA: DeepSeek V3.2 (microestructura)
+  # ========================================================================
+  qabba:
+    provider_type: "ollama_cloud"
+    model_name: "deepseek-v3.2:cloud"
+    temperature: 0.05          # Muy bajo para datos cuantitativos
+    max_tokens: 800
+    timeout: 35               # DeepSeek puede ser lento
+    num_ctx: 8192
+    top_p: 0.88
+    
+    system_prompt: |
+      You analyze order flow and microstructure. Input: OBI, OFI, CVD, spread, 
+      volume profile. Output: signal (STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL), 
+      confidence, micro_bias, liquidation_risk_level
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "nemotron-3-nano:30b-cloud"
+
+  # ========================================================================
+  # SENTIMENT: GLM-4.7 (análisis de noticias)
+  # ========================================================================
+  sentiment:
+    provider_type: "ollama_cloud"
+    model_name: "glm-4.7:cloud"
+    temperature: 0.20
+    max_tokens: 600
+    timeout: 20
+    num_ctx: 4096
+    
+    system_prompt: |
+      Analyze market sentiment from news and social media. Consider: 
+      fear/greed index, funding rates, social volume. 
+      Output: sentiment (BULLISH/BEARISH/NEUTRAL), strength (0-1), key_topics[]
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "qwen3:8b-cloud"
+
+  # ========================================================================
+  # VISUAL: Qwen3-VL (análisis de charts)
+  # ========================================================================
+  visual:
+    provider_type: "ollama_cloud"
+    model_name: "qwen3-vl:235b-cloud"
+    temperature: 0.15
+    max_tokens: 700
+    timeout: 25
+    num_ctx: 4096
+    supports_vision: true
+    
+    system_prompt: |
+      Analyze price chart images. Identify: trend, support/resistance levels, 
+      patterns, volume anomalies. Output: bias (UP/DOWN/SIDEWAYS), confidence, 
+      pattern_detected, risk_assessment
+    
+    fallback_provider_type: "ollama_cloud"
+    fallback_model_name: "gemini-3-flash-preview:cloud"
+
+
+# ============================================================================
+# CONFIGURACIÓN DE DOBLE API KEY
+# Rotación automática para distribuir carga
+# ============================================================================
+ollama_cloud_advanced_config:
+  # Endpoints
+  primary_endpoint: "https://api.ollama.ai"
+  secondary_endpoint: "https://api.ollama.ai"  # Mismo endpoint, diferentes keys
+  
+  # Rotación de keys
+  key_rotation_strategy: "round_robin"  # Opciones: round_robin, least_used, failover
+  
+  # Rate limiting por key
+  requests_per_minute_per_key: 60
+  tokens_per_minute_per_key: 100000
+  
+  # Retry logic
+  max_retries_per_key: 2
+  retry_delay_seconds: 1.0
+  
+  # Circuit breaker
+  circuit_breaker_failures: 5
+  circuit_breaker_timeout: 30
+
+
+# ============================================================================
+# CONFIGURACIÓN ESPECÍFICA POR AGENTE - PARÁMETROS AVANZADOS
+# ============================================================================
+agent_specific_config:
+  
+  decision_glm51:
+    # GLM-5.1 parámetros específicos de paper
+    # Basado en: 744B total, 40B active, MoE architecture
+    
+    # Importante: GLM-5.1 tiene "deep thinking" por defecto
+    # No necesitamos activarlo explícitamente
+    
+    prompt_format: |
+      [Market Analysis]
+      Symbol: {symbol}
+      Timeframe: {timeframe}
+      Current Price: ${price:,.2f}
+      
+      [Technical Indicators]
+      {technical_summary}
+      
+      [Microstructure]
+      {qabba_summary}
+      
+      [Market Sentiment]
+      {sentiment_summary}
+      
+      [Position Context]
+      Current Position: {current_position}
+      Unrealized PnL: {unrealized_pnl:+.2f}%
+      
+      [Task]
+      Based on the above data, provide a trading decision.
+      
+    # Output esperado de GLM-5.1
+    expected_output_format:
+      decision: "BUY|SELL|HOLD"
+      confidence: "float(0.0-1.0)"
+      reasoning: "string(max_100_chars)"
+      suggested_position_size: "float(0.0-1.0)"
+      risk_level: "LOW|MEDIUM|HIGH"
+      
+    # Validación
+    min_confidence_threshold: 0.45
+    require_reasoning: true
+    validate_json_schema: true
+
+  risk_gemma4:
+    # Gemma 4 parámetros específicos
+    # Importante: thinking mode parse
+    
+    prompt_format: |
+      [Risk Assessment Request]
+      
+      Proposed Trade:
+      - Direction: {proposed_direction}
+      - Symbol: {symbol}
+      - Suggested Size: {suggested_size}%
+      - Entry Price: ${entry_price:,.2f}
+      
+      [Market Conditions]
+      Volatility (ATR): {atr_pct:.2f}%
+      Market Regime: {regime}
+      Spread: {spread_bps:.2f} bps
+      Funding Rate: {funding_rate:.4f}%
+      
+      [Portfolio State]
+      Current Exposure: {current_exposure:.2f}%
+      Unrealized PnL: {unrealized_pnl:+.2f}%
+      Recent Win Rate: {recent_wr:.1f}%
+      
+      [Risk Parameters]
+      Max Risk per Trade: {max_risk_pct:.2f}%
+      Daily Loss Limit: {daily_loss_limit:.2f}%
+      
+    # Gemma 4 con thinking output:
+    # <|channel>thought
+    # [Razonamiento interno...]
+    # <channel|>
+    # {"verdict": "...", "position_size_pct": "...", ...}
+    
+    # Extraer solo la respuesta JSON, ignorar thinking
+    extract_json_from_thinking: true
+    
+    # Validación estricta
+    require_stop_loss: true
+    max_position_size_pct: 0.15  # 15% máximo por trade
+    veto_on_high_volatility: true
+    volatility_threshold: 0.03   # 3% ATR
+
+
+# ============================================================================
+# CONFIGURACIÓN DE FALLBACK Y RECUPERACIÓN
+# ============================================================================
+fallback_configuration:
+  
+  # Si un modelo falla, intentar estos en orden
+  fallback_chain:
+    decision: ["glm-5.1:cloud", "nemotron-3-nano:30b-cloud", "minimax-m2.1:cloud"]
+    risk: ["gemma4:31b-cloud", "devstral-small-2:24b-cloud", "glm-4.7:cloud"]
+    technical: ["nemotron-3-nano:30b-cloud", "ministral-3:14b-cloud", "qwen3:8b-cloud"]
+    qabba: ["deepseek-v3.2:cloud", "nemotron-3-nano:30b-cloud", "cogito-2.1:671b-cloud"]
+  
+  # Cuándo considerar un fallo
+  failure_conditions:
+    - timeout_exceeded: 25  # segundos
+    - error_response: true
+    - invalid_json: true
+    - confidence_too_low: 0.1  # Confianza < 10%
+  
+  # Métricas para decidir cambio permanente de modelo
+  auto_switch_threshold:
+    min_success_rate: 0.80     # Si < 80% éxito, proponer cambio
+    min_avg_confidence: 0.50   # Si confianza promedio < 50%
+    min_signals_per_hour: 3    # Si genera < 3 señales/hora
+
+
+# ============================================================================
+# CONFIGURACIÓN DE MONITOREO Y LOGGING
+# ============================================================================
+monitoring:
+  # Loggear métricas de cada modelo
+  log_model_performance: true
+  log_latency_percentiles: [50, 90, 95, 99]
+  log_token_usage: true
+  
+  # Alertas
+  alert_on_high_latency: 30    # segundos
+  alert_on_low_confidence: 0.3  # Confianza < 30%
+  alert_on_repeated_fallbacks: 3  # 3 fallbacks seguidos
+  
+  # Dashboard metrics
+  export_prometheus_metrics: true
+  metrics_port: 9091
+
+
+# ============================================================================
+# NOTAS DE IMPLEMENTACIÓN
+# ============================================================================
+# 
+# 1. GLM-5.1:
+#    - Modelo MoE: 744B total, 40B active
+#    - Muy bueno para razonamiento complejo (Opus 4.6 level)
+#    - Usar para Decision Agent (el cerebro principal)
+#    - Temperatura moderada (0.15) - no necesita ser muy conservador
+#
+# 2. Gemma 4 31B:
+#    - Dense model: 31B params
+#    - Contexto masivo: 256K tokens
+#    - Thinking mode: Agregar <|think|> al system prompt
+#    - Usar para Risk Agent (necesita pensar mucho antes de aprobar)
+#    - Parsear output para separar thinking de respuesta
+#
+# 3. Doble Key:
+#    - Configurar OLLAMA_API_KEY y OLLAMA_CLOUD_API_KEY
+#    - Rotación automática round_robin distribuye carga
+#    - Si una key falla, automáticamente usa la otra
+#
+# 4. Testing:
+#    - Primero test individual de cada modelo
+#    - Luego test integrado
+#    - Comparar contra baseline (nemotron ensemble)
+#
+# ============================================================================

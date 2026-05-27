@@ -509,7 +509,7 @@ def _calculate_and_store_all_indicators() -> None:
                         "ignore",
                         category=ArchConvergenceWarning,
                     )
-                res = am.fit(disp='off')
+                res = am.fit(disp='off', show_warning=False)
             forecast = res.forecast(horizon=1)
             garch_vol = np.sqrt(forecast.variance.values[-1, :][0])
             temp_cache["garch_volatility_forecast"] = float(garch_vol)
@@ -688,13 +688,18 @@ def _calculate_and_store_all_indicators() -> None:
                             k_values = []
                             for i in range(3):
                                 idx = -(i+1)
-                                # Ensure indices are valid
-                                if abs(idx-13) <= len(low_arr) and abs(idx) <= len(high_arr):
-                                    period_low = np.min(low_arr[idx-13:idx+1])
-                                    period_high = np.max(high_arr[idx-13:idx+1])
-                                    if period_high != period_low:
-                                        k_val = ((close_arr[idx] - period_low) / (period_high - period_low)) * 100
-                                        k_values.append(k_val)
+                                start = idx - 13
+                                end = idx + 1
+                                low_window = low_arr[start:end]
+                                high_window = high_arr[start:end]
+                                # Defensive guard: avoid zero-size reductions on short/edge slices.
+                                if low_window.size < 14 or high_window.size < 14:
+                                    continue
+                                period_low = np.min(low_window)
+                                period_high = np.max(high_window)
+                                if period_high != period_low:
+                                    k_val = ((close_arr[idx] - period_low) / (period_high - period_low)) * 100
+                                    k_values.append(k_val)
                             if k_values:
                                 temp_cache["stoch_d"] = float(np.mean(k_values))
                 else:

@@ -14,7 +14,6 @@ import {
 import { useSystemStore } from '@/stores/systemStore';
 import { useAgentStore } from '@/stores/agentStore';
 import { formatCurrency, formatPercentage } from '@/lib/utils';
-// import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { MetricCard } from '@/components/MetricCard';
 import { SystemStatusChart } from '@/components/SystemStatusChart';
 import { AgentPerformanceChart } from '@/components/AgentPerformanceChart';
@@ -118,10 +117,10 @@ export function Dashboard() {
 
   // Calculate agent metrics
   const activeAgents = agents.filter(agent => agent.status === 'active').length;
-  const totalAgents = agents.length || 6; // Default to 6 agents
+  const totalAgents = agents.length || 6;
   const avgAccuracy = scorecards.length > 0
     ? scorecards.reduce((sum, card) => sum + card.accuracy, 0) / scorecards.length
-    : 0.78; // Default accuracy
+    : 0.78;
 
   // Get recent alerts
   const recentAlerts = alerts.slice(0, 5);
@@ -131,21 +130,21 @@ export function Dashboard() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-4xl font-bold text-white tracking-tight">
+          <h1 className="text-4xl font-bold text-gray-900 tracking-tight">
             Dashboard <span className="text-gradient">Pro</span>
           </h1>
-          <p className="text-slate-400 mt-2">Real-time market intelligence & agent status.</p>
+          <p className="text-gray-500 mt-2">Real-time market intelligence & agent status.</p>
         </div>
-        <div className="flex items-center space-x-3 bg-slate-800/50 p-2 rounded-xl border border-white/5 backdrop-blur-sm">
+        <div className="flex items-center space-x-3 bg-white p-2 rounded-xl border border-gray-200 shadow-sm">
           <button
             onClick={fetchDashboardData}
-            className="p-2 hover:bg-white/10 rounded-lg transition-all duration-200 text-cyan-400"
+            className="p-2 hover:bg-gray-100 rounded-lg transition-all duration-200 text-blue-600"
             disabled={isLoading}
             title="Refresh data"
           >
             <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
           </button>
-          <div className="flex items-center space-x-2 text-sm text-slate-400 px-2 border-l border-white/10">
+          <div className="flex items-center space-x-2 text-sm text-gray-500 px-2 border-l border-gray-200">
             <Clock className="w-4 h-4" />
             <span>Updated: {lastUpdate.toLocaleTimeString()}</span>
           </div>
@@ -154,24 +153,23 @@ export function Dashboard() {
 
       {/* Market Price Banner */}
       {marketPrice && (
-        <div className="glass-panel rounded-2xl p-6 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl -mr-16 -mt-16 transition-all duration-700 group-hover:bg-cyan-500/20"></div>
+        <div className="bg-white rounded-2xl p-6 relative overflow-hidden group border border-gray-200 shadow-sm">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full blur-3xl -mr-16 -mt-16 transition-all duration-700 group-hover:bg-blue-500/10"></div>
 
           <div className="flex items-center justify-between relative z-10">
             <div className="flex items-center space-x-4">
-              <div className="p-3 bg-orange-500/20 rounded-xl">
-                {/* Icon placeholder for coin logo */}
-                <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold">₿</div>
+              <div className="p-3 bg-orange-100 rounded-xl">
+                <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold">&#8383;</div>
               </div>
               <div>
-                <p className="text-slate-400 text-sm font-medium tracking-wider">{marketPrice.symbol}</p>
-                <div className="text-4xl font-bold text-white tracking-tight mt-1">
+                <p className="text-gray-500 text-sm font-medium tracking-wider">{marketPrice.symbol}</p>
+                <div className="text-4xl font-bold text-gray-900 tracking-tight mt-1">
                   {formatCurrency(marketPrice.price)}
                 </div>
               </div>
             </div>
 
-            <div className={`flex items-center px-4 py-2 rounded-xl backdrop-blur-md border ${marketPrice.change_24h >= 0 ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+            <div className={`flex items-center px-4 py-2 rounded-xl border ${marketPrice.change_24h >= 0 ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
               {marketPrice.change_24h >= 0 ? <TrendingUp className="w-6 h-6 mr-2" /> : <TrendingDown className="w-6 h-6 mr-2" />}
               <span className="text-2xl font-bold">{Math.abs(marketPrice.change_24h).toFixed(2)}%</span>
             </div>
@@ -187,7 +185,7 @@ export function Dashboard() {
           change={portfolio.changePercent}
           changeType={portfolio.changePercent >= 0 ? 'positive' : 'negative'}
           icon={DollarSign}
-          className="glass-card animate-card"
+          className="animate-card"
         />
 
         <MetricCard
@@ -197,7 +195,7 @@ export function Dashboard() {
           change={activeAgents}
           changeType="positive"
           icon={Brain}
-          className="glass-card animate-card"
+          className="animate-card"
         />
 
         <MetricCard
@@ -207,7 +205,7 @@ export function Dashboard() {
           change={metrics?.cpu ? metrics.cpu - 50 : 0}
           changeType={metrics?.cpu && metrics.cpu < 80 ? 'positive' : 'negative'}
           icon={Activity}
-          className="glass-card animate-card"
+          className="animate-card"
         />
 
         <MetricCard
@@ -217,7 +215,7 @@ export function Dashboard() {
           change={avgAccuracy - 75}
           changeType={avgAccuracy >= 75 ? 'positive' : 'negative'}
           icon={Zap}
-          className="glass-card animate-card"
+          className="animate-card"
         />
       </div>
 
@@ -226,9 +224,9 @@ export function Dashboard() {
         {/* Left Column */}
         <div className="lg:col-span-2 space-y-8">
           {/* Market Overview */}
-          <div className="glass-panel rounded-2xl p-6 animate-card">
-            <h3 className="text-xl font-semibold mb-6 flex items-center">
-              <Activity className="w-5 h-5 mr-2 text-cyan-400" />
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm animate-card">
+            <h3 className="text-xl font-semibold mb-6 flex items-center text-gray-900">
+              <Activity className="w-5 h-5 mr-2 text-blue-600" />
               Market Overview
             </h3>
             <MarketOverview />
@@ -236,15 +234,15 @@ export function Dashboard() {
 
           {/* System & Agents Chart Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="glass-panel rounded-2xl p-6 animate-card">
-              <h3 className="text-lg font-semibold mb-4 text-slate-200">System Load</h3>
+            <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm animate-card">
+              <h3 className="text-lg font-semibold mb-4 text-gray-900">System Load</h3>
               <div className="h-[200px]">
                 <SystemStatusChart />
               </div>
             </div>
 
-            <div className="glass-panel rounded-2xl p-6 animate-card">
-              <h3 className="text-lg font-semibold mb-4 text-slate-200">Agent Performance</h3>
+            <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm animate-card">
+              <h3 className="text-lg font-semibold mb-4 text-gray-900">Agent Performance</h3>
               <div className="h-[200px]">
                 <AgentPerformanceChart />
               </div>
@@ -255,44 +253,44 @@ export function Dashboard() {
         {/* Right Column */}
         <div className="space-y-8">
           {/* Quick Actions */}
-          <div className="glass-panel rounded-2xl p-6 animate-card">
-            <h3 className="text-lg font-semibold mb-4 text-white">Quick Actions</h3>
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm animate-card">
+            <h3 className="text-lg font-semibold mb-4 text-gray-900">Quick Actions</h3>
             <div className="space-y-3">
-              <button className="w-full text-left p-4 bg-gradient-to-r from-blue-600/20 to-blue-400/10 border border-blue-500/20 rounded-xl hover:bg-blue-600/30 transition-all group">
-                <div className="font-semibold text-blue-300 group-hover:text-blue-200 flex items-center">
+              <button className="w-full text-left p-4 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-all group">
+                <div className="font-semibold text-blue-700 group-hover:text-blue-800 flex items-center">
                   <DollarSign className="w-4 h-4 mr-2" /> New Order
                 </div>
-                <div className="text-xs text-blue-400/60 mt-1">Execute manual trade</div>
+                <div className="text-xs text-blue-500 mt-1">Execute manual trade</div>
               </button>
 
-              <button className="w-full text-left p-4 bg-gradient-to-r from-emerald-600/20 to-emerald-400/10 border border-emerald-500/20 rounded-xl hover:bg-emerald-600/30 transition-all group">
-                <div className="font-semibold text-emerald-300 group-hover:text-emerald-200 flex items-center">
+              <button className="w-full text-left p-4 bg-emerald-50 border border-emerald-200 rounded-xl hover:bg-emerald-100 transition-all group">
+                <div className="font-semibold text-emerald-700 group-hover:text-emerald-800 flex items-center">
                   <Brain className="w-4 h-4 mr-2" /> View Agents
                 </div>
-                <div className="text-xs text-emerald-400/60 mt-1">Check AI reasoning</div>
+                <div className="text-xs text-emerald-500 mt-1">Check AI reasoning</div>
               </button>
 
-              <button className="w-full text-left p-4 bg-gradient-to-r from-purple-600/20 to-purple-400/10 border border-purple-500/20 rounded-xl hover:bg-purple-600/30 transition-all group">
-                <div className="font-semibold text-purple-300 group-hover:text-purple-200 flex items-center">
+              <button className="w-full text-left p-4 bg-purple-50 border border-purple-200 rounded-xl hover:bg-purple-100 transition-all group">
+                <div className="font-semibold text-purple-700 group-hover:text-purple-800 flex items-center">
                   <Shield className="w-4 h-4 mr-2" /> System Health
                 </div>
-                <div className="text-xs text-purple-400/60 mt-1">Monitor infrastructure</div>
+                <div className="text-xs text-purple-500 mt-1">Monitor infrastructure</div>
               </button>
             </div>
           </div>
 
           {/* Recent Alerts */}
-          <div className="glass-panel rounded-2xl p-6">
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-white">Recent Alerts</h3>
-              <span className="text-xs px-2 py-1 rounded-full bg-slate-700 text-slate-300">{recentAlerts.length} new</span>
+              <h3 className="text-lg font-semibold text-gray-900">Recent Alerts</h3>
+              <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600">{recentAlerts.length} new</span>
             </div>
             <RecentAlerts alerts={recentAlerts} />
           </div>
 
           {/* Recent Trades */}
-          <div className="glass-panel rounded-2xl p-6">
-            <h3 className="text-lg font-semibold mb-4 text-white">Recent Trades</h3>
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
+            <h3 className="text-lg font-semibold mb-4 text-gray-900">Recent Trades</h3>
             <RecentTrades />
           </div>
         </div>

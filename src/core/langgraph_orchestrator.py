@@ -25,22 +25,24 @@ Validation rules per agent:
 - decision_agent: final_decision ∈ {BUY,SELL,HOLD}, confidence ∈ {HIGH,MEDIUM,LOW}
 - risk_manager: verdict ∈ {APPROVE,APPROVE_REDUCED,VETO,DELAY}, risk_score ∈ [0,10]
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import logging
+import os
 import re
-from pathlib import Path
-from datetime import datetime
-from typing import Any, TypedDict, Annotated
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Annotated, Any, TypedDict
 
 # LangGraph imports
 try:
-    from langgraph.graph import END, START, StateGraph
     from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, START, StateGraph
+
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     LANGGRAPH_AVAILABLE = False
@@ -51,20 +53,24 @@ except ImportError:
 # LangChain imports
 try:
     from langchain_core.messages import HumanMessage, SystemMessage
+
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
 
 # Local imports
+from config.llm_provider_config import LLMProvidersConfig
+from src.config.judge_config import get_judge_model_config  # Integration
+from src.core.orchestrator.llm_factory import LLMFactory as SharedLLMFactory
+from src.inference.reasoning_judge import ReasoningJudgePayload, ReasoningLLMJudge  # Integration
 from src.prompts.agent_prompts import format_prompt
-from config.llm_provider_config import LLMProvidersConfig, AgentProviderConfig
-from src.inference.reasoning_judge import ReasoningLLMJudge, ReasoningJudgePayload  # Integration
-from src.config.judge_config import get_judge_model_config   # Integration
+from src.risk.dynamic_stop_loss import calculate_dynamic_risk_levels
 from src.system.tracing import get_tracer
 
 # ReasoningBank integration
 try:
     from src.memory.reasoning_bank import get_reasoning_bank
+
     REASONING_BANK_AVAILABLE = True
 except ImportError:
     REASONING_BANK_AVAILABLE = False
@@ -73,6 +79,7 @@ except ImportError:
 # Dashboard integration
 try:
     from src.dashboard.trading_dashboard import get_dashboard
+
     DASHBOARD_AVAILABLE = True
 except ImportError:
     DASHBOARD_AVAILABLE = False
@@ -81,12 +88,62 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _format_recent_micro_trades(state: dict[str, Any], *, limit: int = 20) -> str:
+    trades = state.get("recent_trades_5s") or state.get("recent_trades") or []
+    if not isinstance(trades, list) or not trades:
+        return "[]"
+    try:
+        return json.dumps(trades[-limit:], default=str, separators=(",", ":"))
+    except Exception:
+        return "[]"
+
+
 # ============================================================================
 # RESPONSE VALIDATION SYSTEM
 # ============================================================================
 
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _dynamic_order_details(dynamic_risk_levels: Any, entry_price: float) -> dict[str, float]:
+    approved_notional = (
+        float(dynamic_risk_levels.position_size) * float(entry_price)
+        if entry_price
+        else float(dynamic_risk_levels.position_size)
+    )
+    return {
+        "approved_size": approved_notional,
+        "stop_loss": float(dynamic_risk_levels.stop_loss),
+        "take_profit": float(dynamic_risk_levels.take_profit),
+        "max_loss_usd": float(dynamic_risk_levels.max_loss_usd),
+    }
+
+
+def _has_usable_order_details(
+    order_details: dict[str, Any], proposed_action: str, entry_price: float
+) -> bool:
+    if not order_details:
+        return False
+    approved_size = float(order_details.get("approved_size") or 0.0)
+    stop_loss = float(order_details.get("stop_loss") or 0.0)
+    take_profit = float(order_details.get("take_profit") or 0.0)
+    if approved_size <= 0 or stop_loss <= 0 or take_profit <= 0 or entry_price <= 0:
+        return False
+    if proposed_action == "BUY":
+        return stop_loss < entry_price < take_profit
+    if proposed_action == "SELL":
+        return take_profit < entry_price < stop_loss
+    return False
+
+
 class ResponseValidationError(Exception):
     """Exception raised when a response fails validation."""
+
     def __init__(self, errors: list[str], raw_response: str = ""):
         self.errors = errors
         self.raw_response = raw_response
@@ -107,7 +164,7 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
             "support_level": (int, float),
             "resistance_level": (int, float),
             "risk_reward_ratio": (int, float),
-        }
+        },
     },
     "sentiment_analyst": {
         "required_fields": ["overall_sentiment", "confidence_score"],
@@ -117,7 +174,7 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
         "field_types": {
             "overall_sentiment": str,
             "confidence_score": (int, float),
-        }
+        },
     },
     "visual_analyst": {
         "required_fields": ["action", "confidence", "trend_direction"],
@@ -130,7 +187,7 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
             "confidence": (int, float),
             "trend_direction": str,
             "pattern_identified": str,
-        }
+        },
     },
     "qabba_analyst": {
         "required_fields": ["signal", "qabba_confidence", "order_flow_bias", "absorption_detected"],
@@ -143,7 +200,7 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
             "qabba_confidence": (int, float),
             "order_flow_bias": str,
             "absorption_detected": bool,
-        }
+        },
     },
     "decision_agent": {
         "required_fields": ["final_decision", "confidence_in_decision", "convergence_score"],
@@ -156,7 +213,7 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
             "confidence_in_decision": str,
             "convergence_score": (int, float),
             "combined_reasoning": str,
-        }
+        },
     },
     "risk_manager": {
         "required_fields": ["verdict", "risk_score"],
@@ -167,9 +224,37 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
             "verdict": str,
             "risk_score": (int, float),
             "reason": str,
-        }
+        },
     },
 }
+
+
+def _confidence_score_from_label(value: Any) -> float:
+    label = str(value or "").strip().upper()
+    return {"LOW": 0.35, "MEDIUM": 0.60, "HIGH": 0.85}.get(label, 0.35)
+
+
+def _confidence_label_from_score(value: Any) -> str:
+    try:
+        score = float(value)
+    except Exception:
+        return "LOW"
+    if score >= 0.75:
+        return "HIGH"
+    if score >= 0.50:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _normalize_technical_report(report: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(report or {})
+    confidence = _safe_float(normalized.get("confidence"))
+    if confidence is None:
+        confidence = _confidence_score_from_label(normalized.get("confidence_level"))
+    confidence = max(0.0, min(1.0, float(confidence or 0.0)))
+    normalized["confidence"] = confidence
+    normalized["confidence_level"] = _confidence_label_from_score(confidence)
+    return normalized
 
 
 def validate_agent_response(agent_type: str, response: dict[str, Any]) -> list[str]:
@@ -206,9 +291,13 @@ def validate_agent_response(agent_type: str, response: dict[str, Any]) -> list[s
         signal_field = "overall_sentiment"
 
     if signal_field and signal_field in response:
-        valid_values = rules.get("valid_signals") or rules.get("valid_actions") or \
-                      rules.get("valid_decisions") or rules.get("valid_verdicts") or \
-                      rules.get("valid_sentiments")
+        valid_values = (
+            rules.get("valid_signals")
+            or rules.get("valid_actions")
+            or rules.get("valid_decisions")
+            or rules.get("valid_verdicts")
+            or rules.get("valid_sentiments")
+        )
         if valid_values:
             value = str(response[signal_field]).upper().strip()
             if value not in [v.upper() for v in valid_values]:
@@ -244,9 +333,7 @@ def validate_agent_response(agent_type: str, response: dict[str, Any]) -> list[s
                     val = float(response[field])
                     min_v, max_v = rules["confidence_range"]
                     if not (min_v <= val <= max_v):
-                        errors.append(
-                            f"'{field}' value {val} out of range [{min_v}, {max_v}]"
-                        )
+                        errors.append(f"'{field}' value {val} out of range [{min_v}, {max_v}]")
                 except (TypeError, ValueError):
                     errors.append(f"'{field}' must be numeric, got: {response[field]}")
 
@@ -255,9 +342,7 @@ def validate_agent_response(agent_type: str, response: dict[str, Any]) -> list[s
             val = float(response["risk_score"])
             min_v, max_v = rules["risk_range"]
             if not (min_v <= val <= max_v):
-                errors.append(
-                    f"'risk_score' value {val} out of range [{min_v}, {max_v}]"
-                )
+                errors.append(f"'risk_score' value {val} out of range [{min_v}, {max_v}]")
         except (TypeError, ValueError):
             errors.append(f"'risk_score' must be numeric, got: {response['risk_score']}")
 
@@ -324,12 +409,14 @@ def build_validation_feedback(agent_type: str, errors: list[str], attempt: int) 
     for i, error in enumerate(errors, 1):
         feedback_parts.append(f"  {i}. {error}")
 
-    feedback_parts.extend([
-        "",
-        "CORRECTION INSTRUCTIONS:",
-        "- Ensure your response is VALID JSON only (no markdown, no code blocks)",
-        "- Fix all errors listed above",
-    ])
+    feedback_parts.extend(
+        [
+            "",
+            "CORRECTION INSTRUCTIONS:",
+            "- Ensure your response is VALID JSON only (no markdown, no code blocks)",
+            "- Fix all errors listed above",
+        ]
+    )
 
     # Adding specific agent reminders
     if "valid_signals" in rules:
@@ -343,14 +430,18 @@ def build_validation_feedback(agent_type: str, errors: list[str], attempt: int) 
     if "valid_confidence" in rules:
         feedback_parts.append(f"- Confidence must be exactly one of: {rules['valid_confidence']}")
     if "confidence_range" in rules:
-        feedback_parts.append(f"- Confidence score must be between {rules['confidence_range'][0]} and {rules['confidence_range'][1]}")
+        feedback_parts.append(
+            f"- Confidence score must be between {rules['confidence_range'][0]} and {rules['confidence_range'][1]}"
+        )
     if "valid_sentiments" in rules:
         feedback_parts.append(f"- Sentiment must be exactly one of: {rules['valid_sentiments']}")
 
-    feedback_parts.extend([
-        "",
-        "Retry with a corrected JSON response following ALL rules.",
-    ])
+    feedback_parts.extend(
+        [
+            "",
+            "Retry with a corrected JSON response following ALL rules.",
+        ]
+    )
 
     return "\n".join(feedback_parts)
 
@@ -359,9 +450,11 @@ def build_validation_feedback(agent_type: str, errors: list[str], attempt: int) 
 # RETRY SYSTEM WITH EXPONENTIAL BACKOFF
 # ============================================================================
 
+
 @dataclass
 class RetryStats:
     """Retry statistics per agent."""
+
     agent_type: str
     total_attempts: int = 0
     successful_first_try: int = 0
@@ -451,12 +544,14 @@ async def invoke_with_retry_and_validation(
             # Add exponential delay after first attempt
             if attempt > 0:
                 delay = base_delay * (2 ** (attempt - 1))  # 1s, 2s, 4s
-                logger.info(f"⏳ Retry {attempt}/{max_retries} for {agent_type}: waiting {delay}s...")
+                logger.info(
+                    f"⏳ Retry {attempt}/{max_retries} for {agent_type}: waiting {delay}s..."
+                )
                 await asyncio.sleep(delay)
 
             # Invoke LLM
             response = await llm.ainvoke(messages)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = response.content if hasattr(response, "content") else str(response)
 
             # Extract JSON
             parsed = _extract_json_from_content(content, required_keys=required_keys)
@@ -485,11 +580,15 @@ Retry with valid JSON.
                     continue
                 else:
                     stats.record_attempt(False, attempt, last_errors)
-                    return {
-                        "error": "Failed to parse JSON after all retries",
-                        "raw_response": content[:1000],
-                        "parse_error": True
-                    }, attempt + 1, last_errors
+                    return (
+                        {
+                            "error": "Failed to parse JSON after all retries",
+                            "raw_response": content[:1000],
+                            "parse_error": True,
+                        },
+                        attempt + 1,
+                        last_errors,
+                    )
 
             # Validar respuesta
             validation_errors = validate_agent_response(agent_type, parsed)
@@ -502,7 +601,9 @@ Retry with valid JSON.
 
             # Validation failed
             last_errors = validation_errors
-            logger.warning(f"⚠️ {agent_type}: Validation failed on attempt {attempt + 1}: {validation_errors}")
+            logger.warning(
+                f"⚠️ {agent_type}: Validation failed on attempt {attempt + 1}: {validation_errors}"
+            )
 
             if attempt < max_retries:
                 # Build feedback and retry
@@ -525,11 +626,11 @@ Retry with valid JSON.
 
             if attempt >= max_retries:
                 stats.record_attempt(False, attempt, last_errors)
-                return {
-                    "error": str(e),
-                    "exception": True,
-                    "attempts": attempt + 1
-                }, attempt + 1, last_errors
+                return (
+                    {"error": str(e), "exception": True, "attempts": attempt + 1},
+                    attempt + 1,
+                    last_errors,
+                )
 
     # Should never reach here, but for safety
     stats.record_attempt(False, max_retries, last_errors)
@@ -559,8 +660,10 @@ def log_retry_stats():
         logger.info(f"  Failures: {stats.failures}")
 
         if stats.validation_errors:
-            logger.info(f"  Most common validation errors:")
-            sorted_errors = sorted(stats.validation_errors.items(), key=lambda x: x[1], reverse=True)
+            logger.info("  Most common validation errors:")
+            sorted_errors = sorted(
+                stats.validation_errors.items(), key=lambda x: x[1], reverse=True
+            )
             for error_type, count in sorted_errors[:3]:
                 logger.info(f"    - {error_type}: {count} occurrences")
 
@@ -571,6 +674,7 @@ def log_retry_stats():
 # LOGGING HELPER
 # ============================================================================
 
+
 def save_legacy_agent_log(
     agent_name: str,
     prompt: list[dict[str, str]] | list[Any],
@@ -578,20 +682,25 @@ def save_legacy_agent_log(
     parsed_json: dict | None,
 ):
     """
-    Saves detailed legacy-style logs (input/output/prompt/raw) to src/logs/llm_responses.
+    Saves detailed legacy-style logs (input/output/prompt/raw) to logs/llm_responses.
     Useful for debugging and detailed analysis.
     """
     try:
         # Base directory - use absolute path based on script location
         project_root = Path(__file__).parent.parent.parent
-        base_dir = project_root / "src" / "logs" / "llm_responses" / agent_name
+        configured_log_dir = os.getenv("FENIX_LLM_RESPONSE_LOG_DIR")
+        base_dir = (
+            Path(configured_log_dir) / agent_name
+            if configured_log_dir
+            else project_root / "logs" / "llm_responses" / agent_name
+        )
         base_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"📝 Saving agent log to: {base_dir}")
-        
+
         # Unique timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         base_name = f"{timestamp}"
-        
+
         # Save prompt (raw list of messages)
         prompt_path = base_dir / f"{base_name}_prompt.txt"
         with open(prompt_path, "w", encoding="utf-8") as f:
@@ -599,21 +708,21 @@ def save_legacy_agent_log(
                 content = getattr(msg, "content", str(msg))
                 role = getattr(msg, "type", "unknown")
                 f.write(f"--- Message {i} ({role}) ---\n{content}\n\n")
-        
+
         # Save structured input (if possible to extract from prompt)
         # This is harder to reconstruct generically, but we save the full prompt
-        
+
         # Save raw response
         raw_path = base_dir / f"{base_name}_raw_response.txt"
         with open(raw_path, "w", encoding="utf-8") as f:
             f.write(response_content)
-            
+
         # Save output JSON
         if parsed_json:
             output_path = base_dir / f"{base_name}_output.json"
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(parsed_json, f, indent=2, ensure_ascii=False)
-                
+
     except Exception as e:
         logger.warning(f"Error saving legacy log for {agent_name}: {e}")
 
@@ -700,7 +809,7 @@ def _extract_json_from_content(
             elif char == "}":
                 depth -= 1
                 if depth == 0 and start is not None:
-                    objects.append(source[start:i + 1])
+                    objects.append(source[start : i + 1])
                     start = None
         return objects
 
@@ -720,24 +829,23 @@ def _extract_json_from_content(
 
     return None
 
+
 # ============================================================================
 # REASONING BANK HELPER
 # ============================================================================
 
+
 def get_agent_context_from_bank(
-    reasoning_bank: Any | None,
-    agent_name: str,
-    current_prompt: str,
-    limit: int = 3
+    reasoning_bank: Any | None, agent_name: str, current_prompt: str, limit: int = 3
 ) -> str:
     """
     Gets relevant historical context from ReasoningBank.
-    
+
     Searches for similar past decisions to inform the current agent.
     """
     if not reasoning_bank or not REASONING_BANK_AVAILABLE:
         return ""
-    
+
     try:
         # Search for relevant entries
         relevant = reasoning_bank.get_relevant_context(
@@ -745,21 +853,21 @@ def get_agent_context_from_bank(
             current_prompt=current_prompt,
             limit=limit,
         )
-        
+
         if not relevant:
             return ""
-        
+
         context_parts = ["### Historical Context (similar past decisions):"]
         for entry in relevant:
             success_status = ""
             if entry.success is not None:
                 success_status = " ✓" if entry.success else " ✗"
-            
+
             context_parts.append(
                 f"- [{entry.action}{success_status}] Conf: {entry.confidence:.0%} | "
                 f"{entry.reasoning[:100]}..."
             )
-        
+
         return "\n".join(context_parts)
     except Exception as e:
         logger.warning("Error getting context from ReasoningBank: %s", e)
@@ -777,13 +885,13 @@ def store_agent_decision(
 ) -> str | None:
     """
     Stores the agent decision in ReasoningBank.
-    
+
     Returns:
         prompt_digest for later tracking
     """
     if not reasoning_bank or not REASONING_BANK_AVAILABLE:
         return None
-    
+
     try:
         entry = reasoning_bank.store_entry(
             agent_name=agent_name,
@@ -795,7 +903,7 @@ def store_agent_decision(
             metadata={
                 "source": "langgraph_orchestrator",
                 "timestamp": datetime.now().isoformat(),
-            }
+            },
         )
         return entry.prompt_digest
     except Exception as e:
@@ -806,6 +914,7 @@ def store_agent_decision(
 # ============================================================================
 # STATE DEFINITION
 # ============================================================================
+
 
 def merge_dicts(a: dict, b: dict) -> dict:
     """Merges two dictionaries (for execution_times)."""
@@ -819,207 +928,82 @@ def append_lists(a: list, b: list) -> list:
 
 class FenixAgentState(TypedDict, total=False):
     """Shared state between all graph agents."""
+
     # Identifiers
     symbol: str
     timeframe: str
     timestamp: str
-    
+
     # Market Data
+    klines: list[Any]
     kline_data: dict[str, list]
     current_price: float
     current_volume: float
-    
+
     # Technical Indicators
     indicators: dict[str, Any]
     mtf_context: dict[str, Any]
-    
+
     # Microstructure
     obi: float
     cvd: float
     spread: float
     orderbook_depth: dict[str, float]
-    
+
     # Generated Chart
     chart_image_b64: str | None
     chart_indicators_summary: dict[str, Any]
-    
+
     # News data for sentiment agent
     news_data: list[dict[str, Any]]
     # Social data & metrics (Twitter/Reddit/fear_greed)
     social_data: dict[str, Any]
     fear_greed_value: str | None
-    
+
     # Agent Results (each writes to its own field)
     technical_report: dict[str, Any]
     sentiment_report: dict[str, Any]
     visual_report: dict[str, Any]
     qabba_report: dict[str, Any]
-    
+
     # Decision and Risk
     decision_report: dict[str, Any]
     risk_assessment: dict[str, Any]
     final_trade_decision: dict[str, Any]
-    
+
     # Metadata - Using Annotated to allow multiple writes
     messages: Annotated[list[Any], append_lists]
     errors: Annotated[list[str], append_lists]
     execution_times: Annotated[dict[str, float], merge_dicts]
 
 
+OrchestratorState = FenixAgentState
+
+
 # ============================================================================
 # LLM FACTORY
 # ============================================================================
 
+
 class LLMFactory:
-    """LLM Factory supporting multiple providers."""
-    
+    """Compatibility wrapper around the shared orchestrator LLM factory."""
+
     def __init__(self, config: LLMProvidersConfig | None = None):
-        # If no explicit config is passed, attempt to use the LLMProviderLoader
-        if config is None:
-            try:
-                from src.config.llm_provider_loader import get_provider_loader
-                loader = get_provider_loader()
-                config = loader.get_config() or LLMProvidersConfig()
-                logger.info(f"LLMFactory: using config from provider loader (profile={loader.active_profile})")
-            except Exception as e:
-                logger.warning(f"LLMFactory: could not initialize loader config, falling back to default. Error: {e}")
+        self._delegate = SharedLLMFactory(config)
+        self.config = self._delegate.config
 
-        self.config = config or LLMProvidersConfig()
-        self._llm_cache: dict[str, Any] = {}
-    
     def get_llm_for_agent(self, agent_type: str) -> Any:
-        """Gets the configured LLM for an agent type."""
-        if agent_type in self._llm_cache:
-            return self._llm_cache[agent_type]
-        
-        agent_config = self.config.get_agent_config(agent_type)
-        logger.info(f"🏭 LLMFactory: Creating LLM for {agent_type} with provider={agent_config.provider_type}, model={agent_config.model_name}")
-        llm = self._create_llm(agent_config)
-        self._llm_cache[agent_type] = llm
-        return llm
-    
-    def _create_llm(self, config: AgentProviderConfig) -> Any:
-        """Creates an LLM instance based on configuration."""
-        provider = config.provider_type
-        model = config.model_name
-        temperature = config.temperature
-        api_key = config.api_key.get_secret_value() if config.api_key else None
-        api_base = config.api_base
-        
-        try:
-            if provider == "openai":
-                from langchain_openai import ChatOpenAI
-                return ChatOpenAI(
-                    model=model,
-                    temperature=temperature,
-                    api_key=api_key,
-                    max_tokens=config.max_tokens,
-                    timeout=config.timeout,
-                )
-            
-            elif provider == "anthropic":
-                from langchain_anthropic import ChatAnthropic
-                return ChatAnthropic(
-                    model=model,
-                    temperature=temperature,
-                    api_key=api_key,
-                    max_tokens=config.max_tokens,
-                )
-            
-            elif provider == "groq":
-                from langchain_groq import ChatGroq
-                return ChatGroq(
-                    model=model,
-                    temperature=temperature,
-                    api_key=api_key,
-                    max_tokens=config.max_tokens,
-                )
-            
-            elif provider in ("ollama_local", "ollama_cloud"):
-                from langchain_ollama import ChatOllama
-                return ChatOllama(
-                    model=model,
-                    temperature=temperature,
-                    base_url=api_base or "http://localhost:11434",
-                    num_predict=config.max_tokens,
-                )
-            
-            elif provider == "huggingface_inference":
-                from langchain_huggingface import ChatHuggingFace
-                from langchain_huggingface import HuggingFaceEndpoint
-                endpoint = HuggingFaceEndpoint(
-                    repo_id=model,
-                    huggingfacehub_api_token=api_key,
-                    max_new_tokens=config.max_tokens,
-                    temperature=temperature,
-                )
-                return ChatHuggingFace(llm=endpoint)
-            
-            else:
-                logger.warning(f"Provider {provider} not supported, using local Ollama")
-                from langchain_ollama import ChatOllama
-                return ChatOllama(model="qwen2.5:7b", temperature=0.1)
-                
-        except ImportError as e:
-            # If the provider package is not installed (e.g., langchain_groq), attempt fallback immediately
-            logger.warning("Provider import failed: %s - attempting fallback if configured", str(e))
-            # Attempt fallback if configured
-            if config.fallback_provider_type and config.fallback_model_name:
-                fallback_config = AgentProviderConfig(
-                    provider_type=config.fallback_provider_type,
-                    model_name=config.fallback_model_name,
-                    temperature=config.temperature,
-                )
-                logger.info("Attempting fallback from ImportError: %s/%s", config.fallback_provider_type, config.fallback_model_name)
-                return self._create_llm(fallback_config)
-            # If no fallback, fall through to generic handler below which may return a stub
-            # (generic exception handler will run)
-            raise
-        except Exception as e:
-            logger.error(f"Error creando LLM para {provider}/{model}: {e}")
-            # Attempt fallback if configured
-            if config.fallback_provider_type and config.fallback_model_name:
-                fallback_config = AgentProviderConfig(
-                    provider_type=config.fallback_provider_type,
-                    model_name=config.fallback_model_name,
-                    temperature=config.temperature,
-                )
-                logger.info(f"Attempting fallback: {config.fallback_provider_type}/{config.fallback_model_name}")
-                return self._create_llm(fallback_config)
-            # If fallback fails, return a StubLLM to avoid breaking the graph
-            allow_stub = os.getenv("LLM_ALLOW_NOOP_STUB", "1") == "1"
-            if allow_stub:
-                logger.warning("Returning NoopStub LLM to allow graph initialization in dev/test")
-
-                class NoopStub:
-                    def __init__(self, name="noop"):
-                        self.name = name
-
-                    def invoke(self, messages):
-                        # Return a harmless default JSON content matching expected schema
-                        return type("R", (), {
-                            "content": '{"action": "HOLD", "confidence": 0.0, "reason": "LLM unavailable (stub)"}'
-                        })
-
-                    def generate(self, prompt, **kwargs):
-                        return type("R", (), {
-                            "success": True,
-                            "content": '{"action": "HOLD", "confidence": 0.0, "reason": "LLM unavailable (stub)"}',
-                            "model": "noop",
-                            "provider": "noop",
-                            "latency_ms": 0,
-                        })
-
-                return NoopStub(name=f"noop_{provider}")
-            raise
+        return self._delegate.get_llm_for_agent(agent_type)
 
 
 # ============================================================================
 # AGENT NODES
 # ============================================================================
 
+
 def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
     """Creates the technical agent node with retry and validation system."""
+
     async def technical_node(state: FenixAgentState) -> dict:
         start_time = datetime.now()
 
@@ -1034,6 +1018,15 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
                 symbol=state.get("symbol", "BTCUSDT"),
                 timeframe=state.get("timeframe", "15m"),
                 indicators_json=json.dumps(indicators, indent=2, default=str),
+                microstructure_summary=(
+                    f"OBI={state.get('obi', 'N/A')}, "
+                    f"OFI={state.get('ofi', 'N/A')}, "
+                    f"QI={state.get('qi', 'N/A')}, "
+                    f"MLOFI={state.get('mlofi', 'N/A')}, "
+                    f"Spread={state.get('spread', 'N/A')} ({state.get('spread_pct', 'N/A')}%), "
+                    f"Microprice={state.get('microprice', 'N/A')}, "
+                    f"TImb5s={state.get('trade_imbalance_5s', 'N/A')}"
+                ),
                 htf_context=json.dumps(mtf_context.get("htf", {}), default=str),
                 ltf_context=json.dumps(mtf_context.get("ltf", {}), default=str),
                 current_price=str(state.get("current_price", "N/A")),
@@ -1064,6 +1057,7 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
             save_legacy_agent_log("technical_enhanced", llm_messages, raw_response, report)
 
             elapsed = (datetime.now() - start_time).total_seconds()
+            report = _normalize_technical_report(report)
             report["_attempts"] = attempts
             if errors:
                 report["_validation_errors"] = errors
@@ -1071,14 +1065,16 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
             # Store result in ReasoningBank
             try:
                 if reasoning_bank and REASONING_BANK_AVAILABLE:
-                    prompt_snippet = messages[1]["content"][:500] if messages and len(messages) > 1 else ""
+                    prompt_snippet = (
+                        messages[1]["content"][:500] if messages and len(messages) > 1 else ""
+                    )
                     prompt_digest = store_agent_decision(
                         reasoning_bank=reasoning_bank,
                         agent_name="technical_agent",
                         prompt=prompt_snippet,
                         result=report,
                         raw_response=raw_response,
-                        backend=getattr(llm, 'model', 'langchain'),
+                        backend=getattr(llm, "model", "langchain"),
                         latency_ms=elapsed * 1000,
                     )
                     if prompt_digest:
@@ -1088,11 +1084,9 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
 
             return {
                 "technical_report": report,
-                "messages": state.get("messages", []) + [{"role": "assistant", "content": raw_response}],
-                "execution_times": {
-                    **state.get("execution_times", {}),
-                    "technical": elapsed
-                },
+                "messages": state.get("messages", [])
+                + [{"role": "assistant", "content": raw_response}],
+                "execution_times": {**state.get("execution_times", {}), "technical": elapsed},
             }
 
         except Exception as e:
@@ -1111,6 +1105,7 @@ def create_technical_agent_node(llm: Any, reasoning_bank: Any = None):
 
 def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
     """Creates the sentiment agent node with retry and validation system."""
+
     async def sentiment_node(state: FenixAgentState) -> dict:
         start_time = datetime.now()
 
@@ -1118,19 +1113,29 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
             # Build news summary from state news_data
             news_list = state.get("news_data", [])
             if news_list:
-                news_items = [f"- [{n.get('source', 'N/A')}] {n.get('title', 'Untitled')}: {n.get('summary', '')[:100]}..."
-                              for n in news_list[:5]]
+                news_items = [
+                    f"- [{n.get('source', 'N/A')}] {n.get('title', 'Untitled')}: {n.get('summary', '')[:100]}..."
+                    for n in news_list[:5]
+                ]
                 news_summary = "\n".join(news_items)
             else:
                 news_summary = "No recent news available"
 
-            social_data_json = json.dumps(state.get("social_data", {}), ensure_ascii=False, indent=2)
+            social_data_json = json.dumps(
+                state.get("social_data", {}), ensure_ascii=False, indent=2
+            )
             fg_value = str(state.get("fear_greed_value", "N/A"))
 
             twitter_posts = state.get("social_data", {}).get("twitter", {}) or {}
             reddit_posts = state.get("social_data", {}).get("reddit", {}) or {}
-            twitter_count = sum(len(v) for v in twitter_posts.values()) if isinstance(twitter_posts, dict) else 0
-            reddit_count = sum(len(v) for v in reddit_posts.values()) if isinstance(reddit_posts, dict) else 0
+            twitter_count = (
+                sum(len(v) for v in twitter_posts.values())
+                if isinstance(twitter_posts, dict)
+                else 0
+            )
+            reddit_count = (
+                sum(len(v) for v in reddit_posts.values()) if isinstance(reddit_posts, dict) else 0
+            )
 
             messages = format_prompt(
                 "sentiment_analyst",
@@ -1138,9 +1143,11 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
                 news_summary=news_summary,
                 social_data=social_data_json,
                 fear_greed_value=fg_value,
-                additional_context=(f"News were obtained from sources like CoinDesk and Cointelegraph. "
-                                    f"Total available articles: {len(news_list)}. "
-                                    f"Social: Twitter={twitter_count}, Reddit={reddit_count}, Fear&Greed={fg_value}"),
+                additional_context=(
+                    f"News were obtained from sources like CoinDesk and Cointelegraph. "
+                    f"Total available articles: {len(news_list)}. "
+                    f"Social: Twitter={twitter_count}, Reddit={reddit_count}, Fear&Greed={fg_value}"
+                ),
             )
 
             if not messages:
@@ -1174,14 +1181,16 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
             # Persist sentiment analysis in ReasoningBank
             try:
                 if reasoning_bank and REASONING_BANK_AVAILABLE:
-                    prompt_snippet = messages[1]["content"][:500] if messages and len(messages) > 1 else ""
+                    prompt_snippet = (
+                        messages[1]["content"][:500] if messages and len(messages) > 1 else ""
+                    )
                     digest = store_agent_decision(
                         reasoning_bank=reasoning_bank,
                         agent_name="sentiment_agent",
                         prompt=prompt_snippet,
                         result=report,
                         raw_response=raw_response,
-                        backend=getattr(llm, 'model', 'langchain'),
+                        backend=getattr(llm, "model", "langchain"),
                         latency_ms=elapsed * 1000,
                     )
                     if digest:
@@ -1191,10 +1200,7 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
 
             return {
                 "sentiment_report": report,
-                "execution_times": {
-                    **state.get("execution_times", {}),
-                    "sentiment": elapsed
-                },
+                "execution_times": {**state.get("execution_times", {}), "sentiment": elapsed},
             }
 
         except Exception as e:
@@ -1207,19 +1213,25 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
     async def traced_sentiment_node(state: FenixAgentState) -> dict:
         with get_tracer().start_as_current_span("sentiment_agent"):
             return await sentiment_node(state)
+
     return traced_sentiment_node
 
 
 def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
     """Creates the visual agent node with retry and validation system."""
+
     async def visual_node(state: FenixAgentState) -> dict:
         start_time = datetime.now()
 
         try:
             chart_b64 = state.get("chart_image_b64")
 
-            logger.info(f"🖼️ Visual Agent: LLM type: {type(llm)}, model: {getattr(llm, 'model', 'unknown')}, base_url: {getattr(llm, 'base_url', 'unknown')}")
-            logger.info(f"🖼️ Visual Agent: chart_image_b64 present = {chart_b64 is not None}, length = {len(chart_b64) if chart_b64 else 0}")
+            logger.info(
+                f"🖼️ Visual Agent: LLM type: {type(llm)}, model: {getattr(llm, 'model', 'unknown')}, base_url: {getattr(llm, 'base_url', 'unknown')}"
+            )
+            logger.info(
+                f"🖼️ Visual Agent: chart_image_b64 present = {chart_b64 is not None}, length = {len(chart_b64) if chart_b64 else 0}"
+            )
 
             if not chart_b64:
                 # No image, basic analysis
@@ -1229,7 +1241,7 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
                         "action": "HOLD",
                         "confidence": 0.5,
                         "reason": "No chart image available",
-                        "visual_analysis": "No image provided for visual analysis"
+                        "visual_analysis": "No image provided for visual analysis",
                     },
                 }
 
@@ -1247,15 +1259,14 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
             if not image_prompt:
                 raise ValueError("Could not format visual prompt")
 
-            logger.info(f"🖼️ Visual Agent: Sending image ({len(chart_b64)} chars) to vision model...")
+            logger.info(
+                f"🖼️ Visual Agent: Sending image ({len(chart_b64)} chars) to vision model..."
+            )
 
             # Create message with image for vision models
             vision_content = [
                 {"type": "text", "text": image_prompt[1]["content"]},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{chart_b64}"}
-                },
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{chart_b64}"}},
             ]
 
             # For the visual agent, we use retry system with LangChain messages
@@ -1274,14 +1285,17 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
                 try:
                     if attempt > 0:
                         delay = base_delay * (2 ** (attempt - 1))
-                        logger.info(f"⏳ Visual Agent retry {attempt}/{max_retries}: waiting {delay}s...")
-                        import time
+                        logger.info(
+                            f"⏳ Visual Agent retry {attempt}/{max_retries}: waiting {delay}s..."
+                        )
                         await asyncio.sleep(delay)
 
                     response = await llm.ainvoke(llm_messages)
                     content = response.content
 
-                    logger.info(f"🖼️ Visual Agent: Response received, length = {len(content) if content else 0}")
+                    logger.info(
+                        f"🖼️ Visual Agent: Response received, length = {len(content) if content else 0}"
+                    )
 
                     # Parse JSON response
                     report = _extract_json_from_content(content, required_keys=["action"])
@@ -1324,10 +1338,14 @@ Retry with valid JSON.
                         break
 
                     last_errors = validation_errors
-                    logger.warning(f"⚠️ Visual Agent: Validation failed on attempt {attempt + 1}: {validation_errors}")
+                    logger.warning(
+                        f"⚠️ Visual Agent: Validation failed on attempt {attempt + 1}: {validation_errors}"
+                    )
 
                     if attempt < max_retries:
-                        feedback = build_validation_feedback("visual_analyst", validation_errors, attempt + 1)
+                        feedback = build_validation_feedback(
+                            "visual_analyst", validation_errors, attempt + 1
+                        )
                         llm_messages.append(HumanMessage(content=feedback))
                     else:
                         report["_validation_failed"] = True
@@ -1355,14 +1373,18 @@ Retry with valid JSON.
 
             # DEBUG LOGGING
             with open("debug_visual_raw.log", "a") as f:
-                f.write(f"\n--- {datetime.now()} ---\n{json.dumps(report, indent=2)}\n----------------\n")
+                f.write(
+                    f"\n--- {datetime.now()} ---\n{json.dumps(report, indent=2)}\n----------------\n"
+                )
 
             logger.info(f"🖼️ Visual Agent: Parsed JSON with action={report.get('action')}")
 
             # Legacy logging - avoid logging base64 image to text file
             log_messages = [
                 SystemMessage(content=image_prompt[0]["content"]),
-                HumanMessage(content=f"[IMAGE CONTENT HIDDEN] \nPrompt: {image_prompt[1]['content']}"),
+                HumanMessage(
+                    content=f"[IMAGE CONTENT HIDDEN] \nPrompt: {image_prompt[1]['content']}"
+                ),
             ]
             save_legacy_agent_log("visual", log_messages, json.dumps(report), report)
 
@@ -1372,14 +1394,18 @@ Retry with valid JSON.
             # Persist visual analysis in ReasoningBank
             try:
                 if reasoning_bank and REASONING_BANK_AVAILABLE:
-                    prompt_snippet = image_prompt[1]["content"][:500] if image_prompt and len(image_prompt) > 1 else ""
+                    prompt_snippet = (
+                        image_prompt[1]["content"][:500]
+                        if image_prompt and len(image_prompt) > 1
+                        else ""
+                    )
                     digest = store_agent_decision(
                         reasoning_bank=reasoning_bank,
                         agent_name="visual_agent",
                         prompt=prompt_snippet,
                         result=report,
                         raw_response=json.dumps(report),
-                        backend=getattr(llm, 'model', 'langchain'),
+                        backend=getattr(llm, "model", "langchain"),
                         latency_ms=elapsed * 1000,
                     )
                     if digest:
@@ -1391,10 +1417,7 @@ Retry with valid JSON.
 
             return {
                 "visual_report": report,
-                "execution_times": {
-                    **state.get("execution_times", {}),
-                    "visual": elapsed
-                },
+                "execution_times": {**state.get("execution_times", {}), "visual": elapsed},
             }
 
         except Exception as e:
@@ -1403,7 +1426,7 @@ Retry with valid JSON.
                 "visual_report": {
                     "action": "HOLD",
                     "error": str(e),
-                    "visual_analysis": f"Error in visual analysis: {str(e)}"
+                    "visual_analysis": f"Error in visual analysis: {str(e)}",
                 },
                 "errors": state.get("errors", []) + [f"Visual: {e}"],
             }
@@ -1411,11 +1434,13 @@ Retry with valid JSON.
     async def traced_visual_node(state: FenixAgentState) -> dict:
         with get_tracer().start_as_current_span("visual_agent"):
             return await visual_node(state)
+
     return traced_visual_node
 
 
 def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
     """Creates the QABBA agent node (microstructure) with retry and validation system."""
+
     async def qabba_node(state: FenixAgentState) -> dict:
         start_time = datetime.now()
 
@@ -1429,7 +1454,11 @@ def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
                 bid_depth=str(state.get("orderbook_depth", {}).get("bid_depth", "N/A")),
                 ask_depth=str(state.get("orderbook_depth", {}).get("ask_depth", "N/A")),
                 total_liquidity=str(state.get("orderbook_depth", {}).get("total", "N/A")),
-                recent_trades="[]",
+                cvd_delta_5s_value=str(state.get("cvd_delta_5s", 0.0)),
+                trade_imbalance_5s_value=str(state.get("trade_imbalance_5s", 0.0)),
+                trade_volume_5s_value=str(state.get("trade_volume_5s", 0.0)),
+                trade_count_5s_value=str(state.get("trade_count_5s", 0)),
+                recent_trades=_format_recent_micro_trades(state),
                 current_price=str(state.get("current_price", "N/A")),
                 technical_context=json.dumps(state.get("indicators", {}), default=str),
             )
@@ -1465,14 +1494,16 @@ def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
             # Store QABBA report in ReasoningBank
             try:
                 if reasoning_bank and REASONING_BANK_AVAILABLE:
-                    prompt_snippet = messages[1]["content"][:500] if messages and len(messages) > 1 else ""
+                    prompt_snippet = (
+                        messages[1]["content"][:500] if messages and len(messages) > 1 else ""
+                    )
                     digest = store_agent_decision(
                         reasoning_bank=reasoning_bank,
                         agent_name="qabba_agent",
                         prompt=prompt_snippet,
                         result=report,
                         raw_response=raw_response,
-                        backend=getattr(llm, 'model', 'langchain'),
+                        backend=getattr(llm, "model", "langchain"),
                         latency_ms=elapsed * 1000,
                     )
                     if digest:
@@ -1482,10 +1513,7 @@ def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
 
             return {
                 "qabba_report": report,
-                "execution_times": {
-                    **state.get("execution_times", {}),
-                    "qabba": elapsed
-                },
+                "execution_times": {**state.get("execution_times", {}), "qabba": elapsed},
             }
 
         except Exception as e:
@@ -1498,11 +1526,13 @@ def create_qabba_agent_node(llm: Any, reasoning_bank: Any = None):
     async def traced_qabba_node(state: FenixAgentState) -> dict:
         with get_tracer().start_as_current_span("qabba_agent"):
             return await qabba_node(state)
+
     return traced_qabba_node
 
 
 def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
     """Creates the final decision agent node with retry and validation system."""
+
     async def decision_node(state: FenixAgentState) -> dict:
         start_time = datetime.now()
 
@@ -1510,8 +1540,12 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
             messages = format_prompt(
                 "decision_agent",
                 symbol=state.get("symbol", "BTCUSDT"),
-                technical_analysis=json.dumps(state.get("technical_report", {}), indent=2, default=str),
-                sentiment_analysis=json.dumps(state.get("sentiment_report", {}), indent=2, default=str),
+                technical_analysis=json.dumps(
+                    state.get("technical_report", {}), indent=2, default=str
+                ),
+                sentiment_analysis=json.dumps(
+                    state.get("sentiment_report", {}), indent=2, default=str
+                ),
                 visual_analysis=json.dumps(state.get("visual_report", {}), indent=2, default=str),
                 qabba_analysis=json.dumps(state.get("qabba_report", {}), indent=2, default=str),
                 market_metrics=json.dumps(state.get("indicators", {}), default=str),
@@ -1555,12 +1589,20 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
                         prompt=messages[1]["content"][:500],  # User prompt (truncated)
                         result=report,
                         raw_response=raw_response,
-                        backend=getattr(llm, 'model', 'langchain'),
+                        backend=getattr(llm, "model", "langchain"),
                         latency_ms=elapsed * 1000,
                     )
 
                     # --- JUDGE INTEGRATION (FIXED) ---
-                    if entry_digest and not errors:
+                    timeframe_for_judge = str(state.get("timeframe", "15m"))
+                    short_tf_for_judge = timeframe_for_judge in {"1m", "3m", "5m", "15m"}
+                    judge_env = os.getenv("FENIX_ENABLE_JUDGE")
+                    if judge_env is None:
+                        enable_judge = not short_tf_for_judge
+                    else:
+                        enable_judge = judge_env != "0"
+
+                    if enable_judge and entry_digest and not errors:
                         try:
                             logger.info("⚖️ Calling Reasoning Judge...")
                             judge_config = get_judge_model_config()
@@ -1574,20 +1616,24 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
                                 raw_response=raw_response,
                                 backend=judge_config.provider,
                                 metadata={"source": "langgraph_orchestrator"},
-                                latency_ms=elapsed * 1000
+                                latency_ms=elapsed * 1000,
                             )
 
                             verdict = judge.evaluate(payload)
 
                             if verdict:
-                                logger.info(f"⚖️ Judge Verdict: {verdict.verdict} (Score: {verdict.score})")
+                                logger.info(
+                                    f"⚖️ Judge Verdict: {verdict.verdict} (Score: {verdict.score})"
+                                )
                                 reasoning_bank.attach_judge_feedback(
                                     agent_name="decision_agent",
                                     prompt_digest=entry_digest,
-                                    judge_payload=verdict.as_entry_payload()
+                                    judge_payload=verdict.as_entry_payload(),
                                 )
                             else:
-                                logger.warning("⚠️ Judge returned no verdict")
+                                logger.warning(
+                                    f"⚠️ Judge returned no verdict (provider={judge_config.provider}, model={judge_config.model_id})"
+                                )
 
                         except Exception as judge_err:
                             logger.error(f"⚠️ Judge evaluation failed: {judge_err}")
@@ -1599,10 +1645,7 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
             return {
                 "decision_report": report,
                 "final_trade_decision": report,
-                "execution_times": {
-                    **state.get("execution_times", {}),
-                    "decision": elapsed
-                },
+                "execution_times": {**state.get("execution_times", {}), "decision": elapsed},
             }
 
         except Exception as e:
@@ -1616,6 +1659,7 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
     async def traced_decision_node(state: FenixAgentState) -> dict:
         with get_tracer().start_as_current_span("decision_agent"):
             return await decision_node(state)
+
     return traced_decision_node
 
 
@@ -1626,6 +1670,7 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
     This agent evaluates the final decision and can veto it if the risk
     is too high.
     """
+
     async def risk_node(state: FenixAgentState) -> dict:
         start_time = datetime.now()
 
@@ -1648,6 +1693,36 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
                     },
                 }
 
+            dynamic_risk_levels = None
+            entry_price = float(state.get("current_price") or 0.0)
+            try:
+                atr = float(state.get("indicators", {}).get("atr", 0) or 0.0)
+            except Exception:
+                atr = 0.0
+            try:
+                balance = float(
+                    state.get("account_balance_usdt")
+                    or os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0")
+                    or 0.0
+                )
+            except Exception:
+                balance = 0.0
+            if entry_price > 0 and atr > 0 and balance > 0:
+                try:
+                    dynamic_risk_levels = calculate_dynamic_risk_levels(
+                        entry_price=entry_price,
+                        atr=atr,
+                        balance_usd=balance,
+                        decision=proposed_action,
+                        symbol=state.get("symbol", "UNKNOWN"),
+                        timeframe=str(state.get("timeframe", "")),
+                        current_volatility="MEDIUM",
+                        open_positions=0,
+                    )
+                    state["dynamic_risk_levels"] = dynamic_risk_levels.to_dict()
+                except Exception as exc:
+                    logger.warning("Could not calculate dynamic risk levels: %s", exc)
+
             # Get historical context if ReasoningBank available
             historical_context = ""
             if reasoning_bank and REASONING_BANK_AVAILABLE:
@@ -1655,9 +1730,9 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
                     success_rate = reasoning_bank.get_success_rate("decision_agent", lookback=20)
                     historical_context = f"""
 ### Recent Decision History:
-- Win Rate: {success_rate.get('win_rate', 0):.1%}
-- Total trades: {success_rate.get('total', 0)}
-- Current streak: {success_rate.get('streak', 0)} {'wins' if success_rate.get('last_was_win') else 'losses'}
+- Win Rate: {success_rate.get("win_rate", 0):.1%}
+- Total trades: {success_rate.get("total", 0)}
+- Current streak: {success_rate.get("streak", 0)} {"wins" if success_rate.get("last_was_win") else "losses"}
 """
                 except Exception:
                     pass
@@ -1665,11 +1740,16 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             messages = format_prompt(
                 "risk_manager",
                 decision=proposed_action,
+                symbol=state.get("symbol", "UNKNOWN"),
                 confidence=str(decision.get("confidence_in_decision", "MEDIUM")),
-                balance="10000",  # TODO: obtener del estado
-                open_positions="0",
-                daily_pnl="0",
-                current_drawdown="0%",
+                entry_price=str(state.get("current_price", "N/A")),
+                balance=str(
+                    state.get("account_balance_usdt")
+                    or os.getenv("FENIX_BALANCE_FALLBACK_USDT", "N/A")
+                ),
+                open_positions=str(state.get("open_positions", 0)),
+                daily_pnl=str(state.get("daily_pnl", 0)),
+                current_drawdown=str(state.get("current_drawdown", "0%")),
                 atr=str(state.get("indicators", {}).get("atr", "N/A")),
                 volatility="MEDIUM",
                 liquidity="HIGH",
@@ -1683,6 +1763,18 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             # Add historical context to prompt
             if historical_context:
                 messages[1]["content"] += f"\n\n{historical_context}"
+
+            if dynamic_risk_levels:
+                messages[1]["content"] += (
+                    "\n\n### DETERMINISTIC ATR RISK LEVELS\n"
+                    f"- Stop Loss: {dynamic_risk_levels.stop_loss:.8f}\n"
+                    f"- Take Profit: {dynamic_risk_levels.take_profit:.8f}\n"
+                    f"- Approved Notional (USDT): "
+                    f"{float(dynamic_risk_levels.position_size) * float(entry_price):.2f}\n"
+                    f"- Max Loss USD: {dynamic_risk_levels.max_loss_usd:.2f}\n"
+                    f"- Risk/Reward Ratio: {dynamic_risk_levels.risk_reward_ratio:.2f}\n"
+                    "Use these levels unless you have a stronger risk reason to reduce or delay.\n"
+                )
 
             # Convertir a formato de mensajes para el sistema de reintentos
             llm_messages = [
@@ -1708,6 +1800,22 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             report["_attempts"] = attempts
             if errors:
                 report["_validation_errors"] = errors
+
+            if dynamic_risk_levels:
+                report["dynamic_risk_levels"] = dynamic_risk_levels.to_dict()
+                order_details = dict(report.get("order_details") or {})
+                if not _has_usable_order_details(order_details, proposed_action, entry_price):
+                    logger.warning(
+                        "risk_manager returned unusable order_details for %s %s at %.8f; "
+                        "using deterministic ATR levels",
+                        state.get("symbol", "UNKNOWN"),
+                        proposed_action,
+                        entry_price,
+                    )
+                    report["order_details"] = _dynamic_order_details(
+                        dynamic_risk_levels, entry_price
+                    )
+                    report["_order_details_fallback"] = True
 
             # Store in ReasoningBank
             if reasoning_bank and REASONING_BANK_AVAILABLE:
@@ -1740,6 +1848,7 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
     async def traced_risk_node(state: FenixAgentState) -> dict:
         with get_tracer().start_as_current_span("risk_manager"):
             return await risk_node(state)
+
     return traced_risk_node
 
 
@@ -1747,16 +1856,17 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
 # GRAPH BUILDER
 # ============================================================================
 
+
 class FenixTradingGraph:
     """
     Fenix multi-agent trading graph using LangGraph.
-    
+
     Enhanced flow:
     START -> [Technical, Sentiment, QABBA] (paralelo) -> Visual -> Decision -> Risk -> END
-    
+
     With ReasoningBank integration for persistence and historical context.
     """
-    
+
     def __init__(
         self,
         llm_config: LLMProvidersConfig | None = None,
@@ -1767,12 +1877,12 @@ class FenixTradingGraph:
     ):
         if not LANGGRAPH_AVAILABLE:
             raise ImportError("LangGraph is not installed. Run: pip install langgraph")
-        
+
         self.llm_factory = LLMFactory(llm_config)
         self.enable_visual = enable_visual
         self.enable_sentiment = enable_sentiment
         self.enable_risk = enable_risk
-        
+
         # Initialize ReasoningBank if available
         if reasoning_bank is not None:
             self.reasoning_bank = reasoning_bank
@@ -1784,55 +1894,55 @@ class FenixTradingGraph:
                 self.reasoning_bank = None
         else:
             self.reasoning_bank = None
-        
+
         self.graph = self._build_graph()
-    
+
     def _build_graph(self) -> Any:
         """Builds the StateGraph with all agents."""
         # Obtener LLMs para cada agente
         technical_llm = self.llm_factory.get_llm_for_agent("technical")
         qabba_llm = self.llm_factory.get_llm_for_agent("qabba")
         decision_llm = self.llm_factory.get_llm_for_agent("decision")
-        
+
         # Create nodes
         technical_node = create_technical_agent_node(technical_llm, self.reasoning_bank)
         qabba_node = create_qabba_agent_node(qabba_llm, self.reasoning_bank)
         decision_node = create_decision_agent_node(decision_llm, self.reasoning_bank)
-        
+
         # Build graph
         graph = StateGraph(FenixAgentState)
-        
+
         # Add main nodes (always active)
         graph.add_node("Technical Agent", technical_node)
         graph.add_node("QABBA Agent", qabba_node)
         graph.add_node("Decision Agent", decision_node)
-        
+
         # Risk Agent (after Decision)
         if self.enable_risk:
             risk_llm = self.llm_factory.get_llm_for_agent("risk_manager")
             risk_node = create_risk_agent_node(risk_llm, self.reasoning_bank)
             graph.add_node("Risk Agent", risk_node)
-        
+
         # Add optional nodes
         if self.enable_sentiment:
             sentiment_llm = self.llm_factory.get_llm_for_agent("sentiment")
             sentiment_node = create_sentiment_agent_node(sentiment_llm, self.reasoning_bank)
             graph.add_node("Sentiment Agent", sentiment_node)
-        
+
         if self.enable_visual:
             visual_llm = self.llm_factory.get_llm_for_agent("visual")
             visual_node = create_visual_agent_node(visual_llm, self.reasoning_bank)
             graph.add_node("Visual Agent", visual_node)
-        
+
         # Definir flujo
         # Phase 1: Parallel Analysis (Technical, QABBA, Sentiment)
         graph.add_edge(START, "Technical Agent")
         graph.add_edge(START, "QABBA Agent")
-        
+
         if self.enable_sentiment:
             graph.add_edge(START, "Sentiment Agent")
             graph.add_edge("Sentiment Agent", "Decision Agent")
-        
+
         # Technical and QABBA go to Visual or Decision
         if self.enable_visual:
             graph.add_edge("Technical Agent", "Visual Agent")
@@ -1841,18 +1951,18 @@ class FenixTradingGraph:
         else:
             graph.add_edge("Technical Agent", "Decision Agent")
             graph.add_edge("QABBA Agent", "Decision Agent")
-        
+
         # Flow from Decision to Risk (if enabled) or END
         if self.enable_risk:
             graph.add_edge("Decision Agent", "Risk Agent")
             graph.add_edge("Risk Agent", END)
         else:
             graph.add_edge("Decision Agent", END)
-        
+
         # Compile without checkpointer to avoid memory leaks from state accumulation
         # memory = MemorySaver()
         return graph.compile()
-    
+
     async def invoke(
         self,
         symbol: str,
@@ -1873,7 +1983,7 @@ class FenixTradingGraph:
     ) -> FenixAgentState:
         """
         Executes the full trading graph.
-        
+
         Args:
             symbol: Pair symbol (e.g., "BTCUSDT")
             timeframe: Timeframe (e.g., "15m")
@@ -1889,7 +1999,7 @@ class FenixTradingGraph:
             thread_id: Thread ID for persistence
             social_data: Dictionary with Twitter/Reddit posts or other social data
             fear_greed_value: Fear & Greed Index value (string)
-        
+
         Returns:
             Final state with all decisions
         """
@@ -1919,6 +2029,7 @@ class FenixTradingGraph:
 
         # Measure total time and capture in dashboard
         import time
+
         start_time = time.time()
 
         result = await self.graph.ainvoke(initial_state, config)
@@ -1931,9 +2042,7 @@ class FenixTradingGraph:
 
         return result
 
-    def _update_dashboard(
-        self, result: FenixAgentState, total_latency_ms: float
-    ) -> None:
+    def _update_dashboard(self, result: FenixAgentState, total_latency_ms: float) -> None:
         """Updates the dashboard with pipeline results."""
         try:
             dashboard = get_dashboard()
@@ -1952,9 +2061,7 @@ class FenixTradingGraph:
 
             # Extract final signal
             final_signal = None
-            decision = result.get("final_trade_decision") or result.get(
-                "decision_report"
-            )
+            decision = result.get("final_trade_decision") or result.get("decision_report")
             if isinstance(decision, dict):
                 final_signal = decision.get("final_decision") or decision.get("signal")
 
@@ -1968,7 +2075,7 @@ class FenixTradingGraph:
             )
         except Exception as e:
             logger.warning("Error updating dashboard: %s", e)
-    
+
     async def ainvoke(
         self,
         symbol: str,
@@ -1987,7 +2094,7 @@ class FenixTradingGraph:
             current_volume=current_volume,
             **kwargs,
         )
-    
+
     def get_graph_visualization(self) -> str | None:
         """Returns an ASCII visualization of the graph."""
         try:
@@ -2006,14 +2113,56 @@ _trading_graph: FenixTradingGraph | None = None
 def get_trading_graph(
     llm_config: LLMProvidersConfig | None = None,
     force_new: bool = False,
+    enable_visual: bool = True,
+    enable_sentiment: bool = True,
+    enable_risk: bool = True,
 ) -> FenixTradingGraph:
     """Gets or creates the singleton trading graph."""
     global _trading_graph
-    
+
     if _trading_graph is None or force_new:
-        _trading_graph = FenixTradingGraph(llm_config=llm_config)
-    
+        _trading_graph = FenixTradingGraph(
+            llm_config=llm_config,
+            enable_visual=enable_visual,
+            enable_sentiment=enable_sentiment,
+            enable_risk=enable_risk,
+        )
+
     return _trading_graph
+
+
+def build_graph(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility wrapper for older callers that expected a compiled graph."""
+    return FenixTradingGraph(*args, **kwargs).graph
+
+
+def compute_decision(agent_outputs: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Compatibility decision synthesizer for legacy tests and scripts."""
+    outputs = agent_outputs or {}
+    votes: list[str] = []
+    for report in outputs.values():
+        if isinstance(report, dict):
+            value = (
+                report.get("final_decision")
+                or report.get("signal")
+                or report.get("action")
+                or report.get("decision")
+            )
+            if value:
+                votes.append(str(value).replace("_QABBA", "").upper())
+    buy_votes = votes.count("BUY")
+    sell_votes = votes.count("SELL")
+    if buy_votes > sell_votes:
+        decision = "BUY"
+    elif sell_votes > buy_votes:
+        decision = "SELL"
+    else:
+        decision = "HOLD"
+    return {
+        "final_decision": decision,
+        "confidence_in_decision": "LOW" if decision == "HOLD" else "MEDIUM",
+        "votes": votes,
+    }
 
 
 # ============================================================================
@@ -2023,31 +2172,31 @@ def get_trading_graph(
 if __name__ == "__main__":
     # Basic test
     print("=== Fenix LangGraph Orchestrator ===")
-    
+
     if not LANGGRAPH_AVAILABLE:
         print("❌ LangGraph is not installed")
         print("   Run: pip install langgraph langchain-core")
         exit(1)
-    
+
     # Create test configuration (local Ollama)
     from config.llm_provider_config import EXAMPLE_ALL_LOCAL
-    
+
     print("✅ Creating trading graph...")
     trading_graph = FenixTradingGraph(
         llm_config=EXAMPLE_ALL_LOCAL,
         enable_visual=False,  # Disable for test without image
         enable_sentiment=True,
     )
-    
+
     # Visualizar grafo
     viz = trading_graph.get_graph_visualization()
     if viz:
         print("\n=== Graph Structure ===")
         print(viz)
-    
+
     # Execute with test data
     print("\n=== Executing test analysis ===")
-    
+
     test_indicators = {
         "rsi": 45.5,
         "macd_line": 120.5,
@@ -2057,7 +2206,7 @@ if __name__ == "__main__":
         "ema_21": 67300,
         "adx": 28.5,
     }
-    
+
     result = trading_graph.invoke(
         symbol="BTCUSDT",
         timeframe="15m",
@@ -2068,15 +2217,23 @@ if __name__ == "__main__":
         cvd=50000.0,
         spread=0.5,
     )
-    
+
     print("\n=== Final Result ===")
     print(f"Decision: {result.get('final_trade_decision', {}).get('final_decision', 'N/A')}")
-    print(f"Confidence: {result.get('final_trade_decision', {}).get('confidence_in_decision', 'N/A')}")
+    print(
+        f"Confidence: {result.get('final_trade_decision', {}).get('confidence_in_decision', 'N/A')}"
+    )
     print(f"\nExecution times: {result.get('execution_times', {})}")
 
     # Show retry info per agent
     print("\n=== Retry System ===")
-    for agent_name in ["technical_report", "sentiment_report", "qabba_report", "decision_report", "risk_assessment"]:
+    for agent_name in [
+        "technical_report",
+        "sentiment_report",
+        "qabba_report",
+        "decision_report",
+        "risk_assessment",
+    ]:
         report = result.get(agent_name, {})
         if report:
             attempts = report.get("_attempts", 1)

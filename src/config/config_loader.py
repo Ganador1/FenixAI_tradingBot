@@ -2,13 +2,13 @@
 """
 Configuración simplificada para evitar problemas con Pydantic
 """
+
 from __future__ import annotations
 
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import watchdog.events
 import watchdog.observers
@@ -20,22 +20,24 @@ from src.risk.runtime_feedback import RiskFeedbackLoopConfig
 
 logger = logging.getLogger(__name__)
 
+
 # Función para cargar .env de manera robusta
 def load_env_variables():
     """Carga variables de entorno de manera robusta"""
     # Intentar cargar desde múltiples ubicaciones
     possible_paths = [
         Path(__file__).parent.parent / ".env",  # Desde config/
-        Path.cwd() / ".env",                    # Desde working directory
-        Path(".env")                            # Relativo actual
+        Path.cwd() / ".env",  # Desde working directory
+        Path(".env"),  # Relativo actual
     ]
-    
+
     for env_path in possible_paths:
         if env_path.exists():
             load_dotenv(env_path, override=True)
             return True
-    
+
     return False
+
 
 # Cargar .env inmediatamente
 load_env_variables()
@@ -44,9 +46,11 @@ load_env_variables()
 _PLACEHOLDER_KEY = "FENIX_TEST_KEY"
 _PLACEHOLDER_SECRET = "FENIX_TEST_SECRET"
 
+
 @dataclass
 class TradingConfig:
     """Configuración de trading"""
+
     mode: str = "paper"  # "paper" o "live"
     symbol: str = "BTCUSDT"
     base_asset: str = "BTC"
@@ -56,11 +60,11 @@ class TradingConfig:
     min_candles_for_bot_start: int = 51
     trade_cooldown_after_close_seconds: int = 60
     sentiment_refresh_cooldown_seconds: int = 600
-    active_timeframes: Optional[list] = None
-    tradingview_chart_urls: Optional[dict] = None
+    active_timeframes: list | None = None
+    tradingview_chart_urls: dict | None = None
     order_status_max_retries: int = 7
     order_status_initial_delay: float = 0.5
-    
+
     def __post_init__(self):
         if self.active_timeframes is None:
             self.active_timeframes = ["5m", "15m", "30m", "1h"]
@@ -69,12 +73,14 @@ class TradingConfig:
                 "5m": "https://es.tradingview.com/chart/iERzAcI8/",
                 "15m": "https://es.tradingview.com/chart/iERzAcI8/?interval=15",
                 "30m": "https://es.tradingview.com/chart/iERzAcI8/?interval=30",
-                "1h": "https://es.tradingview.com/chart/iERzAcI8/?interval=60"
+                "1h": "https://es.tradingview.com/chart/iERzAcI8/?interval=60",
             }
+
 
 class BinanceConfig(BaseModel):
     api_key: str
     api_secret: str
+
 
 class RiskManagementConfig(BaseModel):
     """Configuración base de riesgo.
@@ -105,32 +111,40 @@ class RiskManagementConfig(BaseModel):
     profile: str = "moderate"
     feedback_loop: RiskFeedbackLoopConfig = Field(default_factory=RiskFeedbackLoopConfig)
 
+
 class LLMConfig(BaseModel):
     default_timeout: int = 90
     default_temperature: float = 0.15
     default_max_tokens: int = 1500
 
+
 class NewsScraperConfig(BaseModel):
     cryptopanic_api_tokens: list[str] = []
+
 
 class ChartGeneratorConfig(BaseModel):
     save_charts_to_disk: bool = True
     charts_dir: str = "logs/charts"
 
+
 class ToolsConfig(BaseModel):
     news_scraper: NewsScraperConfig = Field(default_factory=NewsScraperConfig)
     chart_generator: ChartGeneratorConfig = Field(default_factory=ChartGeneratorConfig)
+
 
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     log_file: str = "logs/fenix_live_trading.log"
 
+
 class TechnicalToolsConfig(BaseModel):
     maxlen_buffer: int = 300
     min_candles_for_reliable_calc: int = 30
 
+
 class TechnicalAnalysisConfig(BaseModel):
-    thresholds: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    thresholds: dict[str, dict[str, float]] = Field(default_factory=dict)
+
 
 class AgentsEnabledConfig(BaseModel):
     technical: bool = True
@@ -140,11 +154,13 @@ class AgentsEnabledConfig(BaseModel):
     decision: bool = True
     risk: bool = True
 
+
 class AgentsConfig(BaseModel):
     enabled: AgentsEnabledConfig = Field(default_factory=AgentsEnabledConfig)
-    active_agents: Optional[List[str]] = None
-    agent_weights: Optional[Dict[str, float]] = None
+    active_agents: list[str] | None = None
+    agent_weights: dict[str, float] | None = None
     consensus_threshold: float = 0.7
+
 
 class AppConfig(BaseModel):
     trading: TradingConfig = Field(default_factory=TradingConfig)
@@ -157,7 +173,8 @@ class AppConfig(BaseModel):
     technical_analysis: TechnicalAnalysisConfig = Field(default_factory=TechnicalAnalysisConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
 
-def _resolve_api_credentials(use_testnet_flag: bool) -> Dict[str, str]:
+
+def _resolve_api_credentials(use_testnet_flag: bool) -> dict[str, str]:
     """
     Devuelve credenciales para la API de Binance.
     - Prioriza credenciales reales si existen.
@@ -187,16 +204,16 @@ def _resolve_api_credentials(use_testnet_flag: bool) -> Dict[str, str]:
     return {"api_key": api_key, "api_secret": api_secret}
 
 
-def _load_yaml_config(config_path: Path) -> Dict[str, Dict[str, object]]:
+def _load_yaml_config(config_path: Path) -> dict[str, dict[str, object]]:
     """Carga config.yaml si existe, devolviendo un dict seguro."""
     if not config_path.exists():
         return {}
 
-    with open(config_path, "r", encoding="utf-8") as config_file:
+    with open(config_path, encoding="utf-8") as config_file:
         return yaml.safe_load(config_file) or {}
 
 
-def _compute_use_testnet_flag(trading_cfg: Dict[str, object]) -> bool:
+def _compute_use_testnet_flag(trading_cfg: dict[str, object]) -> bool:
     """Determina si se debe usar testnet considerando YAML y entorno."""
     use_testnet_flag = False
     if isinstance(trading_cfg, dict):
@@ -208,11 +225,13 @@ def _compute_use_testnet_flag(trading_cfg: Dict[str, object]) -> bool:
 
 
 def _ensure_safe_trading_mode(
-    trading_cfg: Dict[str, object],
-    credentials: Dict[str, str]
-) -> Dict[str, object]:
+    trading_cfg: dict[str, object], credentials: dict[str, str]
+) -> dict[str, object]:
     """Fuerza modo paper/testnet si solo hay credenciales placeholder."""
-    if credentials["api_key"] == _PLACEHOLDER_KEY or credentials["api_secret"] == _PLACEHOLDER_SECRET:
+    if (
+        credentials["api_key"] == _PLACEHOLDER_KEY
+        or credentials["api_secret"] == _PLACEHOLDER_SECRET
+    ):
         safe_cfg = dict(trading_cfg) if isinstance(trading_cfg, dict) else {}
         safe_cfg.setdefault("mode", "paper")
         safe_cfg.setdefault("use_testnet", True)
@@ -220,7 +239,9 @@ def _ensure_safe_trading_mode(
     return trading_cfg
 
 
-def _determine_selected_profile(trading_cfg: Dict[str, object], raw_rm_cfg: Optional[Dict[str, object]]) -> str:
+def _determine_selected_profile(
+    trading_cfg: dict[str, object], raw_rm_cfg: dict[str, object] | None
+) -> str:
     """Obtiene el perfil seleccionado explícito o deriva uno por modo."""
     if isinstance(raw_rm_cfg, dict):
         profile = str(raw_rm_cfg.get("profile", "")).strip()
@@ -233,12 +254,12 @@ def _determine_selected_profile(trading_cfg: Dict[str, object], raw_rm_cfg: Opti
     return "moderate" if mode_val == "paper" else "conservative"
 
 
-def _extract_base_risk_config(raw_rm_cfg: Optional[Dict[str, object]]) -> Dict[str, object]:
+def _extract_base_risk_config(raw_rm_cfg: dict[str, object] | None) -> dict[str, object]:
     """Extrae claves base excluyendo metadatos de perfiles."""
     if not isinstance(raw_rm_cfg, dict):
         return {}
 
-    base_cfg: Dict[str, object] = {}
+    base_cfg: dict[str, object] = {}
     for key, value in raw_rm_cfg.items():
         if key in {"risk_profiles", "profile"}:
             continue
@@ -247,10 +268,10 @@ def _extract_base_risk_config(raw_rm_cfg: Optional[Dict[str, object]]) -> Dict[s
 
 
 def _apply_profile_overrides(
-    effective_cfg: Dict[str, object],
-    raw_profiles: Optional[Dict[str, object]],
+    effective_cfg: dict[str, object],
+    raw_profiles: dict[str, object] | None,
     selected_profile: str,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Aplica overrides del perfil seleccionado si están definidos."""
     if not isinstance(raw_profiles, dict):
         return effective_cfg
@@ -265,9 +286,8 @@ def _apply_profile_overrides(
 
 
 def _build_effective_risk_config(
-    trading_cfg: Dict[str, object],
-    raw_rm_cfg: Optional[Dict[str, object]]
-) -> Dict[str, object]:
+    trading_cfg: dict[str, object], raw_rm_cfg: dict[str, object] | None
+) -> dict[str, object]:
     """Combina configuración base con el perfil de riesgo seleccionado."""
     raw_rm_cfg = raw_rm_cfg or {}
     raw_profiles = raw_rm_cfg.get("risk_profiles", {}) if isinstance(raw_rm_cfg, dict) else {}
@@ -318,7 +338,7 @@ def create_app_config() -> AppConfig:
         raise
 
 
-_APP_CONFIG: Optional[AppConfig] = None
+_APP_CONFIG: AppConfig | None = None
 
 
 class _AppConfigProxy:
@@ -345,6 +365,7 @@ def get_app_config(force_reload: bool = False) -> AppConfig:
 # Crear proxy global compatible
 APP_CONFIG = _AppConfigProxy()
 
+
 class ConfigWatcher:
     def __init__(self, config_path):
         self.config_path = config_path
@@ -362,21 +383,24 @@ class ConfigWatcher:
 
     def on_modified(self, event):
         if event.src_path == str(self.config_path):
-            print('Config file changed, reloading...')
+            print("Config file changed, reloading...")
             global APP_CONFIG
             APP_CONFIG = create_app_config()
 
+
 # ConfigWatcher se inicializará explícitamente cuando sea necesario
 _watcher_instance = None
+
 
 def start_config_watcher():
     """Inicia el watcher de configuración de forma controlada"""
     global _watcher_instance
     if _watcher_instance is None:
-        _watcher_instance = ConfigWatcher(Path(__file__).parent / 'config.yaml')
+        _watcher_instance = ConfigWatcher(Path(__file__).parent / "config.yaml")
         _watcher_instance.start()
         logger.info("ConfigWatcher iniciado correctamente")
     return _watcher_instance
+
 
 def stop_config_watcher():
     """Detiene el watcher de configuración de forma controlada"""
@@ -386,9 +410,11 @@ def stop_config_watcher():
         _watcher_instance = None
         logger.info("ConfigWatcher detenido correctamente")
 
+
 def get_config_watcher():
     """Obtiene la instancia del watcher (puede ser None si no está iniciado)"""
     return _watcher_instance
+
 
 if __name__ == "__main__":
     print("Configuration loaded successfully!")

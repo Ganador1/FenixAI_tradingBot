@@ -1,58 +1,71 @@
-
 import asyncio
 import logging
 import os
 import platform
-import socketio
 import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
 
 import psutil
-from fastapi import FastAPI, Query, HTTPException, Path, Depends, Request
+import socketio
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
-from src.trading.engine import TradingEngine
-from src.trading.binance_client import BinanceClient
-from src.config.config_loader import APP_CONFIG
-from src.config.database import init_db, get_db
-from src.memory.reasoning_bank import get_reasoning_bank
-from src.models.db_models import Order, Trade, Position, AgentOutput
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Auth Imports
-from src.api.auth import router as auth_router, get_password_hash
-from src.models.user import User
+from src.api.auth import get_password_hash
 
+# Auth Imports
+from src.api.auth import router as auth_router
+from src.api.nano_routes import (
+    RELEASE_INFO as _NANO_RELEASE_INFO,
+)
+from src.api.nano_routes import (
+    _load_signal as _nano_load_signal,
+)
+from src.api.nano_routes import (
+    _signal_path_for as _nano_signal_path_for,
+)
+from src.api.nano_routes import (
+    router as nano_router,
+)
+from src.config.config_loader import APP_CONFIG
+from src.config.database import get_db, init_db
+from src.memory.reasoning_bank import get_reasoning_bank
+from src.models.db_models import AgentOutput, Order, Position, Trade
+from src.models.user import User
+from src.trading.binance_client import BinanceClient
+from src.trading.engine import TradingEngine
 
 # ============ Pydantic Schemas ============
 
+
 class OrderCreate(BaseModel):
     """Schema para crear una orden."""
+
     symbol: str = Field(default="BTCUSDT", description="Trading pair")
     type: str = Field(default="market", description="Order type: market, limit, stop")
     side: str = Field(..., description="Order side: buy or sell")
     quantity: float = Field(..., gt=0, description="Order quantity")
-    price: Optional[float] = Field(None, description="Limit price (for limit orders)")
-    stop_price: Optional[float] = Field(None, description="Stop price (for stop orders)")
+    price: float | None = Field(None, description="Limit price (for limit orders)")
+    stop_price: float | None = Field(None, description="Stop price (for stop orders)")
 
 
 class OrderResponse(BaseModel):
     """Schema de respuesta para una orden."""
+
     id: str
     symbol: str
     type: str
     side: str
     quantity: float
-    price: Optional[float]
-    stop_price: Optional[float]
+    price: float | None
+    stop_price: float | None
     status: str
     filled_quantity: float
     created_at: str
@@ -61,6 +74,7 @@ class OrderResponse(BaseModel):
 
 class PositionResponse(BaseModel):
     """Schema de respuesta para una posición."""
+
     id: str
     symbol: str
     side: str
@@ -74,6 +88,7 @@ class PositionResponse(BaseModel):
 
 class TradeResponse(BaseModel):
     """Schema de respuesta para un trade."""
+
     id: str
     symbol: str
     side: str
@@ -85,6 +100,7 @@ class TradeResponse(BaseModel):
 
 class AgentOutputResponse(BaseModel):
     """Schema de respuesta para output de agente."""
+
     id: str
     agent_id: str
     agent_name: str
@@ -92,24 +108,25 @@ class AgentOutputResponse(BaseModel):
     reasoning: str
     decision: str
     confidence: float
-    input_summary: Optional[str] = None
+    input_summary: str | None = None
 
 
 class EngineConfigUpdate(BaseModel):
     """Payload para actualizar configuración de engine."""
-    symbol: Optional[str] = Field(None, description="Trading pair, e.g., BTCUSDT")
-    timeframe: Optional[str] = Field(None, description="Timeframe, e.g., 1m,5m,15m")
-    paper_trading: Optional[bool] = Field(None, description="Paper trading on/off")
-    allow_live_trading: Optional[bool] = Field(None, description="Allow live trading")
-    enable_visual_agent: Optional[bool] = Field(None, description="Toggle visual agent")
-    enable_sentiment_agent: Optional[bool] = Field(None, description="Toggle sentiment agent")
+
+    symbol: str | None = Field(None, description="Trading pair, e.g., BTCUSDT")
+    timeframe: str | None = Field(None, description="Timeframe, e.g., 1m,5m,15m")
+    paper_trading: bool | None = Field(None, description="Paper trading on/off")
+    allow_live_trading: bool | None = Field(None, description="Allow live trading")
+    enable_visual_agent: bool | None = Field(None, description="Toggle visual agent")
+    enable_sentiment_agent: bool | None = Field(None, description="Toggle sentiment agent")
 
 
 # ============ In-Memory Storage (for demo) ============
-_ORDERS: List[dict] = []
-_POSITIONS: List[dict] = []
-_TRADE_HISTORY: List[dict] = []
-_AGENT_OUTPUTS: List[dict] = []
+_ORDERS: list[dict] = []
+_POSITIONS: list[dict] = []
+_TRADE_HISTORY: list[dict] = []
+_AGENT_OUTPUTS: list[dict] = []
 
 # Logger
 logging.basicConfig(level=logging.INFO)
@@ -122,10 +139,14 @@ _METRICS_HISTORY: deque[dict] = deque(maxlen=240)
 _PROCESS_START = time.time()
 
 # Socket.IO Server
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins=[
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-])
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
+
 
 async def handle_engine_event(event_type: str, data: dict):
     """Handle events emitted by the trading engine."""
@@ -135,47 +156,49 @@ async def handle_engine_event(event_type: str, data: dict):
                 "id": str(uuid.uuid4()),
                 "agent_name": data.get("agent_name"),
                 "timestamp": data.get("timestamp"),
-                "reasoning": data.get("data", {}).get("reasoning", "") or data.get("data", {}).get("visual_analysis", "") or "No reasoning",
-                "decision": data.get("data", {}).get("signal") or data.get("data", {}).get("action") or "HOLD",
+                "reasoning": data.get("data", {}).get("reasoning", "")
+                or data.get("data", {}).get("visual_analysis", "")
+                or "No reasoning",
+                "decision": data.get("data", {}).get("signal")
+                or data.get("data", {}).get("action")
+                or "HOLD",
                 "confidence": data.get("data", {}).get("confidence", 0.0),
-                "input_summary": "Live Analysis"
+                "input_summary": "Live Analysis",
             }
             # Include social and Fear&Greed data for sentiment agent
             if data.get("social_data"):
                 payload["social_data"] = data.get("social_data")
             if data.get("fear_greed_value"):
                 payload["fear_greed_value"] = data.get("fear_greed_value")
-            await sio.emit('agentOutput', payload)
-            
+            await sio.emit("agentOutput", payload)
+
         elif event_type == "final_decision":
             payload = {
                 "decision": data.get("decision"),
                 "confidence": data.get("confidence"),
                 "reasoning": data.get("reasoning"),
-                "timestamp": data.get("timestamp")
+                "timestamp": data.get("timestamp"),
             }
-            await sio.emit('trade:signal', payload)
+            await sio.emit("trade:signal", payload)
         elif event_type == "news_update":
-            payload = {
-                "news": data.get("news_data", []),
-                "timestamp": data.get("timestamp")
-            }
-            await sio.emit('news:update', payload)
+            payload = {"news": data.get("news_data", []), "timestamp": data.get("timestamp")}
+            await sio.emit("news:update", payload)
             # Backward-compatible aliases
-            await sio.emit('newsUpdate', payload)
+            await sio.emit("newsUpdate", payload)
         elif event_type == "reasoning:new":
             payload = {
                 "agent_name": data.get("agent_name"),
                 "prompt_digest": data.get("prompt_digest"),
                 "timestamp": data.get("timestamp"),
             }
-            await sio.emit('reasoning:new', payload)
+            await sio.emit("reasoning:new", payload)
             # Backwards-compatible event names for frontend
-            await sio.emit('agent:reasoning', payload)
-            await sio.emit('reasoningUpdate', payload)
-            
+            await sio.emit("agent:reasoning", payload)
+            await sio.emit("reasoningUpdate", payload)
+
     except Exception as e:
         logger.error(f"Error handling engine event: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -183,7 +206,7 @@ async def lifespan(app: FastAPI):
     global engine, _engine_task
     logger.info("Initializing Database...")
     await init_db()
-    
+
     logger.info("Initializing Trading Engine...")
     engine = TradingEngine(
         symbol="BTCUSDT",
@@ -192,24 +215,31 @@ async def lifespan(app: FastAPI):
         allow_live_trading=False,
     )
     engine.on_agent_event = handle_engine_event
-    
+
     # Start engine in background task
     _engine_task = asyncio.create_task(engine.start())
-    
+
     # Start AutoEvaluator
     try:
         from src.analysis.auto_evaluator import AutoEvaluator
+
         auto_evaluator = AutoEvaluator(symbol="BTCUSDT", evaluation_horizon_minutes=15)
         asyncio.create_task(auto_evaluator.start())
         logger.info("✅ AutoEvaluator started")
     except Exception as e:
         logger.error(f"Failed to start AutoEvaluator: {e}")
-    
+
     # Start metrics broadcaster
     asyncio.create_task(broadcast_metrics())
-    
+
+    # v2.5: start NanoFenix companion signal broadcaster.
+    asyncio.create_task(_broadcast_nano_signals())
+
     # Initialize Default Admin and Demo Users if not exists
-    create_demo_users = os.getenv("CREATE_DEMO_USERS", "false").lower() == "true" or os.getenv("ENVIRONMENT", "").lower() == "development"
+    create_demo_users = (
+        os.getenv("CREATE_DEMO_USERS", "false").lower() == "true"
+        or os.getenv("ENVIRONMENT", "").lower() == "development"
+    )
     async for session in get_db():
         try:
             # Create the original admin used during development
@@ -218,18 +248,21 @@ async def lifespan(app: FastAPI):
             if not admin_user and create_demo_users:
                 logger.info("Creating default admin user for local dev... (admin@fenix.ai)")
                 import secrets
+
                 admin_password = os.getenv("DEFAULT_ADMIN_PASSWORD")
                 if not admin_password:
                     admin_password = secrets.token_urlsafe(12)
                     # For local dev: generate a password silently; do not print or log it
-                    logger.info("[LOCAL DEV] Generated default admin password (not printed). Use DEFAULT_ADMIN_PASSWORD to set a custom password")
+                    logger.info(
+                        "[LOCAL DEV] Generated default admin password (not printed). Use DEFAULT_ADMIN_PASSWORD to set a custom password"
+                    )
                 new_admin = User(
                     id=str(uuid.uuid4()),
                     email="admin@fenix.ai",
                     hashed_password=get_password_hash(admin_password),
                     full_name="System Admin",
                     role="admin",
-                    is_active=True
+                    is_active=True,
                 )
                 session.add(new_admin)
                 await session.commit()
@@ -237,43 +270,53 @@ async def lifespan(app: FastAPI):
 
             # Also ensure the demo credentials shown in docs/security/DEMO_CREDENTIALS.md exist (admin + trader)
             # These are simple demo accounts for development only (avoid on production)
-            demo_admin = await session.execute(select(User).where(User.email == "admin@trading.com"))
+            demo_admin = await session.execute(
+                select(User).where(User.email == "admin@trading.com")
+            )
             demo_admin_user = demo_admin.scalar_one_or_none()
             if not demo_admin_user and create_demo_users:
                 logger.info("Creating demo admin user for local dev: admin@trading.com")
                 demo_admin_password = os.getenv("DEFAULT_DEMO_PASSWORD")
                 if not demo_admin_password:
                     import secrets
+
                     demo_admin_password = secrets.token_urlsafe(10)
-                    logger.info("[LOCAL DEV] Generated demo admin password (not printed). Use DEFAULT_DEMO_PASSWORD to set a custom password")
+                    logger.info(
+                        "[LOCAL DEV] Generated demo admin password (not printed). Use DEFAULT_DEMO_PASSWORD to set a custom password"
+                    )
                 new_demo_admin = User(
                     id=str(uuid.uuid4()),
                     email="admin@trading.com",
                     hashed_password=get_password_hash(demo_admin_password),
                     full_name="Demo Admin",
                     role="admin",
-                    is_active=True
+                    is_active=True,
                 )
                 session.add(new_demo_admin)
                 await session.commit()
                 logger.info("Demo admin created for local dev: admin@trading.com")
 
-            demo_trader = await session.execute(select(User).where(User.email == "trader@trading.com"))
+            demo_trader = await session.execute(
+                select(User).where(User.email == "trader@trading.com")
+            )
             demo_trader_user = demo_trader.scalar_one_or_none()
             if not demo_trader_user and create_demo_users:
                 logger.info("Creating demo trader user for local dev: trader@trading.com")
                 demo_trader_password = os.getenv("DEFAULT_DEMO_PASSWORD")
                 if not demo_trader_password:
                     import secrets
+
                     demo_trader_password = secrets.token_urlsafe(10)
-                    logger.info("[LOCAL DEV] Generated demo trader password (not printed). Use DEFAULT_DEMO_PASSWORD to set a custom password")
+                    logger.info(
+                        "[LOCAL DEV] Generated demo trader password (not printed). Use DEFAULT_DEMO_PASSWORD to set a custom password"
+                    )
                 new_demo_trader = User(
                     id=str(uuid.uuid4()),
                     email="trader@trading.com",
                     hashed_password=get_password_hash(demo_trader_password),
                     full_name="Demo Trader",
                     role="trader",
-                    is_active=True
+                    is_active=True,
                 )
                 session.add(new_demo_trader)
                 await session.commit()
@@ -283,7 +326,7 @@ async def lifespan(app: FastAPI):
         break  # Only run once
 
     yield
-    
+
     # Shutdown
     if engine:
         await engine.stop()
@@ -291,6 +334,7 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             _engine_task.cancel()
             await _engine_task
+
 
 # FastAPI App with OpenAPI Metadata
 app = FastAPI(
@@ -321,9 +365,10 @@ Most endpoints require JWT authentication. Use `/api/auth/login` to obtain a tok
         {"name": "system", "description": "System status, health, and metrics"},
         {"name": "engine", "description": "Trading engine control"},
     ],
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 app.include_router(auth_router, tags=["auth"])  # Register Auth Routes
+app.include_router(nano_router)  # v2.5 NanoFenix / MiniFenix / release-info
 app_socketio = socketio.ASGIApp(sio, app)
 
 # CORS - limitar a orígenes conocidos
@@ -342,6 +387,7 @@ app.add_middleware(
 # Prometheus Metrics Middleware
 try:
     from src.monitoring.prometheus_metrics import PrometheusMiddleware, metrics_endpoint
+
     app.add_middleware(PrometheusMiddleware)
     app.add_api_route("/metrics", metrics_endpoint, methods=["GET"], include_in_schema=False)
     logger.info("✅ Prometheus metrics enabled at /metrics")
@@ -353,9 +399,14 @@ except ImportError as e:
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"Request validation error: {request.url} - {exc}")
     # Return a clearer message including the Pydantic details for debugging
-    return JSONResponse(status_code=422, content={"success": False, "error": "Validation error", "detail": exc.errors()})
+    return JSONResponse(
+        status_code=422,
+        content={"success": False, "error": "Validation error", "detail": exc.errors()},
+    )
+
 
 # --- Background Tasks ---
+
 
 async def broadcast_metrics():
     """Broadcast system metrics to frontend via Socket.IO"""
@@ -363,17 +414,52 @@ async def broadcast_metrics():
         try:
             metrics = build_system_metrics()
             metrics_summary = _summarize_metrics(metrics)
-            await sio.emit('system:metrics', {"summary": metrics_summary, "detail": metrics})
+            await sio.emit("system:metrics", {"summary": metrics_summary, "detail": metrics})
 
-            connection_payload = {
-                "connections": _build_connection_status()
-            }
-            await sio.emit('system:connection', connection_payload)
+            connection_payload = {"connections": _build_connection_status()}
+            await sio.emit("system:connection", connection_payload)
 
         except Exception as e:
             logger.error(f"Broadcast error: {e}")
-            
+
         await asyncio.sleep(1)
+
+
+async def _broadcast_nano_signals():
+    """v2.5: Emit the latest NanoFenix companion signal every few seconds.
+
+    Reads the JSON file the companion subprocess writes (the same file the
+    trading engine consumes) and emits ``nanofenix:signal`` events over
+    Socket.IO so the dashboard can display the live signal without a poll.
+    """
+    last_emitted_ts: dict[str, str] = {}
+    while True:
+        try:
+            symbols = {"SOLUSDT", "BTCUSDT", "ETHUSDT"}
+            if engine is not None and getattr(engine, "symbol", None):
+                symbols.add(str(engine.symbol).upper())
+            for symbol in symbols:
+                path = _nano_signal_path_for(symbol)
+                if not path.exists():
+                    continue
+                raw = _nano_load_signal(symbol)
+                if not raw:
+                    continue
+                ts = str(raw.get("timestamp_utc") or "")
+                if ts and ts == last_emitted_ts.get(symbol):
+                    continue
+                last_emitted_ts[symbol] = ts
+                await sio.emit(
+                    "nanofenix:signal",
+                    {
+                        "symbol": symbol,
+                        "signal": raw,
+                        "release": _NANO_RELEASE_INFO,
+                    },
+                )
+        except Exception as exc:  # broadcaster must never die
+            logger.error(f"NanoFenix broadcast error: {exc}")
+        await asyncio.sleep(5)
 
 
 def build_system_metrics() -> dict:
@@ -448,13 +534,14 @@ def _summarize_metrics(metrics: dict) -> dict:
         "cpu": metrics.get("cpu", {}).get("usage", 0),
         "memory": metrics.get("memory", {}).get("percentage", 0),
         "disk": metrics.get("disk", {}).get("percentage", 0),
-        "network": metrics.get("network", {}).get("bytes_in", 0) + metrics.get("network", {}).get("bytes_out", 0),
+        "network": metrics.get("network", {}).get("bytes_in", 0)
+        + metrics.get("network", {}).get("bytes_out", 0),
         "process": metrics.get("process", {}).get("uptime", 0),
         "timestamp": datetime.utcnow().isoformat(),
     }
 
 
-async def _fetch_ticker(symbol: str) -> Optional[dict]:
+async def _fetch_ticker(symbol: str) -> dict | None:
     """Get 24h ticker data from Binance; returns None on failure."""
     testnet = engine.paper_trading if engine else True
     symbol_upper = symbol.upper()
@@ -517,21 +604,23 @@ def _build_scorecards(outputs: list[AgentOutput]) -> list[dict]:
         avg_conf = sum(o.confidence for o in items) / total if total else 0.0
         accuracy = success / total if total else 0.0
 
-        scorecards.append({
-            "id": str(uuid.uuid4()),
-            "agent_id": agent_id,
-            "agent_name": items[0].agent_name if items else agent_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "total_signals": total,
-            "successful_signals": success,
-            "failed_signals": failed,
-            "accuracy": accuracy,
-            "average_confidence": avg_conf,
-            "win_rate": accuracy,
-            "profit_factor": 1.0,
-            "max_drawdown": 0.0,
-            "sharpe_ratio": 1.0,
-        })
+        scorecards.append(
+            {
+                "id": str(uuid.uuid4()),
+                "agent_id": agent_id,
+                "agent_name": items[0].agent_name if items else agent_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "total_signals": total,
+                "successful_signals": success,
+                "failed_signals": failed,
+                "accuracy": accuracy,
+                "average_confidence": avg_conf,
+                "win_rate": accuracy,
+                "profit_factor": 1.0,
+                "max_drawdown": 0.0,
+                "sharpe_ratio": 1.0,
+            }
+        )
 
     return scorecards
 
@@ -586,22 +675,36 @@ def _engine_config_payload(engine: TradingEngine | None) -> dict:
 
 
 async def _restart_engine_with_config(
-    symbol: Optional[str] = None,
-    timeframe: Optional[str] = None,
-    paper_trading: Optional[bool] = None,
-    allow_live_trading: Optional[bool] = None,
-    enable_visual_agent: Optional[bool] = None,
-    enable_sentiment_agent: Optional[bool] = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    paper_trading: bool | None = None,
+    allow_live_trading: bool | None = None,
+    enable_visual_agent: bool | None = None,
+    enable_sentiment_agent: bool | None = None,
 ):
     """Restart engine with new configuration requested by the UI."""
     global engine, _engine_task
 
     current_symbol = symbol or (engine.symbol if engine else "BTCUSDT")
     current_timeframe = timeframe or (engine.timeframe if engine else "15m")
-    current_paper = paper_trading if paper_trading is not None else (engine.paper_trading if engine else True)
-    current_live = allow_live_trading if allow_live_trading is not None else (engine.allow_live_trading if engine else False)
-    current_visual = enable_visual_agent if enable_visual_agent is not None else (getattr(engine, "enable_visual", True))
-    current_sentiment = enable_sentiment_agent if enable_sentiment_agent is not None else (getattr(engine, "enable_sentiment", True))
+    current_paper = (
+        paper_trading if paper_trading is not None else (engine.paper_trading if engine else True)
+    )
+    current_live = (
+        allow_live_trading
+        if allow_live_trading is not None
+        else (engine.allow_live_trading if engine else False)
+    )
+    current_visual = (
+        enable_visual_agent
+        if enable_visual_agent is not None
+        else (getattr(engine, "enable_visual", True))
+    )
+    current_sentiment = (
+        enable_sentiment_agent
+        if enable_sentiment_agent is not None
+        else (getattr(engine, "enable_sentiment", True))
+    )
 
     if engine:
         await engine.stop()
@@ -623,7 +726,9 @@ async def _restart_engine_with_config(
 
     return _engine_config_payload(engine)
 
+
 # --- API Endpoints ---
+
 
 @app.get("/api/system/status")
 async def get_system_status():
@@ -743,6 +848,7 @@ async def reset_system_settings(section: str):
     # TODO: implement persistent storage or config file
     return {"success": True, "section": section, "settings": _SYSTEM_SETTINGS[section]}
 
+
 @app.get("/api/system/alerts")
 async def get_alerts():
     alerts: list[dict] = []
@@ -773,6 +879,7 @@ async def get_health():
     ]
     return {"components": components}
 
+
 @app.get("/api/system/connections")
 async def get_connections():
     connections = _build_connection_status()
@@ -791,11 +898,13 @@ async def get_metrics_history(timeframe: str = Query("1h")):
     history = list(_METRICS_HISTORY)[-window:]
     return {"metrics": history}
 
+
 @app.post("/api/engine/start")
 async def start_engine():
     if engine and not engine.get_status().get("running"):
         asyncio.create_task(engine.start())
     return {"status": "started"}
+
 
 @app.post("/api/engine/stop")
 async def stop_engine():
@@ -824,13 +933,14 @@ async def update_engine_config(payload: EngineConfigUpdate):
 
 # ============ Trading Endpoints ============
 
+
 @app.get("/api/trading/orders")
-async def get_orders(status: Optional[str] = Query(None), db: AsyncSession = Depends(get_db)):
+async def get_orders(status: str | None = Query(None), db: AsyncSession = Depends(get_db)):
     """Get all orders, optionally filtered by status."""
     query = select(Order).order_by(desc(Order.created_at))
     if status:
         query = query.where(Order.status == status)
-    
+
     result = await db.execute(query)
     orders = result.scalars().all()
     return {"orders": orders}
@@ -852,7 +962,7 @@ async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
-    
+
     # In production, this would send to the exchange
     if engine:
         try:
@@ -860,7 +970,7 @@ async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
             new_order.status = "filled"
             new_order.filled_quantity = order.quantity
             new_order.updated_at = datetime.utcnow()
-            
+
             # Add to trade history
             trade = Trade(
                 id=str(uuid.uuid4()),
@@ -873,23 +983,24 @@ async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
                 executed_at=datetime.utcnow(),
             )
             db.add(trade)
-            
+
             # Emit via socket
-            await sio.emit('orderUpdate', {
-                "id": new_order.id, "status": new_order.status, "symbol": new_order.symbol
-            })
-            await sio.emit('tradeExecuted', {
-                "id": trade.id, "symbol": trade.symbol, "price": trade.price
-            })
-            
+            await sio.emit(
+                "orderUpdate",
+                {"id": new_order.id, "status": new_order.status, "symbol": new_order.symbol},
+            )
+            await sio.emit(
+                "tradeExecuted", {"id": trade.id, "symbol": trade.symbol, "price": trade.price}
+            )
+
         except Exception as e:
             new_order.status = "rejected"
             logger.error(f"Order execution failed: {e}")
-    
+
     db.add(new_order)
     await db.commit()
     await db.refresh(new_order)
-    
+
     # Convert to dict for response (Pydantic expects dict or object with attributes)
     return {
         "id": new_order.id,
@@ -911,15 +1022,15 @@ async def cancel_order(order_id: str = Path(...), db: AsyncSession = Depends(get
     """Cancel an order by ID."""
     result = await db.execute(select(Order).where(Order.id == order_id))
     order = result.scalar_one_or_none()
-    
+
     if order and order.status == "pending":
         order.status = "cancelled"
         order.updated_at = datetime.utcnow()
         await db.commit()
-        
-        await sio.emit('orderUpdate', {"id": order.id, "status": "cancelled"})
+
+        await sio.emit("orderUpdate", {"id": order.id, "status": "cancelled"})
         return {"message": "Order cancelled", "order": {"id": order.id, "status": "cancelled"}}
-    
+
     raise HTTPException(status_code=404, detail="Order not found or cannot be cancelled")
 
 
@@ -943,7 +1054,7 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
                 "opened_at": pos.get("opened_at", datetime.utcnow().isoformat()),
             }
             return {"positions": [position]}
-    
+
     # Fallback to DB positions
     result = await db.execute(select(Position).where(Position.is_open == True))
     positions = result.scalars().all()
@@ -953,21 +1064,21 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
 @app.get("/api/trading/history")
 async def get_trade_history(
     limit: int = Query(50, ge=1, le=500),
-    symbol: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db)
+    symbol: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get trade history."""
     query = select(Trade).order_by(desc(Trade.executed_at)).limit(limit)
     if symbol:
         query = query.where(Trade.symbol == symbol)
-    
+
     result = await db.execute(query)
     trades = result.scalars().all()
     return {"trades": trades}
 
 
 @app.get("/api/trading/market")
-async def get_market_data(symbol: Optional[str] = Query(None)):
+async def get_market_data(symbol: str | None = Query(None)):
     """Return live market snapshot using engine stream with Binance fallback."""
     target_symbol = (symbol or (engine.symbol if engine else "BTCUSDT")).upper()
 
@@ -997,6 +1108,7 @@ async def get_market_data(symbol: Optional[str] = Query(None)):
 
 # ============ Agent Endpoints ============
 
+
 @app.get("/api/agents")
 async def get_agents(db: AsyncSession = Depends(get_db)):
     """Get all registered agents enriched with live performance when available."""
@@ -1025,12 +1137,14 @@ async def get_agents(db: AsyncSession = Depends(get_db)):
             "average_confidence": card.get("average_confidence", 0.0) if card else 0.0,
         }
 
-        agents.append({
-            **agent,
-            "status": "active" if running else "inactive",
-            "last_run": datetime.utcnow().isoformat(),
-            "performance": performance,
-        })
+        agents.append(
+            {
+                **agent,
+                "status": "active" if running else "inactive",
+                "last_run": datetime.utcnow().isoformat(),
+                "performance": performance,
+            }
+        )
 
     return {"agents": agents, "data": agents}
 
@@ -1038,27 +1152,37 @@ async def get_agents(db: AsyncSession = Depends(get_db)):
 @app.get("/api/agents/outputs")
 async def get_agent_outputs(
     timeframe: str = Query("24h"),
-    agent_id: Optional[str] = Query(None),
+    agent_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Get recent agent outputs/reasoning."""
     query = select(AgentOutput).order_by(desc(AgentOutput.timestamp)).limit(limit)
     if agent_id:
         query = query.where(AgentOutput.agent_id == agent_id)
-    
+
     result = await db.execute(query)
     outputs = result.scalars().all()
     return {"outputs": outputs, "data": outputs}
 
 
 @app.get("/api/reasoning")
-async def get_reasoning_entries(agent_name: Optional[str] = None, limit: int = 20):
+async def get_reasoning_entries(agent_name: str | None = None, limit: int = 20):
     """Return recent entries from ReasoningBank for an agent or all agents."""
     try:
         reasoning_bank = get_reasoning_bank()
-        agents = [agent_name] if agent_name else [
-            'technical_agent', 'qabba_agent', 'sentiment_agent', 'visual_agent', 'decision_agent', 'risk_manager']
+        agents = (
+            [agent_name]
+            if agent_name
+            else [
+                "technical_agent",
+                "qabba_agent",
+                "sentiment_agent",
+                "visual_agent",
+                "decision_agent",
+                "risk_manager",
+            ]
+        )
         result = {}
         for ag in agents:
             try:
@@ -1093,13 +1217,13 @@ async def add_agent_output(output: AgentOutputResponse, db: AsyncSession = Depen
         reasoning=output.reasoning,
         decision=output.decision,
         confidence=output.confidence,
-        input_summary=output.input_summary
+        input_summary=output.input_summary,
     )
-    
+
     db.add(new_output)
     await db.commit()
     await db.refresh(new_output)
-    
+
     output_dict = {
         "id": new_output.id,
         "agent_id": new_output.agent_id,
@@ -1108,13 +1232,13 @@ async def add_agent_output(output: AgentOutputResponse, db: AsyncSession = Depen
         "reasoning": new_output.reasoning,
         "decision": new_output.decision,
         "confidence": new_output.confidence,
-        "input_summary": new_output.input_summary
+        "input_summary": new_output.input_summary,
     }
-    
+
     # Emit via socket
-    await sio.emit('agentOutput', output_dict)
-    await sio.emit('agent:reasoning', output_dict)
-    
+    await sio.emit("agentOutput", output_dict)
+    await sio.emit("agent:reasoning", output_dict)
+
     return output_dict
 
 
@@ -1129,10 +1253,10 @@ async def get_agent_scorecards(db: AsyncSession = Depends(get_db)):
 
 @app.get("/api/reasoning-bank/logs")
 async def get_reasoning_bank_logs(
-    agent_id: Optional[str] = Query(None),
+    agent_id: str | None = Query(None),
     timeframe: str = Query("24h"),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Compatibility layer for the frontend Reasoning Bank view."""
     # reuse AgentOutput query
@@ -1152,7 +1276,9 @@ async def get_reasoning_bank_logs(
 
 
 @app.get("/api/reasoning/analytics")
-async def get_reasoning_analytics(timeframe: str = Query("24h"), db: AsyncSession = Depends(get_db)):
+async def get_reasoning_analytics(
+    timeframe: str = Query("24h"), db: AsyncSession = Depends(get_db)
+):
     """Provide lightweight analytics for the reasoning dashboard."""
     cutoff_map = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
     cutoff_delta = cutoff_map.get(timeframe)
@@ -1167,7 +1293,9 @@ async def get_reasoning_analytics(timeframe: str = Query("24h"), db: AsyncSessio
 
 
 @app.get("/api/reasoning/consensus")
-async def get_reasoning_consensus(timeframe: str = Query("24h"), db: AsyncSession = Depends(get_db)):
+async def get_reasoning_consensus(
+    timeframe: str = Query("24h"), db: AsyncSession = Depends(get_db)
+):
     """Provide a simple consensus signal per agent for the UI."""
     cutoff_map = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
     cutoff_delta = cutoff_map.get(timeframe)
@@ -1187,15 +1315,17 @@ async def get_reasoning_consensus(timeframe: str = Query("24h"), db: AsyncSessio
     total_agents = len(grouped)
     for agent_id, items in grouped.items():
         avg_confidence = sum(o.confidence for o in items) / len(items) if items else 0.0
-        consensus_payload.append({
-            "agent_id": agent_id,
-            "agent_name": items[0].agent_name if items else agent_id,
-            "consensus_score": avg_confidence,
-            "agreement_count": len(items),
-            "total_agents": total_agents,
-            "dominant_sentiment": "bullish" if avg_confidence >= 0.6 else "neutral",
-            "confidence": avg_confidence,
-        })
+        consensus_payload.append(
+            {
+                "agent_id": agent_id,
+                "agent_name": items[0].agent_name if items else agent_id,
+                "consensus_score": avg_confidence,
+                "agreement_count": len(items),
+                "total_agents": total_agents,
+                "dominant_sentiment": "bullish" if avg_confidence >= 0.6 else "neutral",
+                "confidence": avg_confidence,
+            }
+        )
 
     return consensus_payload
 
@@ -1203,7 +1333,7 @@ async def get_reasoning_consensus(timeframe: str = Query("24h"), db: AsyncSessio
 @app.get("/api/market/data/{symbol}")
 async def get_market_series(
     symbol: str = Path(...),
-    interval: Optional[str] = Query(None),
+    interval: str | None = Query(None),
     limit: int = Query(120, ge=10, le=500),
 ):
     """Return real kline series for charting."""
@@ -1226,7 +1356,7 @@ async def get_market_series(
 
 
 @app.get("/api/market/overview")
-async def get_market_overview(symbols: Optional[str] = Query(None)):
+async def get_market_overview(symbols: str | None = Query(None)):
     """Return 24h overview for a handful of symbols used by the dashboard."""
     default_symbols = [
         engine.symbol if engine else "BTCUSDT",
@@ -1236,7 +1366,9 @@ async def get_market_overview(symbols: Optional[str] = Query(None)):
         "ADAUSDT",
     ]
 
-    symbol_list = [s.strip().upper() for s in (symbols.split(",") if symbols else default_symbols) if s.strip()]
+    symbol_list = [
+        s.strip().upper() for s in (symbols.split(",") if symbols else default_symbols) if s.strip()
+    ]
 
     markets: list[dict] = []
     for sym in symbol_list:
@@ -1244,17 +1376,19 @@ async def get_market_overview(symbols: Optional[str] = Query(None)):
         if not ticker:
             continue
 
-        markets.append({
-            "symbol": sym,
-            "price": float(ticker.get("lastPrice", 0)),
-            "change_percent": float(ticker.get("priceChangePercent", 0)),
-            "price_change": float(ticker.get("priceChange", 0)),
-            "volume": float(ticker.get("volume", 0)),
-            "quote_volume": float(ticker.get("quoteVolume", 0)),
-            "high_24h": float(ticker.get("highPrice", 0)),
-            "low_24h": float(ticker.get("lowPrice", 0)),
-            "timestamp": datetime.utcnow().isoformat(),
-        })
+        markets.append(
+            {
+                "symbol": sym,
+                "price": float(ticker.get("lastPrice", 0)),
+                "change_percent": float(ticker.get("priceChangePercent", 0)),
+                "price_change": float(ticker.get("priceChange", 0)),
+                "volume": float(ticker.get("volume", 0)),
+                "quote_volume": float(ticker.get("quoteVolume", 0)),
+                "high_24h": float(ticker.get("highPrice", 0)),
+                "low_24h": float(ticker.get("lowPrice", 0)),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
 
     if not markets:
         raise HTTPException(status_code=503, detail="No market overview data available")
@@ -1269,12 +1403,13 @@ async def subscribe_agents(sid):
 
 # ============ ReasoningBank Endpoints ============
 
+
 @app.get("/api/reasoning/entries")
 async def get_reasoning_entries(
-    agent_id: Optional[str] = Query(None),
-    decision: Optional[str] = Query(None),
+    agent_id: str | None = Query(None),
+    decision: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Get reasoning entries from ReasoningBank."""
     query = select(AgentOutput).order_by(desc(AgentOutput.timestamp)).limit(limit)
@@ -1282,7 +1417,7 @@ async def get_reasoning_entries(
         query = query.where(AgentOutput.agent_id == agent_id)
     if decision:
         query = query.where(AgentOutput.decision == decision)
-        
+
     result = await db.execute(query)
     entries = result.scalars().all()
     return {"entries": entries}
@@ -1292,7 +1427,7 @@ async def get_reasoning_entries(
 async def search_reasoning(
     query: str = Query(..., min_length=3),
     limit: int = Query(10, ge=1, le=50),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Semantic search in ReasoningBank."""
     # Simple text search for now
@@ -1304,20 +1439,25 @@ async def search_reasoning(
 
 # --- Socket IO Events ---
 
+
 @sio.event
 async def connect(sid, environ):
     logger.info(f"Socket connected: {sid}")
+
 
 @sio.event
 async def disconnect(sid):
     logger.info(f"Socket disconnected: {sid}")
 
+
 @sio.on("subscribe:system")
 async def subscribe_system(sid):
     logger.info(f"Client {sid} subscribed to system")
 
+
 if __name__ == "__main__":
     import uvicorn
+
     allow_expose_api = os.getenv("ALLOW_EXPOSE_API", "false").lower() == "true"
     host = "0.0.0.0" if allow_expose_api else "127.0.0.1"
     if allow_expose_api:

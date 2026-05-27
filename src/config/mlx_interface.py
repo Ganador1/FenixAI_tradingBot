@@ -4,14 +4,13 @@ MLX Interface - Provides compatibility layer for MLX models
 """
 
 import logging
-import asyncio
 import os
 import time
-from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
+from typing import Any
 
 # Check if MLX is disabled via environment variable
-MLX_DISABLED = os.getenv('DISABLE_MLX', '0') == '1'
+MLX_DISABLED = os.getenv("DISABLE_MLX", "0") == "1"
 
 # MLX imports with fallback
 if MLX_DISABLED:
@@ -23,8 +22,9 @@ if MLX_DISABLED:
 else:
     try:
         import mlx.core as mx
-        from mlx_lm.utils import load
         from mlx_lm.generate import generate
+        from mlx_lm.utils import load
+
         MLX_AVAILABLE = True
         logging.getLogger(__name__).info("✅ MLX detectado y disponible correctamente")
     except ImportError as e:
@@ -38,22 +38,25 @@ from .mlx_models import MODEL_CONFIGS
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class MLXResponse:
     """Response from MLX model inference"""
+
     content: str
     model: str
     created_at: str
     done: bool
 
+
 class MLXClient:
     """
     MLX Client that provides Ollama-compatible interface
     """
-    
+
     def __init__(self):
-        self.model_cache: Dict[str, tuple] = {}
-        self.current_model: Optional[str] = None  # Track currently loaded model
+        self.model_cache: dict[str, tuple] = {}
+        self.current_model: str | None = None  # Track currently loaded model
         self.max_models_in_memory: int = 1  # Only allow 1 model at a time
         if not MLX_AVAILABLE:
             logger.warning("MLX not available. Running in compatibility mode.")
@@ -63,9 +66,9 @@ class MLXClient:
         # Ensure MLX Home is configured to point to a folder with enough space.
         # Prefer the explicit env var MLX_HOME, fallback to XDG_CACHE_HOME or the repo cache.
         try:
-            if not os.getenv('MLX_HOME'):
-                suggested = os.path.join(os.path.abspath(os.getcwd()), 'cache', 'mlx')
-                os.environ['MLX_HOME'] = suggested
+            if not os.getenv("MLX_HOME"):
+                suggested = os.path.join(os.path.abspath(os.getcwd()), "cache", "mlx")
+                os.environ["MLX_HOME"] = suggested
                 logger.info(f"⚠️ MLX_HOME unset, defaulting to: {suggested}")
         except Exception as e:
             logger.debug(f"Could not set MLX_HOME: {e}")
@@ -92,28 +95,30 @@ class MLXClient:
             logger.info(f"Using cached MLX model: {model_name}")
             self.current_model = model_name  # Update current model tracker
             return self.model_cache[model_name]
-        
+
         if not MLX_AVAILABLE:
             raise RuntimeError("MLX not available")
-        
+
         # If we have a different model loaded, clear it first (ONE MODEL AT A TIME)
         if self.model_cache and self.current_model != model_name:
-            logger.info(f"🔄 Switching from {self.current_model} to {model_name} - clearing memory first")
+            logger.info(
+                f"🔄 Switching from {self.current_model} to {model_name} - clearing memory first"
+            )
             self._clear_memory()
-        
+
         try:
             model_path = MODEL_CONFIGS[model_name]["path"]
             logger.info(f"🔧 Loading MLX model from path: {model_path}")
-            
+
             if not MLX_AVAILABLE or load is None:
                 raise RuntimeError("MLX load function not available")
-                
+
             model, tokenizer = load(model_path)
             self.model_cache[model_name] = (model, tokenizer)
             self.current_model = model_name
             logger.info(f"✅ Successfully loaded model: {model_name}")
             return model, tokenizer
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to load model {model_name}: {e}")
             raise
@@ -123,20 +128,20 @@ class MLXClient:
         if not MLX_AVAILABLE:
             logger.error("MLX not available - cannot generate real response")
             return '{"status": "error", "reasoning": "MLX no está disponible"}'
-        
+
         try:
             # Load the model (this will automatically unload others if needed)
             model, tokenizer = self._load_model(model_name)
             config = MODEL_CONFIGS.get(model_name, {})
-            
+
             # Extract generation parameters from kwargs and config
             max_tokens = kwargs.get("max_tokens", config.get("max_tokens", 1024))
-            
+
             logger.info(f"🤖 MLX: Generating with {model_name} (max_tokens: {max_tokens})")
-            
+
             if not MLX_AVAILABLE or generate is None:
                 raise RuntimeError("MLX generate function not available")
-            
+
             # Set up generation arguments for **kwargs only - minimal set for compatibility
             gen_kwargs = {
                 "max_tokens": max_tokens,
@@ -144,16 +149,16 @@ class MLXClient:
 
             # Call generate with correct positional arguments
             response = generate(model, tokenizer, prompt, **gen_kwargs)
-            
+
             logger.info(f"✅ MLX: Generated {len(response)} chars with {model_name}")
-            
+
             return response
-            
+
         except Exception as e:
             logger.error(f"❌ MLX: Error generating response with {model_name}: {e}")
             return f'{{"status": "error", "message": "MLX Error: {str(e)[:100]}"}}'
 
-    def chat(self, model: str, messages: List[Dict[str, Any]], **kwargs) -> MLXResponse:
+    def chat(self, model: str, messages: list[dict[str, Any]], **kwargs) -> MLXResponse:
         """Chat completion compatible with Ollama interface"""
         try:
             prompt = self._convert_messages_to_prompt(messages)
@@ -166,9 +171,11 @@ class MLXClient:
             )
         except Exception as e:
             logger.error(f"Error in chat completion: {e}")
-            return MLXResponse(content=f"Error: {str(e)}", model=model, created_at=str(time.time()), done=True)
+            return MLXResponse(
+                content=f"Error: {str(e)}", model=model, created_at=str(time.time()), done=True
+            )
 
-    def _convert_messages_to_prompt(self, messages: List[Dict[str, Any]]) -> str:
+    def _convert_messages_to_prompt(self, messages: list[dict[str, Any]]) -> str:
         """Convert OpenAI-style messages to prompt format"""
         prompt_parts = []
         for message in messages:
@@ -182,10 +189,14 @@ class MLXClient:
         """Generate completion compatible with Ollama interface"""
         try:
             response_text = self._generate_response(model, prompt, **kwargs)
-            return MLXResponse(content=response_text, model=model, created_at=str(time.time()), done=True)
+            return MLXResponse(
+                content=response_text, model=model, created_at=str(time.time()), done=True
+            )
         except Exception as e:
             logger.error(f"Error in generate: {e}")
-            return MLXResponse(content=f"Error: {str(e)}", model=model, created_at=str(time.time()), done=True)
+            return MLXResponse(
+                content=f"Error: {str(e)}", model=model, created_at=str(time.time()), done=True
+            )
 
     def force_memory_cleanup(self):
         """Force cleanup of all models to free memory"""
@@ -194,6 +205,7 @@ class MLXClient:
             self._clear_memory()
             # Force garbage collection
             import gc
+
             gc.collect()
             # Additional MLX-specific cleanup
             if MLX_AVAILABLE and mx is not None:
@@ -209,31 +221,37 @@ class MLXClient:
         Descarga todos los otros modelos y limpia la memoria agresivamente.
         """
         logger.info(f"🎯 Preparando sistema para modelo de visión: {vision_model_name}")
-        
+
         # 1. Forzar limpieza completa de memoria
         self.force_memory_cleanup()
-        
+
         # 2. Esperar un momento para que la limpieza se complete
         import time
+
         time.sleep(1)
-        
+
         # 3. Verificar que no hay modelos cargados
         if self.model_cache:
-            logger.warning(f"⚠️ Modelos aún en memoria después de limpieza: {list(self.model_cache.keys())}")
+            logger.warning(
+                f"⚠️ Modelos aún en memoria después de limpieza: {list(self.model_cache.keys())}"
+            )
             self._clear_memory()
-        
+
         # 4. Verificar memoria del sistema
         memory_info = self.get_memory_info()
         logger.info(f"📊 Memoria del proceso: {memory_info['process_memory_mb']} MB")
-        
+
         # 5. Si la memoria es muy alta, forzar garbage collection adicional
-        if memory_info['process_memory_mb'] > 2000:  # Si usa más de 2GB
-            logger.warning(f"⚠️ Memoria alta ({memory_info['process_memory_mb']} MB), forzando limpieza adicional")
+        if memory_info["process_memory_mb"] > 2000:  # Si usa más de 2GB
+            logger.warning(
+                f"⚠️ Memoria alta ({memory_info['process_memory_mb']} MB), forzando limpieza adicional"
+            )
             import gc
+
             for _ in range(3):
                 gc.collect()
             time.sleep(0.5)
-        
+
         logger.info(f"✅ Sistema preparado para modelo de visión: {vision_model_name}")
 
     def get_memory_status(self) -> dict:
@@ -242,27 +260,30 @@ class MLXClient:
             "loaded_models": list(self.model_cache.keys()),
             "current_model": self.current_model,
             "models_count": len(self.model_cache),
-            "max_models": self.max_models_in_memory
+            "max_models": self.max_models_in_memory,
         }
 
     def get_memory_info(self) -> dict:
         """Get detailed memory information"""
-        import psutil
         import os
-        
+
+        import psutil
+
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
-        
+
         return {
             "process_memory_mb": round(memory_info.rss / 1024 / 1024, 2),
             "loaded_models": list(self.model_cache.keys()),
             "current_model": self.current_model,
             "models_count": len(self.model_cache),
-            "max_models": self.max_models_in_memory
+            "max_models": self.max_models_in_memory,
         }
+
 
 # Global client instance
 _global_mlx_client = None
+
 
 def get_client() -> MLXClient:
     """Get global MLX client instance (singleton pattern)"""
@@ -271,6 +292,7 @@ def get_client() -> MLXClient:
         _global_mlx_client = MLXClient()
         logger.info("🔧 Created global MLX client instance")
     return _global_mlx_client
+
 
 def reset_global_client():
     """Reset global client instance (useful for testing)"""

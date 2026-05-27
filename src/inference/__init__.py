@@ -4,7 +4,8 @@ Exposes provider registry and optional clients without forcing heavy imports.
 """
 
 # Exponer registry y setup_default_providers siempre
-from .provider_registry import registry as ProviderRegistry, setup_default_providers
+from .provider_registry import registry as ProviderRegistry
+from .provider_registry import setup_default_providers
 
 # Proveedores opcionales: importar de forma segura
 try:
@@ -33,15 +34,15 @@ except Exception:
 
 # Construir __all__ solo con símbolos disponibles
 __all__ = []
-if 'ProviderRegistry' in globals():
-    __all__.append('ProviderRegistry')
-if 'setup_default_providers' in globals():
-    __all__.append('setup_default_providers')
+if "ProviderRegistry" in globals():
+    __all__.append("ProviderRegistry")
+if "setup_default_providers" in globals():
+    __all__.append("setup_default_providers")
 if HFInferenceProvider is not None:
-    __all__.append('HFInferenceProvider')
+    __all__.append("HFInferenceProvider")
 if MLXProvider is not None:
-    __all__.append('MLXProvider')
+    __all__.append("MLXProvider")
 if OllamaProvider is not None:
-    __all__.append('OllamaProvider')
+    __all__.append("OllamaProvider")
 if HuggingFaceInferenceClient is not None:
-    __all__.append('HuggingFaceInferenceClient')
+    __all__.append("HuggingFaceInferenceClient")

@@ -1,9 +1,11 @@
 """Helpers to start monitoring components without cluttering live_trading."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 AlertTaskFactory = Callable[[float], Awaitable[None]]
 
@@ -11,13 +13,13 @@ AlertTaskFactory = Callable[[float], Awaitable[None]]
 def bootstrap_monitoring_systems(
     logger: logging.Logger,
     monitoring_enabled: bool,
-    dashboard: Optional[Any] = None,
-    metrics_collector: Optional[Any] = None,
-    alert_task_factory: Optional[AlertTaskFactory] = None,
+    dashboard: Any | None = None,
+    metrics_collector: Any | None = None,
+    alert_task_factory: AlertTaskFactory | None = None,
     alert_interval: float = 60.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Start dashboard, metrics loop and alert task if available."""
-    results: Dict[str, Any] = {
+    results: dict[str, Any] = {
         "dashboard_started": False,
         "system_monitoring_started": False,
         "alert_task": None,
@@ -49,9 +51,7 @@ def bootstrap_monitoring_systems(
 
     if alert_task_factory is not None:
         try:
-            results["alert_task"] = asyncio.create_task(
-                alert_task_factory(alert_interval)
-            )
+            results["alert_task"] = asyncio.create_task(alert_task_factory(alert_interval))
             logger.info("🔔 Background alert checks task started")
         except Exception as exc:
             logger.debug(f"No se pudo iniciar la tarea de alertas: {exc}")

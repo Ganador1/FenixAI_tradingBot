@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦅 FenixAI Trading Bot v2.0
+# 🦅 FenixAI Trading Bot v2.5.0
 
 ### Autonomous Multi-Agent Cryptocurrency Trading System with Self-Evolving Memory
 
@@ -26,23 +26,20 @@
 
 ---
 
-> **⚠️ WARNING: This is a BETA project.** Fenix is under active development, is not yet profitable, and may not work as expected. Use at your own risk!
+> **⚠️ WARNING:** Fenix is under active development, is not yet proven profitable, and may not work as expected. Use at your own risk. Paper trading is strongly recommended before any live deployment.
 
-### 🦅 A Message from the Creator (v2.0)
+### 🦅 A Message from the Creator (v2.5)
 
-Hello, it has been 6 months since I launched the first version of Fenix. I have been on an incredible journey for six months, learning a ton about programming, LLMs, AI papers, and above all, experimenting a lot with Fenix.
+It has been a few months since v2.0. I've been testing the project 24/7 and brainstorming ways to make Fenix more reliable and capable of making better trades. After extensive testing, I am including in this v2.5 release the changes that have made a real, quantifiable impact on performance. 
 
-I have been doing hundreds of tests with both paper trading and live trading, testing different LLM configurations, different cryptocurrencies, different timeframes, adding and removing more agents, and I have learned a lot. I believe the main advantage of Fenix is that it evolves over time along with LLMs; they are getting smarter and it shows in their trading decisions.
+Among these improvements are the removal of the Sentiment agent, as well as refining the entry and exit logic with new rules, better indicators, and improved timing for decisions. Another upgrade that has provided a massive boost is **Nanofenix**, which introduces a classical ML model with live training. It acts as a strict filter for trades—preventing us from entering too early or too late—and improves the overall win rate by analyzing more input layers. Fenix now executes fewer trades, but the system is much safer and more confident when deciding on an entry or exit.
 
-So far, the best performance I have obtained is with large models of over 50b, but the main problem is that they are expensive and difficult to maintain privacy. I think the best option currently between price/privacy and large models is the Ollama cloud models which are expanding more and more, but without a doubt, I believe the best option will be to fine-tune several small models. Right now I am experimenting with that configuration.
+I will keep testing and improving Fenix. I know I don't push commits very often, but I strongly prefer to test everything exhaustively in a local environment before sharing my findings with you all, just to ensure everything is perfect. 
 
-But I didn't want to leave you any longer without updates, so this is **Version 2.0**. It now includes a nice and intuitive local page to make it more accessible to use. Regarding performance, what has improved the most is undoubtedly the **Reasoning Bank**; it helps agents not to make the same mistakes repeatedly and also to be right more often thanks to remembering. I am also experimenting with the new HOPE model that learns as it is used, but I still don't have a clear result to share.
+This version will be available as a new Release. If you prefer to revert to v2.0 (which is highly stable), you will still be able to do so.
 
-While I continue investigating and improving Fenix, I hope this new version can be useful to at least one person as inspiration or to test the new limits of trading.
+Thank you all so much for your massive support!
 
-Thank you for taking the time to read my words. I would appreciate it if you leave me a star, a comment in discussion, a contribution, advice, or some change on my BuyMeACoffee page.
-
-Thank you very much,
 **Ganador**
 
 ---
@@ -56,6 +53,84 @@ Thank you very much,
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Ganador1/FenixAI_tradingBot&type=Date" />
  </picture>
 </a>
+
+---
+
+## ✨ What's New in v2.5
+
+> **Reliability-focused release** — v2.5 brings short-timeframe latency work, a complete performance optimisation pass, NanoFenix v3.5 as a first-class companion signal, DeepSeek v4 cloud experiments, and a full suite of live/paper reliability fixes.
+
+### Core Engine & Latency
+
+| Improvement | Details |
+|-------------|---------|
+| **Hot-path nonblocking (1m/3m/5m)** | Critical path cycle dropped from ~140 ms → **~10–13 ms**. Technical and QABBA agents resolve cache/fallback before building prompts; LLM refreshes run in background. |
+| **Paper mode no-REST** | Paper trades no longer initialise `BinanceService` for balance; uses `FENIX_BALANCE_FALLBACK_USDT` to avoid ~1 s spikes per simulated trade. |
+| **Parallel agent graph** | Technical, QABBA, Sentiment, and Visual run in true parallel via LangGraph; background caches for charts, news, and balance. |
+| **Deterministic risk mode** | `FENIX_RISK_DETERMINISTIC=1` skips the Risk LLM entirely and computes ATR-based SL/TP/size — 15m full pipeline now runs in ~15 s (was ~57 s). |
+
+### Execution Reliability
+
+| Fix | Details |
+|-----|---------|
+| **Live position hydration** | On restart, if Binance already has an open position, the engine hydrates local state before assuming the account is flat — prevents duplicate entries. |
+| **Invalid-price guard** | Paper `trade:simulated` events and hybrid runner reject signals with `price = 0.0` before logging position transitions. |
+| **Algo protective order verification** | Order monitor now also checks `openAlgoOrders` (Binance 3xxxxxxx IDs), fixing false `PROTECTION_NOT_VERIFIED` alerts. |
+| **Failed execution risk isolation** | Failed live execution attempts no longer count as realized losing trades in the `RuntimeRiskManager` loss-streak counter. |
+| **Direction-aware SL/TP validation** | Risk agent validates SL is on the correct side of entry; example-copied BTC-like levels for SOL are replaced with deterministic ATR levels before execution. |
+| **Same-side entry prevention** | Engine skips same-side entries after hydration; `FENIX_ALLOW_ADD_TO_POSITION=1` enables intentional pyramiding. |
+
+### NanoFenix v3.5 — Companion Signal
+
+| Feature | Details |
+|---------|---------|
+| **Adaptive fusion** | `ENABLE_ADAPTIVE_FUSION=1` — multi-horizon blending adapts weights based on per-horizon calibration instead of fixed 0.4/0.6 split. |
+| **Fee-aware trailing** | `MIN_TRAILING_NET_PCT` gates trailing exits: position is only closed when estimated net PnL after round-trip fees exceeds the threshold — no more "wins" that lose money to fees. |
+| **Configurable hard-veto** | `FENIX_NANOFENIX_HARD_VETO_REASONS` — only critical reasons (direction mismatch, companion not ready, stale signal) unconditionally block execution; soft reasons (`low_pred_bps`) reduce size without blocking. |
+| **Companion readiness** | `COMPANION_MIN_DIR_SAMPLES` lowered from 80 → 10, allowing companion activation in the first few hundred bars. |
+
+### Agent Improvements (v2.1)
+
+| Improvement | Details |
+|-------------|---------|
+| **Tiered trailing stop** | Four profit tiers: 0–1% → 2.0%, 1–2% → 1.0%, 2–3% → 0.5%, >3% → 0.3% trailing. Trailing history tracked per trade. |
+| **Risk Manager soft-cap** | Instead of vetoing, the Risk Manager now caps position size to available exposure and approves the trade. |
+| **Agent weight rebalance** | Technical/QABBA raised to 0.35 each; Sentiment reduced to 0.05 (was 0.15) — reflects real-world reliability. |
+| **Decision Agent JSON fix** | Prompt payload trimmed to essential fields; timeout reduced 15 s → 12 s; fallback consensus improved. |
+| **Sentiment Agent cache** | 15-minute news cache (`_NEWS_CACHE_TTL_SEC=900`); payload and retries reduced for faster fallback. |
+
+### Timeframe-Aware Indicator System
+
+| Feature | Details |
+|---------|---------|
+| **Per-TF indicator profiles** | Database of 20+ indicators scored by timeframe, market regime, lag, and reliability. |
+| **CHOP / Donchian / Keltner** | Choppiness Index drives execution gating; Donchian breakout detection; Keltner Channels for TTM Squeeze. |
+| **Advanced indicators** | HMA, Fisher Transform, VWAP bands, Funding Rate extremes, Open Interest trend confirmation, CVD divergences. |
+| **Timeframe-aware SL/TP** | Long TF (15m/1h/4h): 4% default SL, 2.0 RR, 2× ATR. Short TF (1m/5m): 2% SL, 1.5 RR, 1.5× ATR. |
+
+### New LLM Integrations
+
+| Model | Role | Notes |
+|-------|------|-------|
+| **DeepSeek v4 Flash** (`deepseek-v4-flash:cloud`) | Technical / Decision | Fast, cost-efficient cloud inference |
+| **DeepSeek v4 Pro** (`deepseek-v4-pro:cloud`) | Full pipeline | Highest-accuracy cloud option tested |
+| **cogito-2.1:671b-cloud** | QABBA | Benchmark winner: 75–80% directional accuracy |
+| **nemotron-3-nano:30b-cloud** | Technical + Decision | 66.7% accuracy; most active decision model |
+| **glm-5:cloud** | Risk Manager | 77.8% activity rate, score 0.504 in benchmark |
+
+### v2.5 Benchmark Results (32 models tested)
+
+See [docs/benchmarks/BENCHMARK_FINAL_SUMMARY.md](./docs/benchmarks/BENCHMARK_FINAL_SUMMARY.md) for the full winner table.
+
+| Agent | Recommended Model | Accuracy |
+|-------|-------------------|---------|
+| QABBA | cogito-2.1:671b-cloud | 75–80% |
+| Technical | nemotron-3-nano:30b-cloud | 66.7% |
+| Visual | gemini-3-flash-preview:cloud | 55–75% |
+| Decision | nemotron-3-nano:30b-cloud | Score 0.450 |
+| Risk | glm-5:cloud | Score 0.504 |
+
+See [v2.5 release notes](./docs/releases/v2.5.md), [v2.5 new systems guide](./docs/releases/v2.5-new-systems.md), [NanoFenix HTF v2.5 changes](./docs/NANOFENIX_HTF_V2_5_CHANGES.md), and [release checklist](./RELEASE_CHECKLIST.md).
 
 ---
 
@@ -139,7 +214,7 @@ Both modes produce base64-encoded images that are analyzed by vision-capable LLM
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              FENIX AI v2.0                                  │
+│                              FENIX AI v2.5 RC                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────┐    ┌──────────────────────────────────────────────────┐    │
@@ -287,10 +362,10 @@ If you want to enable demo accounts for local development, set `CREATE_DEMO_USER
 
 ---
 
-## 🔐 Release v2.0 & Security Highlights
+## 🔐 Release v2.5 & Security Highlights
 
-- This release improves security defaults: API binds to `127.0.0.1` by default, demo users are gated, and secrets scanning is included in the developer workflow.
-- Please follow `RELEASE_CHECKLIST.md` before final releases. Dev-focused run instructions are in `DEVELOPMENT.md`.
+- This release-candidate cleanup keeps the security defaults from v2.0: API binds to `127.0.0.1` by default, demo users are gated, and secrets scanning is part of the developer workflow.
+- Please follow `RELEASE_CHECKLIST.md` before publishing. Dev-focused run instructions are in `DEVELOPMENT.md`.
 - Archived development reports can be found in `docs/archives/reports/`.
 - Demo credentials information moved to: `docs/security/docs/security/DEMO_CREDENTIALS.md`.
 
@@ -314,59 +389,67 @@ python run_fenix.py --mode live --allow-live  # Live trading (⚠️ real money)
 
 ```
 FenixAI/
-├── run_fenix.py              # Main entry point
+├── run_fenix.py              # Main entry point (paper / live / testnet)
+├── run_nanofenix*.py         # NanoFenix entry points (v1/v2/v3/live)
+├── run_hybrid_live_paper.py  # Hybrid live+paper runner
+├── run_minifenix*.py         # MiniFenix entry points
 ├── pyproject.toml            # Python project configuration
-├── package.json              # Node.js dependencies (API)
 │
 ├── src/
 │   ├── analysis/             # Technical analysis modules
 │   ├── api/                  # FastAPI server & WebSocket
-│   ├── cache/                # Caching utilities
+│   ├── cache/                # Caching utilities (AgentReportCache)
 │   ├── core/                 # LangGraph orchestrator
-│   │   └── langgraph_orchestrator.py
-│   ├── dashboard/            # Trading dashboard backend
+│   │   ├── langgraph_orchestrator.py
+│   │   └── orchestrator/
+│   │       ├── agents/       # Individual agent logic
+│   │       ├── agent_cache.py
+│   │       ├── state.py      # FenixAgentState TypedDict
+│   │       ├── validation.py
+│   │       └── retry_system.py
+│   ├── indicators/           # Timeframe-aware indicator system
+│   │   ├── timeframe_aware_indicators.py
+│   │   └── advanced_indicators.py
 │   ├── inference/            # Multi-provider LLM clients
 │   │   ├── providers/        # Ollama, MLX, Groq, HuggingFace
-│   │   ├── reasoning_judge.py
 │   │   └── unified_inference_client.py
-│   ├── memory/               # Memory systems
-│   │   ├── reasoning_bank.py # ReasoningBank implementation
-│   │   └── trade_memory.py   # Trade history storage
-│   ├── models/               # Data models & schemas
-│   ├── monitoring/           # System monitoring
-│   ├── pipeline/             # Data processing pipelines
+│   ├── memory/               # ReasoningBank + trade memory
+│   │   ├── reasoning_bank.py
+│   │   └── trade_memory.py
+│   ├── models/               # Pydantic models & DB schemas
 │   ├── prompts/              # Agent prompt templates
-│   ├── risk/                 # Risk management module
-│   ├── services/             # External service integrations
-│   ├── tools/                # Agent tools
-│   │   ├── chart_generator.py           # Chart generation with mplfinance
-│   │   ├── chart_generator_playwright.py
-│   │   ├── tradingview_playwright_capture.py
-│   │   ├── fear_greed.py                # Fear & Greed Index
-│   │   ├── twitter_scraper.py
-│   │   └── reddit_scraper.py
-│   ├── trading/              # Trading engine
-│   │   ├── engine.py         # Main trading engine
-│   │   ├── binance_client.py # Binance Futures client
-│   │   └── executor.py       # Order execution
-│   └── utils/                # Utility functions
+│   ├── risk/                 # Runtime risk manager + circuit breakers
+│   ├── security/             # SecureSecretsManager, path validation
+│   ├── services/             # Binance REST/WS service layer
+│   ├── tools/                # Chart generators, scrapers
+│   └── trading/              # Trading engine, executor, order monitor
+│       ├── engine.py         # Main trading engine
+│       ├── executor.py       # Order execution (timeframe-aware SL/TP)
+│       ├── trade_manager.py  # Tiered trailing stop, position tracking
+│       └── market_data.py    # Microstructure metrics + normalisation
+│
+├── nanofenixv3/              # NanoFenix v3.5 — ML companion signal
+│   ├── predictor.py          # Online LightGBM, adaptive fusion
+│   ├── executor.py           # Fee-aware trailing stop
+│   ├── feature_engine.py     # LOB microstructure features
+│   └── adaptive_fusion.py    # Multi-horizon blending
 │
 ├── config/
-│   ├── fenix.yaml            # Main configuration
+│   ├── fenix.yaml            # Main trading configuration
 │   ├── llm_providers.yaml    # LLM provider profiles
 │   └── settings.py           # Environment settings
 │
-├── frontend/                 # React + Vite dashboard
-│   ├── components/           # React components
-│   ├── pages/                # Page components
-│   ├── hooks/                # Custom React hooks
-│   ├── stores/               # State management
-│   └── providers/            # Context providers
-│
-├── api/                      # Express.js API (optional)
+├── frontend/                 # React + Vite + TypeScript dashboard
 ├── docs/                     # Documentation
-├── tests/                    # Test suite
+│   ├── analysis/             # Run analysis reports
+│   ├── benchmarks/           # Model benchmark results
+│   ├── research/             # Research papers and notes
+│   └── releases/             # Release notes per version
+├── tests/                    # Test suite (pytest, 300+ tests)
 ├── scripts/                  # Utility scripts
+│   ├── analysis/             # Run analysis scripts
+│   └── fixes/                # One-off patch scripts
+├── plans/                    # Experiment and improvement plans
 └── logs/                     # Application logs
 ```
 
@@ -568,23 +651,167 @@ You may obtain a copy of the License at
 
 ### Technologies
 
-- [LangGraph](https://langchain-ai.github.io/langgraph/) - Agent orchestration framework
-- [Ollama](https://ollama.ai/) - Local LLM inference
-- [MLX](https://github.com/ml-explore/mlx) - Apple Silicon optimized ML framework
-- [Groq](https://groq.com/) - Ultra-fast LLM inference
-- [HuggingFace](https://huggingface.co/) - Model hub and inference
-- [Binance](https://www.binance.com/) - Exchange API
-- [Playwright](https://playwright.dev/) - Browser automation for TradingView capture
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
-- [React](https://reactjs.org/) - Frontend framework
-- [TailwindCSS](https://tailwindcss.com/) - Utility-first CSS
-- [mplfinance](https://github.com/matplotlib/mplfinance) - Financial chart generation
+- [LangGraph](https://langchain-ai.github.io/langgraph/) — Agent orchestration framework (state-machine-based multi-agent graph)
+- [Ollama](https://ollama.ai/) — Local LLM inference with any GGUF model
+- [MLX](https://github.com/ml-explore/mlx) — Apple Silicon optimised ML framework (M1/M2/M3)
+- [Groq](https://groq.com/) — Ultra-fast cloud LLM inference
+- [HuggingFace](https://huggingface.co/) — Model hub and serverless inference API
+- [Binance](https://www.binance.com/) — Futures exchange API (testnet + production)
+- [Playwright](https://playwright.dev/) — Browser automation for TradingView chart capture
+- [FastAPI](https://fastapi.tiangolo.com/) — Async Python web framework
+- [React](https://reactjs.org/) — Frontend SPA framework
+- [TailwindCSS](https://tailwindcss.com/) — Utility-first CSS
+- [mplfinance](https://github.com/matplotlib/mplfinance) — Financial chart generation
+- [sentence-transformers](https://www.sbert.net/) — Semantic embeddings for ReasoningBank memory search
+- [LightGBM](https://lightgbm.readthedocs.io/) — Gradient boosting for NanoFenix return prediction
+- [SQLAlchemy 2.0](https://www.sqlalchemy.org/) + [Alembic](https://alembic.sqlalchemy.org/) — Async ORM and database migrations
 
-### 📚 Research Papers
+---
 
-- **ReasoningBank**: ["ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory"](https://arxiv.org/abs/2509.25140) - Ouyang et al., 2025
-  - Core memory architecture enabling agents to learn from past decisions
-  - Implements semantic retrieval, LLM-as-Judge, and memory-aware test-time scaling
+## 📚 Research & Inspiration
+
+FenixAI v2.5 draws on two distinct bodies of research: the **multi-agent LLM system** (Fenix core) and the **NanoFenix ML companion** (high-frequency microstructure predictor). Each component has its own set of inspirations.
+
+---
+
+### Fenix Core — Multi-Agent LLM System
+
+**[ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory](https://arxiv.org/abs/2509.25140)**
+Ouyang et al., arXiv:2509.25140, 2025
+
+> The core memory architecture of FenixAI. ReasoningBank enables agents to distil reasoning
+> strategies from successful and failed decisions, retrieve semantically similar historical context
+> at inference time, and use LLM-as-Judge feedback to continuously improve decision quality.
+> Fenix implements: semantic retrieval via sentence-transformers, experience distillation,
+> LLM-as-Judge evaluation, and memory-aware test-time scaling.
+
+**[Large Language Model-based Multi-Agent Systems for Trading Firms](https://arxiv.org/abs/2402.03755)**
+(Multi-agent role specialisation in financial LLM systems, 2024)
+
+> Inspires the specialised agent roles in Fenix: Technical, Sentiment, QABBA, Visual, Decision, and
+> Risk Manager mirror a professional trading desk structure. Empirical benchmarks in FenixAI show
+> multi-agent outperforms monolithic by +15.8 pp win rate and +$1.54 per trade.
+
+---
+
+### NanoFenix — High-Frequency ML Companion
+
+NanoFenix is a **zero-LLM, ultra-low-latency prediction engine** (~0.2 ms per prediction) that runs
+alongside Fenix as a microstructure companion signal. It uses online LightGBM with a 28-feature
+LOB-derived feature set and a dual-horizon consensus architecture.
+
+**[Learning Fast and Slow for Online Time Series Forecasting](https://arxiv.org/abs/2209.11278)**
+Pham et al., 2022 — *directly cited in `nanofenixv3/adaptive_fusion.py`*
+
+> The adaptive dual-horizon fusion in NanoFenix v3.5 is directly based on this paper.
+> NanoFenix maintains a "fast" short-horizon model (30 bars ≈ 30s) and a "slow" long-horizon
+> model (120 bars ≈ 2 min). Weights adapt dynamically by market regime (Trending / Chop /
+> Volatile / Dead) instead of using a fixed 0.4/0.6 blend.
+
+**[Deep Learning for Limit Order Books](https://arxiv.org/abs/1901.04555)**
+Wallbridge, 2020 — *DeepLOB architecture*
+
+> Informs the "V0 Deep LOB features" in the NanoFenix feature engine: WAP (Weighted Average Price)
+> distance, depth OBI (Order Book Imbalance across levels), and price pressure from the top-of-book.
+> NanoFenix uses a simplified subset of these features (no deep neural net) while keeping the same
+> LOB-derived signal logic.
+
+**[Order Flow Imbalance and Market Impact](https://arxiv.org/abs/1402.2011)**
+Cont, Kukanov & Stoikov, 2014
+
+> Theoretical foundation for the OBI and multi-level OFI features used across both the QABBA agent
+> and the NanoFenix feature engine. NanoFenix computes OBI at each 1s bar from bookTicker streams
+> and accumulates it as a multi-scale signal (5s, 15s, 30s, 60s, 120s, 300s).
+
+**[The Microstructure of Financial Markets](https://www.cambridge.org/core/books/microstructure-of-financial-markets/B2C81DC24B69A4CFEC91A0413E1BDC53)**
+De Jong & Rindi, 2009
+
+> Conceptual foundation for the regime detection logic in NanoFenix v1–v3: the system classifies
+> each bar into LONG / SHORT / NEUTRAL based on fast/slow OBI EMA crossover and price trend in bps
+> — a direct application of market microstructure theory (order flow driving short-term price
+> formation).
+
+**[Temporal Kolmogorov-Arnold Networks (T-KAN)](https://arxiv.org/abs/2405.07344)**
+Liu et al., 2024 — *targeted for NanoFenix v4 (planned)*
+
+> T-KAN replaces standard LSTM/RNN architectures with learnable B-Spline activation functions,
+> reducing alpha decay in LOB forecasting. NanoFenix v4 plans a hybrid LightGBM + T-KAN module
+> accelerated on Apple Neural Engine (MLX) consuming `@depth10` / `@depth20` data.
+
+**[Multi-Level Order Flow Imbalance with Siamese Networks](https://arxiv.org/abs/2110.06827)**
+(Deep OFI, 2021) — *targeted for NanoFenix v4 (planned)*
+
+> Motivates the "Vía 3" NanoFenix v4 architecture: processing bid and ask sides in parallel via
+> Siamese networks over full depth-10/20 tensor data to expose institutional walls invisible in the
+> top-of-book OBI.
+
+---
+
+### MiniFenix — Two-Speed Slow-Brain / Fast-Trigger Prototype
+
+MiniFenix is the research prototype that proved LLM reasoning should not sit on the hot path. It
+runs a slow loop (Ollama LLM, ~15 s cadence) that publishes a `TradingRegime` object and a fast
+loop (Binance WebSocket + LightGBM) that reads the regime without blocking. The lessons from
+MiniFenix directly shaped NanoFenix v3.5 and the live slot runners in v2.5.
+
+**[DeepLOB: Deep Convolutional Neural Networks for Limit Order Books](https://arxiv.org/abs/1808.03668)**
+Zhang, Zohren & Roberts, 2018 — *cited in `minifenix/feature_engine.py`*
+
+> Multi-level LOB feature design that informs the MiniFenix feature engine: depth-aware order
+> book features, normalised LOB tensors, and the multi-scale momentum / imbalance signals that
+> MiniFenix produces for its fast trigger.
+
+**[LOBCAST: A Benchmark Framework for Stock Price Forecasting from Limit Order Book Data](https://arxiv.org/abs/2308.01915)**
+Sangiorgio et al., 2023 — *cited in `minifenix/feature_engine.py`*
+
+> Comparative benchmark of 15 state-of-the-art LOB forecasting models. MiniFenix borrows the
+> standardised feature definitions and the train/test methodology, while keeping the actual
+> predictor lightweight (online LightGBM) so it can run on a single laptop alongside Fenix Core.
+
+---
+
+### LLM Providers & Model-Role Specialisation
+
+**[Ollama Cloud](https://ollama.com/) — Multi-model cloud inference**
+
+> v2.5 routes specialised model-role assignment through Ollama Cloud: Technical and QABBA use
+> Ministral-3 14B, Decision uses Nemotron-3-Nano 30B, Risk Manager uses DeepSeek's Devstral-Small-2
+> 24B. The recommended team is exposed by the `/api/v25/release-info` endpoint and forwarded
+> through `FENIX_TEAM_MODELS`.
+
+**[DeepSeek V4](https://www.deepseek.com/) — Frontier reasoning model**
+
+> Tested as an experimental Decision/Risk option via Ollama Cloud. The v2.5 release ships the
+> stable Nemotron + Devstral team by default and keeps DeepSeek V4 as a configurable opt-in until
+> more long-run benchmarks are available.
+
+---
+
+### Technical Analysis & Regime Detection
+
+**[The Choppiness Index](https://www.investopedia.com/terms/c/choppinessindex.asp)**
+E.W. Dreiss, 1993
+
+> The CHOP indicator (38.2–61.8 transition band) drives execution gating in the trading engine.
+> In transition, position size is reduced by `FENIX_FILTER_CHOP_SIZE_MULT`; in CHOP (≥61.8),
+> low-confidence signals are blocked entirely.
+
+**[TTM Squeeze](https://www.investopedia.com/terms/t/ttm-squeeze.asp)** — John Carter
+
+> TTM Squeeze detection (`bb_inside_kc`) is used by the QABBA agent as a momentum context cue.
+> A squeeze fires when Bollinger Bands collapse inside Keltner Channels; the release is treated
+> as a high-momentum breakout signal.
+
+---
+
+### Risk Management
+
+**[The Kelly Criterion in Blackjack, Sports Betting, and the Stock Market](https://www.eecs.harvard.edu/cs286r/courses/fall12/papers/Thorpe_KellyCriterion2007.pdf)**
+Thorp, 2007
+
+> Informs ATR-based position sizing and the Risk Manager soft-cap: size is bounded so a string
+> of losses cannot breach the configured daily drawdown limit, consistent with fractional Kelly
+> sizing principles.
 
 ---
 
@@ -601,6 +828,6 @@ You may obtain a copy of the License at
 
 *If you find this project useful, please consider giving it a ⭐!*
 
-[⬆ Back to Top](#-fenixai-trading-bot-v20)
+[⬆ Back to Top](#-fenixai-trading-bot-v25-release-candidate)
 
 </div>

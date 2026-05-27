@@ -15,28 +15,28 @@ Características:
 - Optimizado para timeframe 1min (prioriza velocidad)
 - Guarda resultados en tiempo real
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 import logging
+import statistics
 import time
-import random
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-import statistics
+
+from config.llm_provider_config import LLMProvidersConfig
 
 # Imports del proyecto
 from src.core.langgraph_orchestrator import (
     FenixTradingGraph,
     validate_agent_response,
-    AGENT_VALIDATION_RULES,
 )
 from src.tools.technical_tools import TechnicalAnalysisTools
-from config.llm_provider_config import LLMProvidersConfig
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProductionMetrics:
     """Métricas recolectadas en producción para un modelo-agente."""
+
     timestamp: str
     model: str
     agent: str
@@ -152,7 +153,9 @@ class ProductionModelRotator:
             elif agent == "risk_manager":
                 agent_config.update({"temperature": 0.15, "max_tokens": 1500})
             elif agent == "visual":
-                agent_config.update({"temperature": 0.05, "max_tokens": 1500, "supports_vision": True})
+                agent_config.update(
+                    {"temperature": 0.05, "max_tokens": 1500, "supports_vision": True}
+                )
 
             setattr(config, agent, agent_config)
 
@@ -210,7 +213,9 @@ class ProductionModelRotator:
             signal = report.get("signal", "HOLD")
         elif agent == "sentiment":
             sentiment = report.get("overall_sentiment", "NEUTRAL")
-            signal = "BUY" if sentiment == "POSITIVE" else "SELL" if sentiment == "NEGATIVE" else "HOLD"
+            signal = (
+                "BUY" if sentiment == "POSITIVE" else "SELL" if sentiment == "NEGATIVE" else "HOLD"
+            )
         elif agent == "visual":
             signal = report.get("action", "HOLD")
         elif agent == "qabba":
@@ -368,16 +373,16 @@ class ProductionModelRotator:
         # Seleccionar modelos a probar
         models_to_test = self.RECOMMENDED_FOR_1MIN
 
-        logger.info(f"🚀 Iniciando rotación en producción")
+        logger.info("🚀 Iniciando rotación en producción")
         logger.info(f"   Duración: {self.duration_hours}h")
         logger.info(f"   Ciclos por modelo: {self.cycles_per_model}")
         logger.info(f"   Modelos a probar: {len(models_to_test)}")
 
         cycle = 0
         for model in models_to_test:
-            logger.info(f"\n{'='*60}")
+            logger.info(f"\n{'=' * 60}")
             logger.info(f"🔧 Probando modelo: {model}")
-            logger.info(f"{'='*60}")
+            logger.info(f"{'=' * 60}")
 
             for i in range(self.cycles_per_model):
                 # Verificar tiempo límite
@@ -462,16 +467,20 @@ class ProductionModelRotator:
                 coherence_rate = sum(1 for m in metrics if m.signal_coherent) / len(metrics)
 
                 avg_latency = statistics.mean(latencies) if latencies else 0
-                p95_latency = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20 else avg_latency
+                p95_latency = (
+                    statistics.quantiles(latencies, n=20)[18]
+                    if len(latencies) >= 20
+                    else avg_latency
+                )
 
                 # Score compuesto (ponderado para 1min)
                 # Velocidad: 50%, Validación: 25%, Coherencia: 15%, Éxito: 10%
                 speed_score = max(0, 100 - (avg_latency / 100))  # 100ms = 99pts, 10s = 0pts
                 score = (
-                    speed_score * 0.50 +
-                    validation_rate * 100 * 0.25 +
-                    coherence_rate * 100 * 0.15 +
-                    success_rate * 100 * 0.10
+                    speed_score * 0.50
+                    + validation_rate * 100 * 0.25
+                    + coherence_rate * 100 * 0.15
+                    + success_rate * 100 * 0.10
                 )
 
                 perf = {
@@ -512,9 +521,9 @@ class ProductionModelRotator:
 
     def _print_summary(self, report: dict[str, Any]):
         """Imprime resumen en consola."""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("🏆 RESULTADOS DE ROTACIÓN EN PRODUCCIÓN (Timeframe 1min)")
-        print("="*80)
+        print("=" * 80)
 
         for agent, best in report["best_by_agent"].items():
             model = best["model"]
@@ -526,25 +535,27 @@ class ProductionModelRotator:
                 print(f"\n📊 {agent.upper()}")
                 print(f"   🥇 Mejor modelo: {model}")
                 print(f"   ⭐ Score: {score:.1f}/100")
-                print(f"   ⚡ Latencia: {perf['avg_latency_ms']:.0f}ms (p95: {perf['p95_latency_ms']:.0f}ms)")
+                print(
+                    f"   ⚡ Latencia: {perf['avg_latency_ms']:.0f}ms (p95: {perf['p95_latency_ms']:.0f}ms)"
+                )
                 print(f"   ✅ Validación: {perf['validation_rate']:.1%}")
                 print(f"   🎯 Coherencia: {perf['coherence_rate']:.1%}")
                 print(f"   📈 Invocaciones: {perf['total_invocations']}")
 
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("⚙️ CONFIGURACIÓN RECOMENDADA:")
-        print("="*80)
+        print("=" * 80)
         print("\nactive_profile: 'ollama_cloud_optimized'")
         print("\nollama_cloud_optimized:")
         for agent, best in report["best_by_agent"].items():
             model = best["model"]
             if model:
                 print(f"  {agent}:")
-                print(f"    provider_type: 'ollama_cloud'")
+                print("    provider_type: 'ollama_cloud'")
                 print(f"    model_name: '{model}'")
-                print(f"    api_base: 'http://localhost:11434'")
+                print("    api_base: 'http://localhost:11434'")
 
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
 
 
 def main():
@@ -553,34 +564,21 @@ def main():
         description="Rotación de modelos LLM en producción - Timeframe 1min"
     )
     parser.add_argument(
-        "--symbol",
-        type=str,
-        default="BTCUSDT",
-        help="Símbolo a analizar (default: BTCUSDT)"
+        "--symbol", type=str, default="BTCUSDT", help="Símbolo a analizar (default: BTCUSDT)"
     )
     parser.add_argument(
         "--duration-hours",
         type=float,
         default=4.0,
-        help="Duración de la evaluación en horas (default: 4)"
+        help="Duración de la evaluación en horas (default: 4)",
     )
     parser.add_argument(
-        "--cycles-per-model",
-        type=int,
-        default=10,
-        help="Ciclos por modelo (default: 10)"
+        "--cycles-per-model", type=int, default=10, help="Ciclos por modelo (default: 10)"
     )
     parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="logs/production_rotation",
-        help="Directorio de salida"
+        "--output-dir", type=str, default="logs/production_rotation", help="Directorio de salida"
     )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Modo verbose"
-    )
+    parser.add_argument("--verbose", action="store_true", help="Modo verbose")
 
     args = parser.parse_args()
 
@@ -590,16 +588,16 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("🔄 SISTEMA DE ROTACIÓN DE MODELOS EN PRODUCCIÓN")
-    print("="*80)
-    print(f"\nConfiguración:")
+    print("=" * 80)
+    print("\nConfiguración:")
     print(f"  Símbolo: {args.symbol}")
     print(f"  Duración: {args.duration_hours} horas")
     print(f"  Ciclos por modelo: {args.cycles_per_model}")
-    print(f"  Modelos a probar: 6 (optimizados para 1min)")
-    print(f"  Timeframe: 1min")
-    print("\n" + "="*80)
+    print("  Modelos a probar: 6 (optimizados para 1min)")
+    print("  Timeframe: 1min")
+    print("\n" + "=" * 80)
 
     # Crear rotador
     rotator = ProductionModelRotator(

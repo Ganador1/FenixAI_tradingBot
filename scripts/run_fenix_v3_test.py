@@ -5,6 +5,7 @@
 Ejecuta el bot completo en producción con Binance Futures Testnet.
 Analiza todas las respuestas de agentes y verifica ejecución de órdenes.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,9 +21,9 @@ from typing import Any
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.trading.engine import TradingEngine
 from src.core.langgraph_orchestrator import validate_agent_response
 from src.services.binance_service import BinanceService
+from src.trading.engine import TradingEngine
 
 # Configuración de logging
 logging.basicConfig(
@@ -67,9 +68,9 @@ class FenixV3TestRunner:
 
     async def run_single_cycle(self, cycle_num: int) -> dict[str, Any]:
         """Ejecuta un ciclo completo de análisis."""
-        logger.info(f"\n{'='*80}")
+        logger.info(f"\n{'=' * 80}")
         logger.info(f"🔄 CICLO {cycle_num}/{self.cycles} - {self.symbol}@{self.timeframe}")
-        logger.info(f"{'='*80}")
+        logger.info(f"{'=' * 80}")
 
         cycle_start = time.time()
 
@@ -82,9 +83,12 @@ class FenixV3TestRunner:
 
             # 2. Calcular indicadores
             from src.tools.technical_tools import TechnicalAnalysisTools
+
             tech_tools = TechnicalAnalysisTools()
             indicators = await tech_tools.get_all_indicators(self.symbol, self.timeframe, limit=100)
-            logger.info(f"   RSI={indicators.get('rsi', 0):.1f}, MACD={indicators.get('macd_line', 0):.2f}")
+            logger.info(
+                f"   RSI={indicators.get('rsi', 0):.1f}, MACD={indicators.get('macd_line', 0):.2f}"
+            )
 
             # 3. Ejecutar grafo
             logger.info("🤖 Ejecutando grafo de agentes...")
@@ -120,7 +124,9 @@ class FenixV3TestRunner:
                 if not report:
                     continue
                 errors = validate_agent_response(agent, report)
-                signal = report.get("signal") or report.get("final_decision") or report.get("verdict")
+                signal = (
+                    report.get("signal") or report.get("final_decision") or report.get("verdict")
+                )
                 confidence = report.get("confidence_level") or report.get("confidence")
 
                 analysis[agent] = {
@@ -132,7 +138,9 @@ class FenixV3TestRunner:
                 }
 
                 status = "✅" if len(errors) == 0 else "❌"
-                logger.info(f"   {status} {agent:12} | {signal:8} | {confidence} | {len(errors)} errors")
+                logger.info(
+                    f"   {status} {agent:12} | {signal:8} | {confidence} | {len(errors)} errors"
+                )
 
             # 5. Decisión final
             decision = result.get("final_trade_decision", {})
@@ -150,7 +158,9 @@ class FenixV3TestRunner:
                     "price": current_price,
                     "timestamp": datetime.now().isoformat(),
                 }
-                logger.info(f"   📤 Orden simulada: {final_decision} 0.001 BTC @ ${current_price:,.2f}")
+                logger.info(
+                    f"   📤 Orden simulada: {final_decision} 0.001 BTC @ ${current_price:,.2f}"
+                )
                 self.order_results.append(order_result)
 
             cycle_time = (time.time() - cycle_start) * 1000
@@ -170,9 +180,9 @@ class FenixV3TestRunner:
 
     async def run_full_test(self):
         """Ejecuta test completo."""
-        logger.info("\n" + "="*80)
+        logger.info("\n" + "=" * 80)
         logger.info("🦅 FENIX V3 - TESTNET PRODUCTION TEST")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         await self.engine.initialize()
 
@@ -186,16 +196,18 @@ class FenixV3TestRunner:
 
     def _generate_summary(self):
         """Genera resumen."""
-        logger.info("\n" + "="*80)
+        logger.info("\n" + "=" * 80)
         logger.info("📊 RESUMEN")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         total = len(self.results)
         successful = sum(1 for r in self.results if "error" not in r)
         logger.info(f"Ciclos: {successful}/{total}")
 
         decisions = [r.get("decision", "HOLD") for r in self.results]
-        logger.info(f"BUY: {decisions.count('BUY')}, SELL: {decisions.count('SELL')}, HOLD: {decisions.count('HOLD')}")
+        logger.info(
+            f"BUY: {decisions.count('BUY')}, SELL: {decisions.count('SELL')}, HOLD: {decisions.count('HOLD')}"
+        )
         logger.info(f"Órdenes simuladas: {len(self.order_results)}")
 
         # Guardar

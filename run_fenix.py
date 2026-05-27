@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -37,18 +39,20 @@ logger = logging.getLogger("Fenix")
 def parse_args():
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Fenix AI Trading Bot - LangGraph Multi-Agent System",
+        description="Fenix AI Trading Bot - LangGraph Multi-Agent System (v2.5)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python run_fenix.py                       # Paper trading, BTCUSDT, 15m
-  python run_fenix.py --mode live           # Live trading
-  python run_fenix.py --symbol ETHUSDT      # Different pair
-  python run_fenix.py --timeframe 5m        # Different timeframe
-  python run_fenix.py --no-visual           # Without visual agent
+  python run_fenix.py                                   # Paper trading, BTCUSDT, 15m
+  python run_fenix.py --mode live --allow-live          # Live trading
+  python run_fenix.py --symbol ETHUSDT                  # Different pair
+  python run_fenix.py --timeframe 5m                    # Different timeframe
+  python run_fenix.py --no-visual                       # Without visual agent
+  python run_fenix.py --with-nanofenix-companion        # Run NanoFenix v3.5 alongside
+  python run_fenix.py --team-models technical=qwen2.5:7b,qabba=qwen2.5:7b
         """,
     )
-    
+
     parser.add_argument(
         "--mode",
         choices=["paper", "live"],
@@ -78,7 +82,17 @@ Examples:
     parser.add_argument(
         "--model",
         default="qwen2.5:7b",
-        help="Ollama model to use (default: qwen2.5:7b)",
+        help="Ollama model to use when --team-models is not provided (default: qwen2.5:7b)",
+    )
+    parser.add_argument(
+        "--team-models",
+        default=None,
+        help=(
+            "Per-agent model assignment, e.g. "
+            "'technical=ministral-3:14b-cloud,qabba=ministral-3:14b-cloud,"
+            "decision=nemotron-3-nano:30b-cloud,risk_manager=devstral-small-2:24b-cloud'. "
+            "Forwarded via FENIX_TEAM_MODELS to the engine. v2.5 model-role pattern."
+        ),
     )
     parser.add_argument(
         "--interval",
@@ -117,8 +131,98 @@ Examples:
         default="127.0.0.1",
         help="Host to bind API server (default: 127.0.0.1, not exposed publicly)",
     )
-    
+
+    # ---- v2.5 NanoFenix companion ------------------------------------
+    parser.add_argument(
+        "--with-nanofenix-companion",
+        action="store_true",
+        help=(
+            "Launch NanoFenix v3.5 as a companion subprocess and consume its "
+            "signal in the engine. Sets FENIX_ENABLE_NANOFENIX_COMPANION=1 "
+            "and points the engine at the written signal file."
+        ),
+    )
+    parser.add_argument(
+        "--nanofenix-observer-only",
+        action="store_true",
+        default=True,
+        help=(
+            "Run NanoFenix in observer-only mode (default). The companion "
+            "publishes its signal but never opens its own paper trades. "
+            "Use --nanofenix-active-paper to disable."
+        ),
+    )
+    parser.add_argument(
+        "--nanofenix-active-paper",
+        action="store_true",
+        help="Disable observer-only mode and let NanoFenix open its own paper trades.",
+    )
+    parser.add_argument(
+        "--nanofenix-hard-veto-reasons",
+        default="direction_mismatch,high_uncertainty,stale_signal,symbol_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
+        help=(
+            "Comma-separated NanoFenix veto reasons that hard-block a Fenix entry. "
+            "Soft reasons (e.g. low_actionable_edge, companion_not_ready) are observed "
+            "but not enforced. Forwarded via FENIX_NANOFENIX_HARD_VETO_REASONS."
+        ),
+    )
+
     return parser.parse_args()
+
+
+def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subprocess.Popen | None, Path | None]:
+    """Spawn the NanoFenix v3.5 companion subprocess.
+
+    Returns (process, signal_path). On any failure, returns (None, None) and
+    logs a warning — the engine can still run without the companion.
+    """
+    repo_root = Path(__file__).resolve().parent
+    nano_launcher = repo_root / "run_nanofenixv3.py"
+    if not nano_launcher.exists():
+        logger.warning("--with-nanofenix-companion set but %s not found; skipping", nano_launcher)
+        return None, None
+
+    Path("logs").mkdir(exist_ok=True)
+    signal_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.json"
+
+    env = os.environ.copy()
+    if observer_only:
+        env["NANOFENIXV3_COMPANION_OBSERVER_ONLY"] = "1"
+    env["NANOFENIX_SIGNAL_STATE_PATH"] = str(signal_path)
+
+    cmd = [
+        sys.executable,
+        str(nano_launcher),
+        "--symbol", symbol,
+        "--companion",
+        "--adaptive-fusion",
+        "--output-path", str(signal_path),
+    ]
+    logger.info("Launching NanoFenix companion: %s", " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, env=env)
+    except (OSError, ValueError) as e:
+        logger.warning("Could not launch NanoFenix companion: %s", e)
+        return None, None
+    logger.info("NanoFenix companion PID=%s, signal=%s", proc.pid, signal_path)
+    return proc, signal_path
+
+
+def _stop_nanofenix_companion(proc: subprocess.Popen | None) -> None:
+    """Stop the NanoFenix companion subprocess gracefully."""
+    if proc is None or proc.poll() is not None:
+        return
+    logger.info("Stopping NanoFenix companion PID=%s...", proc.pid)
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.warning("NanoFenix companion did not stop in 10s, killing")
+            proc.kill()
+            proc.wait(timeout=5)
+    except (OSError, ValueError) as e:
+        logger.warning("Error stopping NanoFenix companion: %s", e)
 
 
 async def main():
@@ -134,18 +238,57 @@ async def main():
     ╚═══════════════════════════════════════════════════════════════╝
     """)
     
-    logger.info("Starting Fenix Trading Bot")
+    logger.info("Starting Fenix Trading Bot (v2.5)")
     logger.info(f"  Mode: {args.mode.upper()}")
     logger.info(f"  Symbol: {args.symbol}")
     logger.info(f"  Timeframe: {args.timeframe}")
-    logger.info(f"  Model: {args.model}")
+    if args.team_models:
+        logger.info(f"  Team models: {args.team_models}")
+    else:
+        logger.info(f"  Model: {args.model}")
     logger.info(f"  Interval: {args.interval}s")
     logger.info(f"  Visual: {'Yes' if not args.no_visual else 'No'}")
     logger.info(f"  Sentiment: {'Yes' if not args.no_sentiment else 'No'}")
+    logger.info(f"  NanoFenix companion: {'Yes' if args.with_nanofenix_companion else 'No'}")
 
     if args.mode == "live" and not args.allow_live:
         logger.error("Live mode requested but --allow-live not provided. Aborting for safety.")
         return 1
+
+    # v2.5: forward model-role assignment to the engine. The LLMFactory
+    # honours FENIX_ROTATE_MODELS_<AGENT> with a single-model "rotation"
+    # which is equivalent to an override. We parse the comma-separated
+    # assignment list and export one env var per agent so the existing
+    # factory picks them up without any code change.
+    if args.team_models:
+        os.environ["FENIX_TEAM_MODELS"] = args.team_models  # informational
+        valid_agents = {"technical", "qabba", "visual", "sentiment", "decision", "risk_manager"}
+        for pair in args.team_models.split(","):
+            if "=" not in pair:
+                continue
+            agent, model = pair.split("=", 1)
+            agent = agent.strip().lower()
+            model = model.strip()
+            if not agent or not model or agent not in valid_agents:
+                logger.warning(f"  Ignoring unknown --team-models entry: {pair!r}")
+                continue
+            env_var = f"FENIX_ROTATE_MODELS_{agent.upper()}"
+            os.environ[env_var] = model
+            logger.info(f"  Override {agent} -> {model} ({env_var})")
+
+    # v2.5: forward NanoFenix companion configuration to the engine.
+    observer_only = args.nanofenix_observer_only and not args.nanofenix_active_paper
+    nanofenix_proc = None
+    if args.with_nanofenix_companion:
+        nanofenix_proc, signal_path = _start_nanofenix_companion(
+            symbol=args.symbol, observer_only=observer_only,
+        )
+        if signal_path is not None:
+            os.environ["FENIX_ENABLE_NANOFENIX_COMPANION"] = "1"
+            os.environ["FENIX_NANOFENIX_SIGNAL_PATH"] = str(signal_path)
+            os.environ["FENIX_NANOFENIX_HARD_VETO_REASONS"] = args.nanofenix_hard_veto_reasons
+            logger.info(f"  Companion signal path: {signal_path}")
+            logger.info(f"  Hard-veto reasons: {args.nanofenix_hard_veto_reasons}")
     
     # Verify Ollama
     logger.info("Verifying Ollama connection...")
@@ -205,10 +348,10 @@ async def main():
 
     # Start standard trading engine (CLI mode)
     logger.info("Starting trading engine (CLI Mode)...")
-    
+
     try:
         from src.trading.engine import TradingEngine
-        
+
         engine = TradingEngine(
             symbol=args.symbol,
             timeframe=args.timeframe,
@@ -218,31 +361,35 @@ async def main():
             enable_sentiment_agent=not args.no_sentiment,
             allow_live_trading=args.allow_live,
         )
-        
+
         # Signal handling
         stop_event = asyncio.Event()
-        
+
         def signal_handler(sig, frame):
             logger.info("Interrupt signal received, stopping...")
             stop_event.set()
-        
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-        
+
         # Start
-        logger.info("✅ Trading engine ready")
-        
+        logger.info("Trading engine ready")
+
         # Execute
-        await engine.start()
-        
+        try:
+            await engine.start()
+        finally:
+            _stop_nanofenix_companion(nanofenix_proc)
+
         return 0
-        
+
     except ImportError as e:
         logger.error(f"Error importing trading engine: {e}")
         logger.info("Running in simplified test mode...")
-        
-        # Simplified test mode
-        return await run_simple_test(args)
+        try:
+            return await run_simple_test(args)
+        finally:
+            _stop_nanofenix_companion(nanofenix_proc)
 
 
 async def run_simple_test(args):

@@ -22,6 +22,6 @@ class BinanceExchangeAPI(ExchangeAPI):
 
 def create_exchange_api(api_key: str, api_secret: str, is_paper: bool):
     from src.system.connection_factory import create_binance_client
+
     client = create_binance_client(api_key, api_secret, is_paper)
     return BinanceExchangeAPI(client)
-

@@ -1,7 +1,9 @@
 from datetime import datetime
-from sqlalchemy import Column, String, Float, DateTime, Integer, Text, Boolean
+
+from sqlalchemy import Boolean, Column, DateTime, Float, String, Text
+
 from src.config.database import Base
-from src.models.user import User  # Ensure User is registered with Base
+
 
 class Order(Base):
     __tablename__ = "orders"
@@ -18,6 +20,7 @@ class Order(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
 class Trade(Base):
     __tablename__ = "trades"
 
@@ -29,6 +32,7 @@ class Trade(Base):
     price = Column(Float)
     realized_pnl = Column(Float, default=0.0)
     executed_at = Column(DateTime, default=datetime.utcnow)
+
 
 class Position(Base):
     __tablename__ = "positions"
@@ -44,6 +48,7 @@ class Position(Base):
     opened_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
     is_open = Column(Boolean, default=True)
+
 
 class AgentOutput(Base):
     __tablename__ = "agent_outputs"

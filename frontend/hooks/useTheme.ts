@@ -8,7 +8,7 @@ export function useTheme() {
     if (savedTheme) {
       return savedTheme;
     }
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return 'light';
   });
 
   useEffect(() => {
@@ -26,4 +26,4 @@ export function useTheme() {
     toggleTheme,
     isDark: theme === 'dark'
   };
-} 
+}

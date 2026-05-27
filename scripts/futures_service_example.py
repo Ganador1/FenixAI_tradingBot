@@ -1,10 +1,11 @@
 import logging
-from typing import List, Dict, Optional
+
 from binance.client import Client
 from binance.enums import *
-from binance.exceptions import BinanceAPIException, BinanceRequestException
+from binance.exceptions import BinanceAPIException
 
 logger = logging.getLogger(__name__)
+
 
 class FuturesService:
     """
@@ -32,42 +33,44 @@ class FuturesService:
             # Method: futures_account_balance()
             balances = self.client.futures_account_balance()
             for asset in balances:
-                if asset['asset'] == 'USDT':
+                if asset["asset"] == "USDT":
                     # 'balance' usually refers to total wallet balance
                     # 'withdrawAvailable' or 'availableBalance' checks might be needed depending on use case
-                    return float(asset['balance'])
+                    return float(asset["balance"])
             return 0.0
         except BinanceAPIException as e:
             logger.error(f"Error getting USDT balance: {e}")
             raise
 
-    def get_open_positions(self, symbol: Optional[str] = None) -> List[Dict]:
+    def get_open_positions(self, symbol: str | None = None) -> list[dict]:
         """
         Get open positions.
-        
+
         Args:
-            symbol: Optional symbol to filter (e.g. 'BTCUSDT'). 
+            symbol: Optional symbol to filter (e.g. 'BTCUSDT').
                     If None, returns all positions with non-zero size.
         """
         try:
             # Method: futures_position_information()
             # If symbol is provided, it returns a list with one item or detailed info
             positions = self.client.futures_position_information(symbol=symbol)
-            
+
             # If no specific symbol filtered by API, we filter manually for open positions only
             # because the API returns ALL symbols even with 0 position size if symbol param allows.
             active_positions = []
             for pos in positions:
-                amt = float(pos['positionAmt'])
+                amt = float(pos["positionAmt"])
                 if amt != 0:
                     active_positions.append(pos)
-            
+
             return active_positions
         except BinanceAPIException as e:
             logger.error(f"Error getting positions: {e}")
             raise
 
-    def place_market_order(self, symbol: str, side: str, quantity: float, reduce_only: bool = False) -> Dict:
+    def place_market_order(
+        self, symbol: str, side: str, quantity: float, reduce_only: bool = False
+    ) -> dict:
         """
         Place a MARKET order.
 
@@ -84,7 +87,7 @@ class FuturesService:
                 side=side,
                 type=ORDER_TYPE_MARKET,
                 quantity=quantity,
-                reduceOnly=reduce_only
+                reduceOnly=reduce_only,
             )
             logger.info(f"Market order placed: {side} {quantity} {symbol}")
             return order
@@ -101,6 +104,7 @@ class FuturesService:
         except BinanceAPIException as e:
             logger.error(f"Error changing leverage: {e}")
             raise
+
 
 if __name__ == "__main__":
     # Example Usage (Do not run without valid keys)

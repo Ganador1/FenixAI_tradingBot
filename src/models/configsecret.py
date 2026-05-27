@@ -9,5 +9,5 @@ if project_root not in sys.path:
 from src.config.secrets_manager import SecretsManager
 
 sm = SecretsManager()
-api_key = sm.get_secret('BINANCE_API_KEY')
-api_secret = sm.get_secret('BINANCE_API_SECRET')
+api_key = sm.get_secret("BINANCE_API_KEY")
+api_secret = sm.get_secret("BINANCE_API_SECRET")

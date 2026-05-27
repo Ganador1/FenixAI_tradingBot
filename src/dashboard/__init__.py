@@ -1,10 +1,11 @@
 # src/dashboard/__init__.py
 """Dashboard module for Fenix Trading System."""
+
 from src.dashboard.trading_dashboard import (
-    TradingDashboard,
-    LiveDashboard,
     AgentStatus,
+    LiveDashboard,
     PipelineMetrics,
+    TradingDashboard,
     get_dashboard,
 )
 

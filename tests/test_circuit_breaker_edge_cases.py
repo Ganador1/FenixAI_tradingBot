@@ -245,7 +245,7 @@ class TestCircuitBreakerEdgeCases:
         
         # No streak because alternating
         metrics = rm.get_metrics()
-        assert metrics["loss_streak"] == 0  # Last was loss but only 1
+        assert metrics["loss_streak"] == 1  # Last was loss, but no multi-loss streak
         assert metrics["win_rate"] == 0.5  # 5/10 = 50%
 
 
@@ -257,6 +257,10 @@ class TestRiskManagerBoundaryConditions:
         config = RiskFeedbackLoopConfig(
             caution_drawdown_pct=4.0,
             severe_drawdown_pct=6.5,
+            caution_daily_loss_pct=999.0,
+            severe_daily_loss_pct=999.0,
+            loss_streak_caution=999,
+            loss_streak_halt=999,
         )
         rm = RuntimeRiskManager(config=config)
         rm.update_balance(10000.0)
@@ -283,7 +287,13 @@ class TestRiskManagerBoundaryConditions:
     
     def test_slightly_below_caution_boundary(self):
         """Verify 3.9% drawdown doesn't trigger CAUTION."""
-        config = RiskFeedbackLoopConfig(caution_drawdown_pct=4.0)
+        config = RiskFeedbackLoopConfig(
+            caution_drawdown_pct=4.0,
+            caution_daily_loss_pct=999.0,
+            severe_daily_loss_pct=999.0,
+            loss_streak_caution=999,
+            loss_streak_halt=999,
+        )
         rm = RuntimeRiskManager(config=config)
         rm.update_balance(10000.0)
         

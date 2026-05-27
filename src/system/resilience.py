@@ -1,19 +1,19 @@
 import asyncio
 import time
-from typing import Optional, Dict, Any
+from typing import Any
 
 
 class RobustErrorHandler:
     def __init__(self):
         self.retry_config = {
-            'binance_api': {'max_retries': 3, 'base_delay': 1, 'max_delay': 30},
-            'websocket': {'max_retries': 5, 'base_delay': 2, 'max_delay': 60},
-            'order_placement': {'max_retries': 2, 'base_delay': 0.5, 'max_delay': 10},
+            "binance_api": {"max_retries": 3, "base_delay": 1, "max_delay": 30},
+            "websocket": {"max_retries": 5, "base_delay": 2, "max_delay": 60},
+            "order_placement": {"max_retries": 2, "base_delay": 0.5, "max_delay": 10},
         }
 
-    async def execute_with_retry(self, func, operation_type: str = 'binance_api', *args, **kwargs):
-        config = self.retry_config.get(operation_type, self.retry_config['binance_api'])
-        for attempt in range(config['max_retries']):
+    async def execute_with_retry(self, func, operation_type: str = "binance_api", *args, **kwargs):
+        config = self.retry_config.get(operation_type, self.retry_config["binance_api"])
+        for attempt in range(config["max_retries"]):
             try:
                 if asyncio.iscoroutinefunction(func):
                     return await func(*args, **kwargs)
@@ -22,9 +22,9 @@ class RobustErrorHandler:
                     return await result
                 return result
             except Exception as e:
-                if attempt == config['max_retries'] - 1:
+                if attempt == config["max_retries"] - 1:
                     raise e
-                delay = min(config['base_delay'] * (2 ** attempt), config['max_delay'])
+                delay = min(config["base_delay"] * (2**attempt), config["max_delay"])
                 await asyncio.sleep(delay)
 
 
@@ -34,20 +34,20 @@ class DynamicCooldownManager:
         self.consecutive_losses = 0
         self.last_trade_time = 0
         self.volatility_multiplier = 1.0
-        self._forced_cooldown_until: Optional[float] = None
-        self._forced_reason: Optional[str] = None
+        self._forced_cooldown_until: float | None = None
+        self._forced_reason: str | None = None
 
     def update_after_trade(self, trade_result: str, market_volatility: float = 1.0):
         self.last_trade_time = time.time()
         self.volatility_multiplier = max(0.5, min(2.0, market_volatility))
-        if trade_result == 'LOSS':
+        if trade_result == "LOSS":
             self.consecutive_losses += 1
         else:
             self.consecutive_losses = 0
         self._clear_expired_forced_cooldown()
 
     def update_cooldown(self, is_loss: bool, market_volatility: float = 1.0):
-        trade_result = 'LOSS' if is_loss else 'WIN'
+        trade_result = "LOSS" if is_loss else "WIN"
         self.update_after_trade(trade_result, market_volatility)
 
     def get_current_cooldown(self) -> int:
@@ -86,7 +86,7 @@ class DynamicCooldownManager:
         self._forced_cooldown_until = time.time() + duration_seconds
         self._forced_reason = reason or "External cooldown"
 
-    def get_cooldown_reason(self) -> Optional[str]:
+    def get_cooldown_reason(self) -> str | None:
         return self._forced_reason
 
     def _clear_expired_forced_cooldown(self):
@@ -94,9 +94,11 @@ class DynamicCooldownManager:
             self._forced_cooldown_until = None
             self._forced_reason = None
 
-    def describe_state(self) -> Dict[str, Any]:
+    def describe_state(self) -> dict[str, Any]:
         """Expose a structured snapshot for dashboards/logging."""
-        forced_active = bool(self._forced_cooldown_until and time.time() < self._forced_cooldown_until)
+        forced_active = bool(
+            self._forced_cooldown_until and time.time() < self._forced_cooldown_until
+        )
         active = self.is_cooldown_active()
         remaining = self.get_remaining_cooldown() if active else 0
         reason = self.get_cooldown_reason()
@@ -115,4 +117,3 @@ class DynamicCooldownManager:
             "volatility_multiplier": self.volatility_multiplier,
             "forced": forced_active,
         }
-

@@ -36,17 +36,17 @@ class TestTradingMetricsReal:
     """Comprehensive tests for trading metrics with real behavior."""
     
     @pytest.fixture
-def temp_dir(self):
-    """Create temporary directory for test data."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+    def temp_dir(self):
+        """Create temporary directory for test data."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
     
     
     @pytest.fixture
-def fresh_dashboard(self, temp_dir):
-    """Create fresh dashboard for each test."""
-    storage_path = os.path.join(temp_dir, "metrics.jsonl")
-    return TradingMetricsDashboard(storage_path=storage_path)
+    def fresh_dashboard(self, temp_dir):
+        """Create fresh dashboard for each test."""
+        storage_path = os.path.join(temp_dir, "metrics.jsonl")
+        return TradingMetricsDashboard(storage_path=storage_path)
     
     def test_win_rate_calculation_accuracy(self, fresh_dashboard):
         """CRITICAL: Win rate = wins / total trades."""

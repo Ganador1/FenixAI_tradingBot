@@ -8,9 +8,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
@@ -23,6 +24,22 @@ except Exception:
 from src.memory.reasoning_bank import ReasoningEntry
 
 logger = logging.getLogger(__name__)
+
+_KEYWORD_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "is",
+    "of",
+    "or",
+    "the",
+    "to",
+}
+
+
+def _keyword_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9_]+", text.lower()) if token not in _KEYWORD_STOPWORDS}
 
 
 class ReasoningBankOptimized:
@@ -394,7 +411,7 @@ class ReasoningBankOptimized:
         # Calcular similitud
         scored = []
         for entry in entries:
-            score = self._calculate_similarity(current_embedding, entry)
+            score = self._calculate_similarity(current_prompt, current_embedding, entry)
             if score >= min_similarity:
                 # Boost para exitosas
                 if prefer_successful and entry.success is True:
@@ -407,6 +424,7 @@ class ReasoningBankOptimized:
     
     def _calculate_similarity(
         self,
+        current_prompt: str,
         current_embedding: Optional[List[float]],
         entry: "ReasoningEntryOptimized"
     ) -> float:
@@ -425,8 +443,9 @@ class ReasoningBankOptimized:
                 pass
         
         # Fallback: keyword overlap
-        current_words = set(str(current_embedding) if current_embedding else []).split())
-        entry_words = set(str(entry.prompt).lower().split())
+        current_words = _keyword_tokens(str(current_prompt))
+        entry_text = f"{entry.prompt or ''} {entry.reasoning or ''}"
+        entry_words = _keyword_tokens(entry_text)
         overlap = current_words | entry_words
         if overlap:
             intersection = current_words & entry_words

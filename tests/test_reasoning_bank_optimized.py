@@ -31,20 +31,20 @@ class TestReasoningBankOptimized:
     """Comprehensive tests for optimized ReasoningBank with real behavior."""
     
     @pytest.fixture
-def temp_dir(self):
-    """Create temporary directory for test data."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+    def temp_dir(self):
+        """Create temporary directory for test data."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
     
     
     @pytest.fixture
-def fresh_bank(self, temp_dir):
-    """Create fresh ReasoningBank for each test."""
-    return ReasoningBankOptimized(
-        storage_dir=temp_dir,
-        max_entries_per_agent=500,
-        use_embeddings=False,  # Skip embeddings for speed
-    )
+    def fresh_bank(self, temp_dir):
+        """Create fresh ReasoningBank for each test."""
+        return ReasoningBankOptimized(
+            storage_dir=temp_dir,
+            max_entries_per_agent=500,
+            use_embeddings=False,  # Skip embeddings for speed
+        )
     
     def test_sqlite_storage_file_created(self, fresh_bank, temp_dir):
         """CRITICAL: SQLite file is created on initialization."""
@@ -367,6 +367,7 @@ def fresh_bank(self, temp_dir):
     def test_large_dataset_handling_1000_entries(self, fresh_bank):
         """CRITICAL: System handles 1000+ entries without issues."""
         NUM_ENTRIES = 1000
+        fresh_bank.max_entries_per_agent = NUM_ENTRIES
         
         # Insert 1000 entries
         start_time = time.time()
@@ -567,8 +568,8 @@ def fresh_bank(self, temp_dir):
         
         # Should return some entries (at minimum test existence)
         assert isinstance(context, list)
-        # With embeddings disabled, still should return via fallback
-        assert True  # Method exists and works
+        assert context, "With embeddings disabled, keyword fallback should still return matches"
+        assert all("bullish" in entry.prompt.lower() for entry in context)
     
     def test_empty_agent_return_no_entries(self, fresh_bank):
         """Queries on empty agent return empty results safely."""

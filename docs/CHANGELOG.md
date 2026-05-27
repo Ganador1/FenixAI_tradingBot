@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [2.5.0] - 2026-05-27
+
+### Added
+
+- v2.5 release notes in `docs/releases/v2.5.md`.
+- Long-form v2.0-to-v2.5 development history in `docs/releases/v2.5-development-history.md`.
+- Public new-systems guide in `docs/releases/v2.5-new-systems.md`, covering NanoFenix, MiniFenix, Fenix Experimental, new agent paths, model-role teams, and live runners.
+- Script evolution and release-surface guide in `docs/releases/v2.5-script-evolution.md`, covering the v25/v31 live-safe launcher lineage and historical script families.
+- v2.5 release checklist in `RELEASE_CHECKLIST.md`.
+- Script release-surface index in `scripts/README.md`.
+- English NanoFenix HTF v2.5 documentation in `docs/NANOFENIX_HTF_V2_5_CHANGES.md`.
+- Hybrid runner support for staged TP/SL tracking and partial closes.
+- Binance Futures algorithmic-order checks when verifying live protective orders.
+
+### Changed
+
+- README and quick-start documentation updated for the official v2.5.0 release.
+- NanoFenix changelog has been translated to English.
+- MiniFenix README has been translated to English and reframed as a two-speed research prototype.
+- NanoFenix adaptive-fusion comments and docstrings have been translated to English.
+- Hybrid runner comments and docstrings around staged exits have been translated to English.
+- Live engine restart behavior hydrates an existing exchange position before assuming the bot is flat.
+- Live slot summaries now account for hydrated exchange positions when validating close events.
+- Paper/hybrid execution guards reject invalid prices before recording position transitions.
+- Live suite plans can now carry explicit lite/MTF guard settings into `run_fenix_live_slot.py`, avoiding hidden dependence on inherited shell variables.
+- NanoFenix trailing stops account for estimated fees before treating an exit as acceptable.
+
+### Fixed
+
+- Failed execution attempts are no longer recorded as realized trading losses by runtime risk accounting.
+- Protective-order verification no longer misses open Binance Futures algorithmic orders.
+- A safe reduce-only close of a hydrated live position no longer causes a false `completed_with_accounting_gap` summary.
+- Paper/hybrid logs are less likely to contain misleading zero or missing entry prices.
+- `technical_mtf_qabba_guard` now reports missing strict-MTF configuration instead of silently recording `_mtf_bias: {}`.
+- A Technical timeout/error fallback can no longer count as a clean Technical HOLD for the optional MTF+QABBA entry path.
+
+---
+
 ## [2.0.0] - 2024-12-05 🚀
 
 ### 🎯 Major Architecture Overhaul

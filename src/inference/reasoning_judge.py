@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.config.judge_config import JudgeModelConfig, get_judge_model_config
 from src.inference.model_id_normalizer import normalize_model_id_for_provider
@@ -20,11 +20,11 @@ class ReasoningJudgePayload:
 
     agent_name: str
     prompt: str
-    normalized_result: Dict[str, Any]
+    normalized_result: dict[str, Any]
     raw_response: str
     backend: str
-    metadata: Dict[str, Any]
-    latency_ms: Optional[float] = None
+    metadata: dict[str, Any]
+    latency_ms: float | None = None
 
 
 @dataclass
@@ -35,13 +35,13 @@ class JudgeVerdict:
     score: float
     confidence: float
     critique: str
-    success_estimate: Optional[bool] = None
-    risks: List[str] = field(default_factory=list)
-    improvements: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
+    success_estimate: bool | None = None
+    risks: list[str] = field(default_factory=list)
+    improvements: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     raw_response: str = ""
 
-    def as_entry_payload(self) -> Dict[str, Any]:
+    def as_entry_payload(self) -> dict[str, Any]:
         """Flatten verdict so ReasoningBank can persist it."""
 
         return {
@@ -62,11 +62,11 @@ class JudgeVerdict:
 class ReasoningLLMJudge:
     """LLM-powered judge that scores reasoning traces via existing providers."""
 
-    def __init__(self, config: Optional[JudgeModelConfig] = None):
+    def __init__(self, config: JudgeModelConfig | None = None):
         self.config = config or get_judge_model_config()
         setup_default_providers()
 
-    def evaluate(self, payload: ReasoningJudgePayload) -> Optional[JudgeVerdict]:
+    def evaluate(self, payload: ReasoningJudgePayload) -> JudgeVerdict | None:
         provider = registry.get(self.config.provider)
         if not provider:
             logger.debug(
@@ -181,16 +181,16 @@ class ReasoningLLMJudge:
 
         return f"{instruction}\n\n{context}"
 
-    def _parse_response(self, text: str) -> Optional[Dict[str, Any]]:
+    def _parse_response(self, text: str) -> dict[str, Any] | None:
         if not text:
             return None
-        
+
         # First try direct parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
-        
+
         # Strip thinking markers if present (e.g., "Thinking...\n...done thinking.\n")
         clean_text = text
         if "...done thinking" in text:
@@ -199,35 +199,36 @@ class ReasoningLLMJudge:
                 clean_text = parts[-1].strip()
                 if clean_text.startswith("."):
                     clean_text = clean_text[1:].strip()
-        
+
         # Try to find JSON in code blocks first (```json ... ```)
         import re
-        json_block_match = re.search(r'```json\s*\n?(.*?)\n?```', clean_text, re.DOTALL)
+
+        json_block_match = re.search(r"```json\s*\n?(.*?)\n?```", clean_text, re.DOTALL)
         if json_block_match:
             try:
                 return json.loads(json_block_match.group(1).strip())
             except json.JSONDecodeError:
                 pass
-        
+
         # Find all potential JSON objects by matching balanced braces
         def find_json_objects(s: str) -> list:
             objects = []
             depth = 0
             start = None
             for i, char in enumerate(s):
-                if char == '{':
+                if char == "{":
                     if depth == 0:
                         start = i
                     depth += 1
-                elif char == '}':
+                elif char == "}":
                     depth -= 1
                     if depth == 0 and start is not None:
-                        objects.append(s[start:i+1])
+                        objects.append(s[start : i + 1])
                         start = None
             return objects
-        
+
         json_objects = find_json_objects(clean_text)
-        
+
         # Try parsing from last to first (most recent JSON is likely the answer)
         for obj_str in reversed(json_objects):
             try:
@@ -237,7 +238,7 @@ class ReasoningLLMJudge:
                     return parsed
             except json.JSONDecodeError:
                 continue
-        
+
         # Fallback: try any valid JSON object
         for obj_str in reversed(json_objects):
             try:
@@ -246,16 +247,16 @@ class ReasoningLLMJudge:
                     return parsed
             except json.JSONDecodeError:
                 continue
-        
+
         logger.debug("ReasoningLLMJudge: no valid JSON found in response.")
         return None
 
 
-_judge_instance: Optional[ReasoningLLMJudge] = None
+_judge_instance: ReasoningLLMJudge | None = None
 _judge_lock = threading.Lock()
 
 
-def get_reasoning_judge() -> Optional[ReasoningLLMJudge]:
+def get_reasoning_judge() -> ReasoningLLMJudge | None:
     """Return a singleton judge instance, or None if initialization fails."""
 
     global _judge_instance

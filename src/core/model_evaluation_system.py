@@ -23,27 +23,26 @@ Para timeframe 1min:
 - Latencia total del pipeline < 30s ideal, < 60s máximo
 - Por agente: < 5s para agentes paralelos, < 10s para agentes secuenciales
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-import time
 import logging
+import statistics
+import time
 from dataclasses import dataclass, field
-from typing import Any
 from datetime import datetime
 from pathlib import Path
-import statistics
+from typing import Any
+
+from config.llm_provider_config import LLMProvidersConfig
 
 # Importar el orchestrator
 from src.core.langgraph_orchestrator import (
     FenixTradingGraph,
-    AGENT_VALIDATION_RULES,
     validate_agent_response,
-    get_retry_stats,
-    log_retry_stats,
 )
-from config.llm_provider_config import LLMProvidersConfig
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +50,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ModelScore:
     """Puntuación de un modelo para un agente específico."""
+
     model_name: str
     agent_type: str
 
@@ -108,7 +108,9 @@ class ModelScore:
         """Tasa de errores (0.0 - 1.0)."""
         if self.total_invocations == 0:
             return 0.0
-        total_errors = sum(self.validation_errors.values()) + self.json_parse_errors + self.timeout_errors
+        total_errors = (
+            sum(self.validation_errors.values()) + self.json_parse_errors + self.timeout_errors
+        )
         return total_errors / self.total_invocations
 
     @property
@@ -143,8 +145,12 @@ class ModelScore:
         stability_score = (1 - self.error_rate) * 100
 
         # Puntuación ponderada
-        return (speed_score * 0.40 + validation_score * 0.30 +
-                coherence_score * 0.20 + stability_score * 0.10)
+        return (
+            speed_score * 0.40
+            + validation_score * 0.30
+            + coherence_score * 0.20
+            + stability_score * 0.10
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convierte a diccionario para serialización."""
@@ -176,21 +182,17 @@ class ModelEvaluationSystem:
         # Rápidos (8B-14B) - Ideal para 1min
         "rnj-1:8b-cloud",
         "ministral-3:14b-cloud",
-
         # Medianos (24B-30B) - Balance
         "devstral-small-2:24b-cloud",
         "nemotron-3-nano:30b-cloud",
-
         # Grandes (varios tamaños) - Mayor capacidad, más lento
         "kimi-k2.5:cloud",
         "deepseek-v3.2:cloud",
         "minimax-m2.1:cloud",
         "glm-4.7:cloud",
-
         # Muy grandes (80B+) - Solo para agentes críticos
         "qwen3-next:80b-cloud",
         "gpt-oss:120b-cloud",
-
         # Especializados
         "kimi-k2-thinking:cloud",  # Thinking model
         "gemini-3-flash-preview:cloud",  # Vision + rápido
@@ -247,7 +249,12 @@ class ModelEvaluationSystem:
             "qabba": {**base_config, "temperature": 0.05, "max_tokens": 1200},
             "decision": {**base_config, "temperature": 0.1, "max_tokens": 2000},
             "risk_manager": {**base_config, "temperature": 0.15, "max_tokens": 1500},
-            "visual": {**base_config, "temperature": 0.05, "max_tokens": 1500, "supports_vision": True},
+            "visual": {
+                **base_config,
+                "temperature": 0.05,
+                "max_tokens": 1500,
+                "supports_vision": True,
+            },
         }
 
         # Crear config
@@ -317,7 +324,9 @@ class ModelEvaluationSystem:
                 score.last_tested = datetime.now()
 
                 # Obtener reporte del agente
-                report_key = f"{agent_type}_report" if agent_type != "risk_manager" else "risk_assessment"
+                report_key = (
+                    f"{agent_type}_report" if agent_type != "risk_manager" else "risk_assessment"
+                )
                 if agent_type == "decision":
                     report_key = "decision_report"
                 elif agent_type == "technical":
@@ -338,11 +347,15 @@ class ModelEvaluationSystem:
                 else:
                     for error in validation_errors:
                         error_type = error.split(":")[0]
-                        score.validation_errors[error_type] = score.validation_errors.get(error_type, 0) + 1
+                        score.validation_errors[error_type] = (
+                            score.validation_errors.get(error_type, 0) + 1
+                        )
 
                 # Verificar coherencia técnica (si hay datos de mercado)
                 if "market_context" in test_data:
-                    coherence = self._check_coherence(report, agent_type, test_data["market_context"])
+                    coherence = self._check_coherence(
+                        report, agent_type, test_data["market_context"]
+                    )
                     if coherence:
                         score.coherent_signals += 1
 
@@ -350,18 +363,20 @@ class ModelEvaluationSystem:
                 if report.get("parse_error") or report.get("_validation_failed"):
                     score.json_parse_errors += 1
 
-                logger.info(f"  Iteración {i+1}/{iterations}: {latency_ms:.0f}ms | "
-                           f"Valid: {not validation_errors} | "
-                           f"Coherente: {score.coherent_signals}")
+                logger.info(
+                    f"  Iteración {i + 1}/{iterations}: {latency_ms:.0f}ms | "
+                    f"Valid: {not validation_errors} | "
+                    f"Coherente: {score.coherent_signals}"
+                )
 
             except asyncio.TimeoutError:
                 score.timeout_errors += 1
                 score.total_invocations += 1
-                logger.warning(f"  Iteración {i+1}/{iterations}: TIMEOUT")
+                logger.warning(f"  Iteración {i + 1}/{iterations}: TIMEOUT")
             except Exception as e:
                 score.json_parse_errors += 1
                 score.total_invocations += 1
-                logger.error(f"  Iteración {i+1}/{iterations}: ERROR - {e}")
+                logger.error(f"  Iteración {i + 1}/{iterations}: ERROR - {e}")
 
         logger.info(f"✅ Evaluación completada: Score compuesto = {score.composite_score:.1f}")
         return score
@@ -394,7 +409,9 @@ class ModelEvaluationSystem:
         elif agent_type == "sentiment":
             sentiment = report.get("overall_sentiment", "NEUTRAL")
             # Convertir sentimiento a señal aproximada
-            signal = "BUY" if sentiment == "POSITIVE" else "SELL" if sentiment == "NEGATIVE" else "HOLD"
+            signal = (
+                "BUY" if sentiment == "POSITIVE" else "SELL" if sentiment == "NEGATIVE" else "HOLD"
+            )
         elif agent_type == "visual":
             signal = report.get("action", "HOLD")
         elif agent_type == "qabba":
@@ -525,15 +542,17 @@ class ModelEvaluationSystem:
                 },
             ]
 
-        logger.info(f"🚀 Iniciando evaluación completa: {len(models)} modelos x {len(agents)} agentes x {len(test_scenarios)} escenarios")
+        logger.info(
+            f"🚀 Iniciando evaluación completa: {len(models)} modelos x {len(agents)} agentes x {len(test_scenarios)} escenarios"
+        )
 
         total_tests = len(models) * len(agents) * len(test_scenarios)
         completed = 0
 
         for agent in agents:
-            logger.info(f"\n{'='*60}")
+            logger.info(f"\n{'=' * 60}")
             logger.info(f"📊 Evaluando agente: {agent.upper()}")
-            logger.info(f"{'='*60}")
+            logger.info(f"{'=' * 60}")
 
             for model in models:
                 logger.info(f"\n🔧 Modelo: {model}")
@@ -569,7 +588,9 @@ class ModelEvaluationSystem:
 
         return results
 
-    def determine_best_assignment(self, results: dict[str, dict[str, ModelScore]]) -> dict[str, str]:
+    def determine_best_assignment(
+        self, results: dict[str, dict[str, ModelScore]]
+    ) -> dict[str, str]:
         """
         Determina la mejor asignación de modelos a agentes basada en scores.
 
@@ -615,37 +636,39 @@ class ModelEvaluationSystem:
                 continue
 
             # Ordenar por score
-            sorted_models = sorted(model_scores.items(), key=lambda x: x[1].composite_score, reverse=True)
+            sorted_models = sorted(
+                model_scores.items(), key=lambda x: x[1].composite_score, reverse=True
+            )
 
             best = sorted_models[0]
             best_model, best_score = best
 
             # Recomendación principal
-            rec = f"\n{'='*60}\n"
+            rec = f"\n{'=' * 60}\n"
             rec += f"📌 AGENTE: {agent.upper()}\n"
-            rec += f"{'='*60}\n"
+            rec += f"{'=' * 60}\n"
             rec += f"🥇 MEJOR MODELO: {best_model}\n"
             rec += f"   Score compuesto: {best_score.composite_score:.1f}/100\n"
-            rec += f"   Latencia promedio: {best_score.avg_latency_ms:.0f}ms ({best_score.avg_latency_ms/1000:.1f}s)\n"
+            rec += f"   Latencia promedio: {best_score.avg_latency_ms:.0f}ms ({best_score.avg_latency_ms / 1000:.1f}s)\n"
             rec += f"   Tasa de validación: {best_score.validation_rate:.1%}\n"
             rec += f"   Tasa de coherencia: {best_score.coherence_rate:.1%}\n"
             rec += f"   Invocaciones: {best_score.total_invocations}\n"
 
             # Modelos alternativos
             if len(sorted_models) > 1:
-                rec += f"\n🥈 ALTERNATIVAS:\n"
+                rec += "\n🥈 ALTERNATIVAS:\n"
                 for model, score in sorted_models[1:4]:  # Top 3 alternativas
                     rec += f"   - {model}: {score.composite_score:.1f}/100 "
                     rec += f"({score.avg_latency_ms:.0f}ms, {score.validation_rate:.0%} valid)\n"
 
             # Advertencias para timeframe 1min
             if best_score.avg_latency_ms > 5000:  # > 5s
-                rec += f"\n⚠️ ADVERTENCIA: Latencia alta para 1min timeframe\n"
-                rec += f"   Considerar modelos más rápidos si el pipeline es lento.\n"
+                rec += "\n⚠️ ADVERTENCIA: Latencia alta para 1min timeframe\n"
+                rec += "   Considerar modelos más rápidos si el pipeline es lento.\n"
 
             if best_score.validation_rate < 0.8:  # < 80%
-                rec += f"\n⚠️ ADVERTENCIA: Tasa de validación baja\n"
-                rec += f"   El modelo tiene dificultades con el formato JSON requerido.\n"
+                rec += "\n⚠️ ADVERTENCIA: Tasa de validación baja\n"
+                rec += "   El modelo tiene dificultades con el formato JSON requerido.\n"
 
             recommendations.append(rec)
 
@@ -690,42 +713,48 @@ class ModelEvaluationSystem:
 
     def print_leaderboard(self, results: dict[str, dict[str, ModelScore]]):
         """Imprime tabla de clasificación por agente."""
-        print("\n" + "="*100)
+        print("\n" + "=" * 100)
         print("🏆 LEADERBOARD - MEJORES MODELOS POR AGENTE (Timeframe 1min)")
-        print("="*100)
+        print("=" * 100)
 
         for agent in self.AGENT_TYPES:
             if agent not in results or not results[agent]:
                 continue
 
             print(f"\n📊 {agent.upper()}")
-            print("-"*100)
-            print(f"{'Rank':<6} {'Modelo':<35} {'Score':<8} {'Latencia':<12} {'Valid%':<8} {'Coh%':<8} {'Invoc':<8}")
-            print("-"*100)
+            print("-" * 100)
+            print(
+                f"{'Rank':<6} {'Modelo':<35} {'Score':<8} {'Latencia':<12} {'Valid%':<8} {'Coh%':<8} {'Invoc':<8}"
+            )
+            print("-" * 100)
 
-            sorted_models = sorted(results[agent].items(), key=lambda x: x[1].composite_score, reverse=True)
+            sorted_models = sorted(
+                results[agent].items(), key=lambda x: x[1].composite_score, reverse=True
+            )
 
             for rank, (model, score) in enumerate(sorted_models[:10], 1):  # Top 10
                 medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-                print(f"{medal} {rank:<4} {model:<35} {score.composite_score:<8.1f} "
-                      f"{score.avg_latency_ms:<12.0f} {score.validation_rate:<8.1%} "
-                      f"{score.coherence_rate:<8.1%} {score.total_invocations:<8}")
+                print(
+                    f"{medal} {rank:<4} {model:<35} {score.composite_score:<8.1f} "
+                    f"{score.avg_latency_ms:<12.0f} {score.validation_rate:<8.1%} "
+                    f"{score.coherence_rate:<8.1%} {score.total_invocations:<8}"
+                )
 
-        print("\n" + "="*100)
+        print("\n" + "=" * 100)
 
 
 async def main():
     """Función principal de evaluación."""
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("🔬 SISTEMA DE EVALUACIÓN DE MODELOS LLM - FENIX TRADING BOT")
-    print("="*80)
+    print("=" * 80)
     print("\nConfiguración:")
     print("  - Timeframe: 1min (producción)")
     print("  - Modelos disponibles: 14")
     print("  - Agentes a evaluar: 6")
     print("  - Iteraciones por test: 5")
     print("  - Escenarios de mercado: 3 (bullish, bearish, neutral)")
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
 
     # Crear sistema de evaluación
     evaluator = ModelEvaluationSystem()
@@ -733,12 +762,12 @@ async def main():
     # Para pruebas rápidas, podemos limitar modelos
     # En producción, evaluar todos
     quick_test_models = [
-        "rnj-1:8b-cloud",           # Rápido, ligero
-        "ministral-3:14b-cloud",    # Balance
+        "rnj-1:8b-cloud",  # Rápido, ligero
+        "ministral-3:14b-cloud",  # Balance
         "devstral-small-2:24b-cloud",  # Razonamiento
-        "nemotron-3-nano:30b-cloud",   # Técnico
-        "kimi-k2.5:cloud",          # Potente
-        "deepseek-v3.2:cloud",      # Análisis
+        "nemotron-3-nano:30b-cloud",  # Técnico
+        "kimi-k2.5:cloud",  # Potente
+        "deepseek-v3.2:cloud",  # Análisis
     ]
 
     print("\n🚀 Iniciando evaluación con modelos:")
@@ -762,9 +791,9 @@ async def main():
         evaluator.print_leaderboard(results)
 
         # Imprimir recomendaciones
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("📋 RECOMENDACIONES PARA CONFIGURACIÓN EN PRODUCCIÓN (1min)")
-        print("="*80)
+        print("=" * 80)
         for rec in recommendations:
             print(rec)
 
@@ -773,20 +802,20 @@ async def main():
         print(f"\n💾 Resultados completos guardados en: {filepath}")
 
         # Mostrar configuración recomendada
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("⚙️  CONFIGURACIÓN YAML RECOMENDADA (ollama_cloud_optimized.yaml)")
-        print("="*80)
+        print("=" * 80)
         print("\nollama_cloud_optimized:")
         for agent, model in assignment.items():
             config = evaluator.create_test_config(model, agent)
             agent_config = getattr(config, agent, {})
             print(f"  {agent}:")
-            print(f"    provider_type: \"ollama_cloud\"")
-            print(f"    model_name: \"{model}\"")
+            print('    provider_type: "ollama_cloud"')
+            print(f'    model_name: "{model}"')
             print(f"    temperature: {agent_config.get('temperature', 0.1)}")
             print(f"    max_tokens: {agent_config.get('max_tokens', 2000)}")
             print(f"    timeout: {agent_config.get('timeout', 30)}")
-            print(f"    api_base: \"http://localhost:11434\"")
+            print('    api_base: "http://localhost:11434"')
 
     except Exception as e:
         logger.error(f"Error en evaluación: {e}", exc_info=True)

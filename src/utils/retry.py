@@ -6,6 +6,7 @@ Módulo de Retry y Recuperación para Fenix Trading Bot.
 Implementa patrones de resiliencia: exponential backoff, circuit breaker,
 y recuperación automática.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,10 +14,11 @@ import functools
 import logging
 import random
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +27,16 @@ T = TypeVar("T")
 
 class CircuitState(Enum):
     """Estados del circuit breaker."""
-    CLOSED = "closed"      # Normal, permitiendo requests
-    OPEN = "open"          # Fallando, bloqueando requests
+
+    CLOSED = "closed"  # Normal, permitiendo requests
+    OPEN = "open"  # Fallando, bloqueando requests
     HALF_OPEN = "half_open"  # Probando recuperación
 
 
 @dataclass
 class RetryConfig:
     """Configuración de retry."""
+
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 60.0
@@ -44,6 +48,7 @@ class RetryConfig:
 @dataclass
 class CircuitBreakerConfig:
     """Configuración de circuit breaker."""
+
     failure_threshold: int = 5
     success_threshold: int = 2
     timeout: float = 30.0
@@ -53,11 +58,12 @@ class CircuitBreakerConfig:
 @dataclass
 class CircuitBreakerState:
     """Estado del circuit breaker."""
+
     state: CircuitState = CircuitState.CLOSED
     failure_count: int = 0
     success_count: int = 0
     last_failure_time: datetime | None = None
-    
+
 
 def calculate_delay(
     attempt: int,
@@ -65,18 +71,18 @@ def calculate_delay(
 ) -> float:
     """
     Calcula el delay para el próximo retry con exponential backoff.
-    
+
     delay = min(base_delay * (exponential_base ^ attempt), max_delay)
     + jitter aleatorio opcional
     """
-    delay = config.base_delay * (config.exponential_base ** attempt)
+    delay = config.base_delay * (config.exponential_base**attempt)
     delay = min(delay, config.max_delay)
-    
+
     if config.jitter:
         # Jitter de ±25%
         jitter_factor = 1 + random.uniform(-0.25, 0.25)
         delay *= jitter_factor
-    
+
     return delay
 
 
@@ -88,7 +94,7 @@ def retry(
 ) -> Callable:
     """
     Decorator para retry con exponential backoff (funciones síncronas).
-    
+
     Uso:
         @retry(max_retries=3)
         def fetch_data():
@@ -100,18 +106,18 @@ def retry(
         max_delay=max_delay,
         retryable_exceptions=retryable_exceptions,
     )
-    
+
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> T:
             last_exception = None
-            
+
             for attempt in range(config.max_retries + 1):
                 try:
                     return func(*args, **kwargs)
                 except config.retryable_exceptions as e:
                     last_exception = e
-                    
+
                     if attempt < config.max_retries:
                         delay = calculate_delay(attempt, config)
                         logger.warning(
@@ -121,13 +127,13 @@ def retry(
                         time.sleep(delay)
                     else:
                         logger.error(
-                            f"All {config.max_retries} retries failed for "
-                            f"{func.__name__}: {e}"
+                            f"All {config.max_retries} retries failed for {func.__name__}: {e}"
                         )
-            
+
             raise last_exception
-        
+
         return wrapper
+
     return decorator
 
 
@@ -139,7 +145,7 @@ def async_retry(
 ) -> Callable:
     """
     Decorator para retry con exponential backoff (funciones async).
-    
+
     Uso:
         @async_retry(max_retries=3)
         async def fetch_data():
@@ -151,18 +157,18 @@ def async_retry(
         max_delay=max_delay,
         retryable_exceptions=retryable_exceptions,
     )
-    
+
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             last_exception = None
-            
+
             for attempt in range(config.max_retries + 1):
                 try:
                     return await func(*args, **kwargs)
                 except config.retryable_exceptions as e:
                     last_exception = e
-                    
+
                     if attempt < config.max_retries:
                         delay = calculate_delay(attempt, config)
                         logger.warning(
@@ -175,30 +181,31 @@ def async_retry(
                             f"All {config.max_retries} async retries failed for "
                             f"{func.__name__}: {e}"
                         )
-            
+
             raise last_exception
-        
+
         return wrapper
+
     return decorator
 
 
 class CircuitBreaker:
     """
     Implementación de Circuit Breaker para proteger servicios.
-    
+
     Estados:
     - CLOSED: Normal, requests permitidos
     - OPEN: Servicio fallando, requests bloqueados
     - HALF_OPEN: Probando si el servicio se recuperó
-    
+
     Uso:
         breaker = CircuitBreaker(name="binance")
-        
+
         @breaker
         async def call_api():
             ...
     """
-    
+
     def __init__(
         self,
         name: str,
@@ -210,12 +217,12 @@ class CircuitBreaker:
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.success_threshold = success_threshold
-        
+
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._success_count = 0
         self._last_failure: datetime | None = None
-        
+
     @property
     def state(self) -> CircuitState:
         """Retorna el estado actual, actualizando si es necesario."""
@@ -224,15 +231,15 @@ class CircuitBreaker:
                 self._state = CircuitState.HALF_OPEN
                 self._success_count = 0
         return self._state
-    
+
     def _should_try_recovery(self) -> bool:
         """Verifica si es momento de intentar recuperación."""
         if self._last_failure is None:
             return True
-        
+
         elapsed = (datetime.now() - self._last_failure).total_seconds()
         return elapsed >= self.recovery_timeout
-    
+
     def record_success(self) -> None:
         """Registra una llamada exitosa."""
         if self._state == CircuitState.HALF_OPEN:
@@ -243,32 +250,30 @@ class CircuitBreaker:
                 self._failure_count = 0
         elif self._state == CircuitState.CLOSED:
             self._failure_count = 0
-    
+
     def record_failure(self, exception: Exception) -> None:
         """Registra una falla."""
         self._failure_count += 1
         self._last_failure = datetime.now()
-        
+
         if self._state == CircuitState.HALF_OPEN:
             logger.warning(f"Circuit breaker '{self.name}' failed in half-open, reopening")
             self._state = CircuitState.OPEN
         elif self._failure_count >= self.failure_threshold:
             logger.error(
-                f"Circuit breaker '{self.name}' opened after "
-                f"{self._failure_count} failures"
+                f"Circuit breaker '{self.name}' opened after {self._failure_count} failures"
             )
             self._state = CircuitState.OPEN
-    
+
     def __call__(self, func: Callable) -> Callable:
         """Permite usar el circuit breaker como decorator."""
         if asyncio.iscoroutinefunction(func):
+
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
                 if self.state == CircuitState.OPEN:
-                    raise CircuitBreakerOpenError(
-                        f"Circuit breaker '{self.name}' is open"
-                    )
-                
+                    raise CircuitBreakerOpenError(f"Circuit breaker '{self.name}' is open")
+
                 try:
                     result = await func(*args, **kwargs)
                     self.record_success()
@@ -276,16 +281,15 @@ class CircuitBreaker:
                 except Exception as e:
                     self.record_failure(e)
                     raise
-            
+
             return async_wrapper
         else:
+
             @functools.wraps(func)
             def sync_wrapper(*args, **kwargs):
                 if self.state == CircuitState.OPEN:
-                    raise CircuitBreakerOpenError(
-                        f"Circuit breaker '{self.name}' is open"
-                    )
-                
+                    raise CircuitBreakerOpenError(f"Circuit breaker '{self.name}' is open")
+
                 try:
                     result = func(*args, **kwargs)
                     self.record_success()
@@ -293,9 +297,9 @@ class CircuitBreaker:
                 except Exception as e:
                     self.record_failure(e)
                     raise
-            
+
             return sync_wrapper
-    
+
     def get_status(self) -> dict[str, Any]:
         """Retorna el estado actual del circuit breaker."""
         return {
@@ -309,6 +313,7 @@ class CircuitBreaker:
 
 class CircuitBreakerOpenError(Exception):
     """Excepción cuando el circuit breaker está abierto."""
+
     pass
 
 
@@ -345,7 +350,7 @@ def get_all_circuit_breakers_status() -> list[dict[str, Any]]:
 
 if __name__ == "__main__":
     import httpx
-    
+
     # Ejemplo con retry
     @retry(max_retries=3, base_delay=0.5)
     def fetch_price_sync():
@@ -353,18 +358,20 @@ if __name__ == "__main__":
         if random.random() < 0.7:  # 70% de falla
             raise ConnectionError("Simulated failure")
         return {"price": 67000}
-    
+
     # Ejemplo con async retry y circuit breaker
     binance_breaker = get_circuit_breaker("binance", failure_threshold=3)
-    
+
     @binance_breaker
     @async_retry(max_retries=2, base_delay=1.0)
     async def fetch_price_async():
         """Fetch con protección completa."""
         async with httpx.AsyncClient() as client:
-            response = await client.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+            response = await client.get(
+                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+            )
             return response.json()
-    
+
     # Test
     print("=== Test de Retry ===")
     try:
@@ -372,6 +379,6 @@ if __name__ == "__main__":
         print(f"Éxito: {result}")
     except ConnectionError as e:
         print(f"Falló después de todos los retries: {e}")
-    
+
     print("\n=== Test de Circuit Breaker ===")
     print(f"Estado: {binance_breaker.get_status()}")

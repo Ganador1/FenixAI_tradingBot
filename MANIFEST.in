@@ -1,0 +1,16 @@
+prune logs
+prune src/logs
+prune cache
+prune .pytest_cache
+prune htmlcov
+prune backups
+prune .venv
+prune fenix_env
+prune frontend/node_modules
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]
+recursive-exclude * *.log
+recursive-exclude * *.jsonl
+recursive-exclude * *.pkl
+recursive-exclude * *.pickle
+recursive-exclude * .DS_Store

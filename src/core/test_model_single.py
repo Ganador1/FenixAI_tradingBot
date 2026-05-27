@@ -14,24 +14,24 @@ Salida:
     - Ejemplo de respuesta
     - Errores detectados
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-import time
 import sys
+import time
 from pathlib import Path
 
 # Agregar proyecto al path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from config.llm_provider_config import LLMProvidersConfig
 from src.core.langgraph_orchestrator import (
     FenixTradingGraph,
     validate_agent_response,
-    AGENT_VALIDATION_RULES,
 )
-from config.llm_provider_config import LLMProvidersConfig
 
 
 def create_single_model_config(model: str, agent: str) -> LLMProvidersConfig:
@@ -75,9 +75,9 @@ async def test_model(
     Returns:
         Dict con resultados de la prueba
     """
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"🔬 Prueba: {model} → {agent}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Crear configuración
     config = create_single_model_config(model, agent)
@@ -144,7 +144,7 @@ async def test_model(
         scenario = test_scenarios[scenario_idx % len(test_scenarios)]
         scenario_idx += 1
 
-        print(f"\n🔄 Iteración {i+1}/{iterations}...")
+        print(f"\n🔄 Iteración {i + 1}/{iterations}...")
 
         start = time.time()
         try:
@@ -176,10 +176,12 @@ async def test_model(
             errors = validate_agent_response(agent, report)
             if errors:
                 results["validations_failed"] += 1
-                results["errors"].append({
-                    "iteration": i,
-                    "errors": errors,
-                })
+                results["errors"].append(
+                    {
+                        "iteration": i,
+                        "errors": errors,
+                    }
+                )
                 print(f"   ❌ Validación fallida: {errors}")
             else:
                 results["validations_passed"] += 1
@@ -193,10 +195,12 @@ async def test_model(
         except Exception as e:
             latency_ms = (time.time() - start) * 1000
             results["latencies_ms"].append(latency_ms)
-            results["errors"].append({
-                "iteration": i,
-                "exception": str(e),
-            })
+            results["errors"].append(
+                {
+                    "iteration": i,
+                    "exception": str(e),
+                }
+            )
             print(f"   ❌ Error: {e}")
 
     return results
@@ -204,9 +208,9 @@ async def test_model(
 
 def print_results(results: dict):
     """Imprime resultados formateados."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("📊 RESULTADOS")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     latencies = results["latencies_ms"]
     if latencies:
@@ -214,15 +218,15 @@ def print_results(results: dict):
         min_latency = min(latencies)
         max_latency = max(latencies)
 
-        print(f"\n⚡ Latencia:")
-        print(f"   Promedio: {avg_latency:.0f}ms ({avg_latency/1000:.1f}s)")
+        print("\n⚡ Latencia:")
+        print(f"   Promedio: {avg_latency:.0f}ms ({avg_latency / 1000:.1f}s)")
         print(f"   Mínima: {min_latency:.0f}ms")
         print(f"   Máxima: {max_latency:.0f}ms")
 
     total = results["validations_passed"] + results["validations_failed"]
     if total > 0:
         success_rate = results["validations_passed"] / total
-        print(f"\n✅ Validación:")
+        print("\n✅ Validación:")
         print(f"   Exitosas: {results['validations_passed']}/{total} ({success_rate:.1%})")
         print(f"   Fallidas: {results['validations_failed']}/{total}")
 
@@ -246,66 +250,60 @@ def print_results(results: dict):
 
         # Recomendación
         if final_score >= 80:
-            print(f"\n✅ RECOMENDADO para producción 1min")
+            print("\n✅ RECOMENDADO para producción 1min")
         elif final_score >= 60:
-            print(f"\n⚠️ ACEPTABLE pero con reservas")
+            print("\n⚠️ ACEPTABLE pero con reservas")
         else:
-            print(f"\n❌ NO RECOMENDADO - Considerar alternativas")
+            print("\n❌ NO RECOMENDADO - Considerar alternativas")
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Prueba rápida de modelo individual para Fenix"
-    )
+    parser = argparse.ArgumentParser(description="Prueba rápida de modelo individual para Fenix")
     parser.add_argument(
         "--model",
         type=str,
         required=True,
-        help="Nombre del modelo a probar (ej: ministral-3:14b-cloud)"
+        help="Nombre del modelo a probar (ej: ministral-3:14b-cloud)",
     )
     parser.add_argument(
         "--agent",
         type=str,
         required=True,
         choices=["technical", "sentiment", "qabba", "decision", "risk_manager", "visual"],
-        help="Agente a probar"
+        help="Agente a probar",
     )
     parser.add_argument(
-        "--iterations",
-        type=int,
-        default=5,
-        help="Número de iteraciones (default: 5)"
+        "--iterations", type=int, default=5, help="Número de iteraciones (default: 5)"
     )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Mostrar respuestas completas"
-    )
+    parser.add_argument("--verbose", action="store_true", help="Mostrar respuestas completas")
 
     args = parser.parse_args()
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("🧪 TEST DE MODELO INDIVIDUAL - FENIX TRADING BOT")
-    print("="*70)
+    print("=" * 70)
     print(f"\nModelo: {args.model}")
     print(f"Agente: {args.agent}")
     print(f"Iteraciones: {args.iterations}")
 
     # Ejecutar prueba
-    results = asyncio.run(test_model(
-        model=args.model,
-        agent=args.agent,
-        iterations=args.iterations,
-        verbose=args.verbose,
-    ))
+    results = asyncio.run(
+        test_model(
+            model=args.model,
+            agent=args.agent,
+            iterations=args.iterations,
+            verbose=args.verbose,
+        )
+    )
 
     # Imprimir resultados
     print_results(results)
 
     # Guardar resultados
     import os
+
     os.makedirs("logs/model_tests", exist_ok=True)
     filename = f"logs/model_tests/test_{args.model.replace(':', '_')}_{args.agent}.json"
 
