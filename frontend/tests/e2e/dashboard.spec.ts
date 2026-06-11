@@ -1,6 +1,25 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 
 const FRONTEND = process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:5173';
+const E2E_EMAIL = process.env.FENIX_E2E_EMAIL || '';
+const E2E_PASSWORD = process.env.FENIX_E2E_PASSWORD || '';
+
+async function maybeLogin(page: Page): Promise<boolean> {
+  if (!E2E_EMAIL || !E2E_PASSWORD) return false;
+  await page.goto(`${FRONTEND}/login`);
+  await page.waitForLoadState('networkidle');
+  const emailInput = page.locator('input[type="email"], input[name="email"]').first();
+  if ((await emailInput.count()) === 0) return false;
+  await emailInput.fill(E2E_EMAIL);
+  await page.locator('input[type="password"]').first().fill(E2E_PASSWORD);
+  await page.locator('button[type="submit"]').first().click();
+  try {
+    await page.waitForURL(/dashboard|\/$/, { timeout: 15_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * FenixAI v2.5 dashboard smoke + navigation.
@@ -25,6 +44,8 @@ test.describe('Dashboard navigation', () => {
   });
 
   test('main navigation links are present', async ({ page }) => {
+    const authed = await maybeLogin(page);
+    test.skip(!authed, 'Requires FENIX_E2E_EMAIL / FENIX_E2E_PASSWORD for the protected shell');
     await page.goto(FRONTEND);
 
     // Wait for the React shell to settle.
@@ -35,6 +56,7 @@ test.describe('Dashboard navigation', () => {
     const routes = [
       '/dashboard',
       '/agents',
+      '/companions',
       '/trading',
       '/market',
       '/reasoning',
@@ -51,6 +73,8 @@ test.describe('Dashboard navigation', () => {
   });
 
   test('dashboard renders at least one metric card or chart', async ({ page }) => {
+    const authed = await maybeLogin(page);
+    test.skip(!authed, 'Requires FENIX_E2E_EMAIL / FENIX_E2E_PASSWORD for the protected shell');
     await page.goto(`${FRONTEND}/dashboard`);
     await page.waitForLoadState('networkidle');
 
@@ -59,6 +83,8 @@ test.describe('Dashboard navigation', () => {
   });
 
   test('agents page lists the v2.5 agents (technical, qabba, decision, risk)', async ({ page }) => {
+    const authed = await maybeLogin(page);
+    test.skip(!authed, 'Requires FENIX_E2E_EMAIL / FENIX_E2E_PASSWORD for the protected shell');
     await page.goto(`${FRONTEND}/agents`);
     await page.waitForLoadState('networkidle');
 

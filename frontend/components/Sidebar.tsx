@@ -11,7 +11,8 @@ import {
   Database,
   Shield,
   Sparkles,
-  Wifi
+  Wifi,
+  Cpu
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -39,6 +40,13 @@ const sidebarItems = [
     href: '/agents',
     icon: Brain,
     roles: ['admin', 'analyst', 'ai_agent']
+  },
+  {
+    name: 'Companions',
+    href: '/companions',
+    icon: Cpu,
+    roles: ['admin', 'trader', 'analyst'],
+    badge: 'v2.5'
   },
   {
     name: 'Reasoning Bank',
@@ -110,6 +118,11 @@ export function Sidebar() {
                       <item.icon className={cn("w-4 h-4", active ? "text-blue-600" : "text-gray-500")}/>
                     </div>
                     <span className="font-medium tracking-tight">{item.name}</span>
+                    {'badge' in item && item.badge && (
+                      <span className="text-[10px] font-semibold uppercase tracking-wide bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2 py-0.5">
+                        {item.badge}
+                      </span>
+                    )}
                   </div>
                   {active && (
                     <Sparkles className="w-4 h-4 text-blue-500" />

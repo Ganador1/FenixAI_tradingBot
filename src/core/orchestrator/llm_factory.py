@@ -507,7 +507,7 @@ class LLMFactory:
                     f"Attempting fallback: {config.fallback_provider_type}/{config.fallback_model_name}"
                 )
                 return self._create_llm(fallback_config)
-            allow_stub = os.getenv("LLM_ALLOW_NOOP_STUB", "1") == "1"
+            allow_stub = os.getenv("LLM_ALLOW_NOOP_STUB", "0") == "1"
             if allow_stub:
                 logger.warning("Returning NoopStub LLM to allow graph initialization in dev/test")
 

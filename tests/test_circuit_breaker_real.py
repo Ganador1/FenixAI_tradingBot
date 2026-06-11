@@ -528,17 +528,36 @@ class TestCircuitBreakerReal:
         config = RiskFeedbackLoopConfig()
         manager1 = RuntimeRiskManager(config=config, storage_path=storage_path)
         
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         manager1._daily_pnl = 150.0
         manager1._peak_balance = 11000.0
-        manager1._last_trading_day = "2025-01-28"
+        manager1._last_trading_day = today
         manager1._save_state()
         
-        # Create new manager - should load from disk
+        # Create new manager - should load from disk (same trading day)
         manager2 = RuntimeRiskManager(config=config, storage_path=storage_path)
         
         assert manager2._daily_pnl == 150.0, f"Expected 150.0, got {manager2._daily_pnl}"
         assert manager2._peak_balance == 11000.0, f"Expected 11000.0, got {manager2._peak_balance}"
-        assert manager2._last_trading_day == "2025-01-28"
+        assert manager2._last_trading_day == today
+
+    def test_state_persistence_stale_day_resets_daily_pnl(self, temp_dir):
+        """Daily PnL from a previous trading day must NOT leak into today."""
+        storage_path = os.path.join(temp_dir, "persist_stale.jsonl")
+
+        config = RiskFeedbackLoopConfig()
+        manager1 = RuntimeRiskManager(config=config, storage_path=storage_path)
+
+        manager1._daily_pnl = -500.0
+        manager1._peak_balance = 11000.0
+        manager1._last_trading_day = "2025-01-28"
+        manager1._save_state()
+
+        manager2 = RuntimeRiskManager(config=config, storage_path=storage_path)
+
+        # Stale daily metrics are discarded; peak balances survive.
+        assert manager2._daily_pnl == 0.0
+        assert manager2._peak_balance == 11000.0
     
     def test_metrics_total_pnl_calculation(self, fresh_manager):
         """Total PnL is sum of all trades."""

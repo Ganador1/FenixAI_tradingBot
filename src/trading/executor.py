@@ -154,8 +154,10 @@ class OrderExecutor:
         return f"{price:.{self.price_precision}f}"
 
     def format_quantity(self, qty: float) -> str:
-        """Format quantity using the symbol precision."""
-        return f"{qty:.{self.qty_precision}f}"
+        """Format quantity using the symbol precision (truncated, never rounded up)."""
+        factor = 10**self.qty_precision
+        truncated = math.floor(qty * factor + 1e-12) / factor
+        return f"{truncated:.{self.qty_precision}f}"
 
     def _resolve_min_protective_pct(self, kind: Literal["sl", "tp"]) -> float:
         """Resolve minimum protective distance as a fraction of entry price."""
@@ -255,8 +257,9 @@ class OrderExecutor:
         """
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        # Check circuit breaker.
-        if not self.circuit_breaker.can_execute():
+        # Check circuit breaker. Always allow reduce-only (close) orders so an
+        # open circuit breaker never traps an exposed position.
+        if not self.circuit_breaker.can_execute() and not reduce_only:
             return OrderResult(
                 success=False,
                 status="CIRCUIT_BREAKER_OPEN",
@@ -278,7 +281,8 @@ class OrderExecutor:
             # Execute market order.
             logger.info(f"Executing MARKET {side} {formatted_qty} {self.symbol}")
 
-            response = self.service.place_market_order(
+            response = await asyncio.to_thread(
+                self.service.place_market_order,
                 symbol=self.symbol,
                 side=side,
                 quantity=float(formatted_qty),
@@ -395,7 +399,7 @@ class OrderExecutor:
         """Wait briefly until Binance exposes the filled position for closePosition orders."""
         for _ in range(max(1, retries)):
             try:
-                position = self.get_position() or {}
+                position = (await asyncio.to_thread(self.get_position)) or {}
                 amt = float(position.get("positionAmt", 0) or 0)
                 if abs(amt) > min_abs_position_amt:
                     return position
@@ -413,7 +417,7 @@ class OrderExecutor:
         """Wait for an order to fill."""
         for i in range(max_retries):
             try:
-                order = self.service.get_order(self.symbol, order_id)
+                order = await asyncio.to_thread(self.service.get_order, self.symbol, order_id)
                 status = order.get("status")
 
                 if status == "FILLED":
@@ -464,10 +468,11 @@ class OrderExecutor:
 
         for _ in range(max(1, retries)):
             try:
-                open_orders = self.service.get_open_orders(self.symbol)
+                open_orders = await asyncio.to_thread(self.service.get_open_orders, self.symbol)
                 if hasattr(self.service, "get_open_algo_orders"):
                     open_orders = list(open_orders or []) + list(
-                        self.service.get_open_algo_orders(self.symbol) or []
+                        (await asyncio.to_thread(self.service.get_open_algo_orders, self.symbol))
+                        or []
                     )
                 visible_ids: set[str] = set()
                 for order in open_orders or []:
@@ -499,7 +504,8 @@ class OrderExecutor:
             return "INVALID_CLOSE_QUANTITY"
 
         try:
-            response = self.service.place_market_order(
+            response = await asyncio.to_thread(
+                self.service.place_market_order,
                 symbol=self.symbol,
                 side=close_side,
                 quantity=float(formatted_qty),
@@ -531,7 +537,7 @@ class OrderExecutor:
         formatted_qty = self.format_quantity(quantity)
         symbol_config = None
         try:
-            symbol_config = self.service.get_symbol_config(self.symbol)
+            symbol_config = await asyncio.to_thread(self.service.get_symbol_config, self.symbol)
         except Exception:
             symbol_config = None
         price_precision = int(
@@ -595,14 +601,15 @@ class OrderExecutor:
             )
 
         try:
-            self.service.cancel_all_open_orders(self.symbol)
+            await asyncio.to_thread(self.service.cancel_all_open_orders, self.symbol)
         except Exception as e:
             logger.debug("Could not clear stale open orders before SL/TP placement: %s", e)
 
         try:
             # Stop Loss
             if stop_loss is not None:
-                sl_response = self.service.place_stop_loss_market(
+                sl_response = await asyncio.to_thread(
+                    self.service.place_stop_loss_market,
                     symbol=self.symbol,
                     side=sltp_side,
                     quantity=float(formatted_qty),
@@ -617,7 +624,8 @@ class OrderExecutor:
         try:
             # Take Profit
             if take_profit is not None:
-                tp_response = self.service.place_take_profit_market(
+                tp_response = await asyncio.to_thread(
+                    self.service.place_take_profit_market,
                     symbol=self.symbol,
                     side=sltp_side,
                     quantity=float(formatted_qty),
@@ -634,7 +642,7 @@ class OrderExecutor:
     async def cancel_order(self, order_id: int) -> bool:
         """Cancel one order."""
         try:
-            self.service.cancel_order(self.symbol, order_id)
+            await asyncio.to_thread(self.service.cancel_order, self.symbol, order_id)
             logger.info(f"Order {order_id} cancelled")
             return True
         except Exception as e:
@@ -655,7 +663,7 @@ class OrderExecutor:
             logger.error("Failed to cancel monitored orders for %s: %s", self.symbol, e)
 
         try:
-            self.service.cancel_all_open_orders(self.symbol)
+            await asyncio.to_thread(self.service.cancel_all_open_orders, self.symbol)
             logger.info(f"All orders cancelled for {self.symbol}")
         except Exception as e:
             success = False

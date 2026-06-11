@@ -30,12 +30,17 @@ class AutoEvaluator:
         self._running = True
         logger.info(f"Starting AutoEvaluator for {self.symbol} (Horizon: {self.horizon}m)")
 
-        # Ensure client is connected (for REST calls it might not be strictly needed but good practice)
-        # BinanceClient might need connect() for async session
-        # await self.client.connect()
+        # Connect the async client; without this every evaluation fails with
+        # "Cliente no conectado" and spams the log.
+        try:
+            await self.client.connect()
+        except Exception as e:
+            logger.error(f"AutoEvaluator could not connect Binance client: {e}")
 
         while self._running:
             try:
+                if self.client._session is None:
+                    await self.client.connect()
                 await self.evaluate_pending_entries()
             except Exception as e:
                 logger.error(f"Error in AutoEvaluator loop: {e}")
@@ -43,7 +48,10 @@ class AutoEvaluator:
 
     async def stop(self):
         self._running = False
-        # await self.client.close()
+        try:
+            await self.client.close()
+        except Exception:
+            pass
 
     async def evaluate_pending_entries(self):
         """Check pending entries and evaluate them if horizon has passed."""

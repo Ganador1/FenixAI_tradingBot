@@ -1,11 +1,13 @@
 import os
+import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Any
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -13,6 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config.database import get_db
 from src.models.user import User
+
+# Load .env so JWT_SECRET works regardless of how the server is started
+# (run_fenix.py, uvicorn, etc.). Without this, users must export it manually.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 # Security Config
 SECRET_KEY = os.getenv("JWT_SECRET")
@@ -30,6 +41,40 @@ logger = logging.getLogger("FenixAuth")
 
 if not SECRET_KEY:
     logger.warning("JWT_SECRET no está configurado; los endpoints de auth devolverán error 500.")
+
+
+# --- Login rate limiting (in-memory, per client IP, failed attempts only) ---
+LOGIN_RATE_LIMIT_ATTEMPTS = int(os.getenv("FENIX_LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("FENIX_LOGIN_RATE_LIMIT_WINDOW", "60"))
+_failed_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _check_login_rate_limit(request: Request) -> None:
+    """Raise 429 if the client IP exceeded the allowed FAILED login attempts."""
+    client_ip = _client_ip(request)
+    now = time.monotonic()
+    attempts = _failed_login_attempts[client_ip]
+    while attempts and (now - attempts[0]) > LOGIN_RATE_LIMIT_WINDOW_SECONDS:
+        attempts.popleft()
+    if len(attempts) >= LOGIN_RATE_LIMIT_ATTEMPTS:
+        logger.warning("Login rate limit exceeded for ip=%s", client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(int(LOGIN_RATE_LIMIT_WINDOW_SECONDS))},
+        )
+
+
+def _record_failed_login(request: Request) -> None:
+    _failed_login_attempts[_client_ip(request)].append(time.monotonic())
+
+
+def _clear_failed_logins(request: Request) -> None:
+    _failed_login_attempts.pop(_client_ip(request), None)
 
 
 # --- Schemas ---
@@ -194,7 +239,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username)
-    except JWTError:
+    except jwt.InvalidTokenError:
         raise credentials_exception
 
     result = await db.execute(select(User).where(User.email == token_data.username))
@@ -208,6 +253,55 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
     if not current_user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
+
+
+async def get_current_admin_user(current_user: User = Depends(get_current_active_user)):
+    if getattr(current_user, "role", None) != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+async def require_control_access(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Guard for trading/engine control endpoints.
+
+    - With JWT_SECRET configured: requires a valid bearer token of an active
+      user with role 'admin' or 'trader'.
+    - Without JWT_SECRET: only loopback clients are allowed (local dev), and a
+      warning is logged. Remote clients are always rejected.
+    """
+    client_host = request.client.host if request.client else ""
+    if not SECRET_KEY:
+        if client_host in _LOOPBACK_HOSTS:
+            logger.warning(
+                "Control endpoint %s accessed without auth (JWT_SECRET not set, loopback client). "
+                "Set JWT_SECRET to enforce authentication.",
+                request.url.path,
+            )
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="JWT_SECRET is not configured; control endpoints are disabled for remote clients",
+        )
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required for control endpoints",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = auth_header.split(" ", 1)[1].strip()
+    user = await get_current_user(token=token, db=db)
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Inactive user")
+    if getattr(user, "role", None) not in ("admin", "trader"):
+        raise HTTPException(status_code=403, detail="Role 'admin' or 'trader' required")
 
 
 # --- Admin endpoints for Users page (demo) ---
@@ -224,7 +318,7 @@ async def list_users(_: User = Depends(get_current_active_user)):
 
 
 @router.post("/users", response_model=dict[str, Any])
-async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_active_user)):
+async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_admin_user)):
     user_id = uuid.uuid4().hex
     role_permissions = ROLE_STORE.get(payload.role, ROLE_STORE["viewer"]).permissions
     user_data = {
@@ -251,7 +345,7 @@ async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_a
 
 @router.put("/users/{user_id}", response_model=dict[str, Any])
 async def update_user(
-    user_id: str, payload: UserAdminPayload, _: User = Depends(get_current_active_user)
+    user_id: str, payload: UserAdminPayload, _: User = Depends(get_current_admin_user)
 ):
     if user_id not in USER_STORE:
         raise HTTPException(status_code=404, detail="User not found")
@@ -274,7 +368,7 @@ async def update_user(
 
 
 @router.delete("/users/{user_id}", response_model=dict)
-async def delete_user(user_id: str, _: User = Depends(get_current_active_user)):
+async def delete_user(user_id: str, _: User = Depends(get_current_admin_user)):
     if user_id not in USER_STORE:
         raise HTTPException(status_code=404, detail="User not found")
     USER_STORE.pop(user_id, None)
@@ -282,7 +376,7 @@ async def delete_user(user_id: str, _: User = Depends(get_current_active_user)):
 
 
 @router.post("/users/{user_id}/reset-password", response_model=dict)
-async def reset_password(user_id: str, _: User = Depends(get_current_active_user)):
+async def reset_password(user_id: str, _: User = Depends(get_current_admin_user)):
     if user_id not in USER_STORE:
         raise HTTPException(status_code=404, detail="User not found")
     return {"success": True, "message": "Password reset initiated"}
@@ -315,6 +409,7 @@ async def login_for_access_token(
     form_data: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)
 ):
     # Note: Frontend sends JSON body {email, password}, not Form data
+    _check_login_rate_limit(request)
     logger.info(
         f"Login attempt for email={form_data.email} from={request.client.host if request.client else 'unknown'}"
     )
@@ -324,6 +419,7 @@ async def login_for_access_token(
 
     if not user:
         logger.warning(f"Authentication failed: user not found for email={form_data.email}")
+        _record_failed_login(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -334,12 +430,14 @@ async def login_for_access_token(
         logger.warning(
             f"Authentication failed: password verification failed for email={form_data.email}"
         )
+        _record_failed_login(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    _clear_failed_logins(request)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email, "role": user.role, "userId": user.id},
@@ -383,19 +481,24 @@ async def read_users_me(current_user: User = Depends(get_current_active_user)):
 # Standard OAuth2 route (good for swagger UI)
 @router.post("/token", response_model=Token)
 async def login_swagger(
-    form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db),
 ):
     # This endpoint is kept for Swagger UI compatibility
+    _check_login_rate_limit(request)
     result = await db.execute(select(User).where(User.email == form_data.username))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(form_data.password, user.hashed_password):
+        _record_failed_login(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    _clear_failed_logins(request)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
     return {"access_token": access_token, "token_type": "bearer"}

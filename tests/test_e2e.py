@@ -237,8 +237,12 @@ class TestEndToEndAPIFlow:
         
         with patch('src.api.server.TradingEngine'):
             with patch('src.api.server.engine', None):
-                from src.api.server import app
-                return TestClient(app)
+                # Sin JWT_SECRET los endpoints de control permiten clientes
+                # loopback (modo dev). Otros tests de la suite pueden dejar
+                # JWT_SECRET configurado, así que lo anulamos explícitamente.
+                with patch('src.api.auth.SECRET_KEY', None):
+                    from src.api.server import app
+                    yield TestClient(app)
 
     def test_complete_api_flow(self, api_client):
         """Test del flujo completo de API."""

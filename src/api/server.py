@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.auth import get_password_hash
 
 # Auth Imports
+from src.api.auth import require_control_access
 from src.api.auth import router as auth_router
 from src.api.nano_routes import (
     RELEASE_INFO as _NANO_RELEASE_INFO,
@@ -135,6 +136,23 @@ logger = logging.getLogger("FenixAPI")
 # Global Engine Instance
 engine: TradingEngine | None = None
 _engine_task: asyncio.Task | None = None
+_engine_start_lock = asyncio.Lock()
+# Keep references to fire-and-forget background tasks so they are not GC'd
+# and their exceptions are surfaced in logs.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _track_task(task: asyncio.Task) -> asyncio.Task:
+    """Retain a reference to a background task and log unhandled exceptions."""
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("Background task failed: %r", t.exception())
+
+    task.add_done_callback(_done)
+    return task
 _METRICS_HISTORY: deque[dict] = deque(maxlen=240)
 _PROCESS_START = time.time()
 
@@ -213,6 +231,7 @@ async def lifespan(app: FastAPI):
         timeframe="15m",
         paper_trading=True,
         allow_live_trading=False,
+        use_testnet=os.getenv("FENIX_USE_TESTNET", "false").lower() == "true",
     )
     engine.on_agent_event = handle_engine_event
 
@@ -224,16 +243,16 @@ async def lifespan(app: FastAPI):
         from src.analysis.auto_evaluator import AutoEvaluator
 
         auto_evaluator = AutoEvaluator(symbol="BTCUSDT", evaluation_horizon_minutes=15)
-        asyncio.create_task(auto_evaluator.start())
+        _track_task(asyncio.create_task(auto_evaluator.start()))
         logger.info("✅ AutoEvaluator started")
     except Exception as e:
         logger.error(f"Failed to start AutoEvaluator: {e}")
 
     # Start metrics broadcaster
-    asyncio.create_task(broadcast_metrics())
+    _track_task(asyncio.create_task(broadcast_metrics()))
 
     # v2.5: start NanoFenix companion signal broadcaster.
-    asyncio.create_task(_broadcast_nano_signals())
+    _track_task(asyncio.create_task(_broadcast_nano_signals()))
 
     # Initialize Default Admin and Demo Users if not exists
     create_demo_users = (
@@ -855,6 +874,12 @@ async def get_alerts():
     return {"alerts": alerts, "data": alerts}
 
 
+@app.get("/health", include_in_schema=False)
+async def health_alias():
+    """Simple liveness probe (alias of /api/system/health for curl/monitoring)."""
+    return {"status": "ok", "engine_running": bool(engine and engine.get_status().get("running"))}
+
+
 @app.get("/api/system/health")
 async def get_health():
     components = [
@@ -899,14 +924,17 @@ async def get_metrics_history(timeframe: str = Query("1h")):
     return {"metrics": history}
 
 
-@app.post("/api/engine/start")
+@app.post("/api/engine/start", dependencies=[Depends(require_control_access)])
 async def start_engine():
-    if engine and not engine.get_status().get("running"):
-        asyncio.create_task(engine.start())
+    global _engine_task
+    async with _engine_start_lock:
+        if engine and not engine.get_status().get("running"):
+            if _engine_task is None or _engine_task.done():
+                _engine_task = _track_task(asyncio.create_task(engine.start()))
     return {"status": "started"}
 
 
-@app.post("/api/engine/stop")
+@app.post("/api/engine/stop", dependencies=[Depends(require_control_access)])
 async def stop_engine():
     if engine and engine.get_status().get("running"):
         await engine.stop()
@@ -918,7 +946,7 @@ async def get_engine_config():
     return {"config": _engine_config_payload(engine)}
 
 
-@app.post("/api/engine/config")
+@app.post("/api/engine/config", dependencies=[Depends(require_control_access)])
 async def update_engine_config(payload: EngineConfigUpdate):
     config = await _restart_engine_with_config(
         symbol=payload.symbol,
@@ -946,7 +974,11 @@ async def get_orders(status: str | None = Query(None), db: AsyncSession = Depend
     return {"orders": orders}
 
 
-@app.post("/api/trading/orders", response_model=OrderResponse)
+@app.post(
+    "/api/trading/orders",
+    response_model=OrderResponse,
+    dependencies=[Depends(require_control_access)],
+)
 async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
     """Create a new trading order."""
     new_order = Order(
@@ -1017,7 +1049,7 @@ async def create_order(order: OrderCreate, db: AsyncSession = Depends(get_db)):
     }
 
 
-@app.delete("/api/trading/orders/{order_id}")
+@app.delete("/api/trading/orders/{order_id}", dependencies=[Depends(require_control_access)])
 async def cancel_order(order_id: str = Path(...), db: AsyncSession = Depends(get_db)):
     """Cancel an order by ID."""
     result = await db.execute(select(Order).where(Order.id == order_id))

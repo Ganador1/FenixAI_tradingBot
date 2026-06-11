@@ -1,6 +1,6 @@
 import React from 'react';
 
-interface BadgeProps {
+interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: 'default' | 'success' | 'error' | 'warning' | 'info' | 'purple' | 'outline';
   className?: string;
   children: React.ReactNode;
@@ -19,10 +19,14 @@ const variantStyles = {
 export const Badge: React.FC<BadgeProps> = ({ 
   variant = 'default', 
   className = '', 
-  children 
+  children,
+  ...rest
 }) => {
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${variantStyles[variant]} ${className}`}>
+    <span
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${variantStyles[variant]} ${className}`}
+      {...rest}
+    >
       {children}
     </span>
   );

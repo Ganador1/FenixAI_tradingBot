@@ -1,10 +1,68 @@
-import React from 'react';
-import { Bell, User, LogOut, Sparkles, Activity } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Bell, User, LogOut, Sparkles, Activity, Play, Square } from 'lucide-react';
+import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from './ui/Button';
 
+interface EngineState {
+  running: boolean;
+  symbol?: string;
+  timeframe?: string;
+  paper?: boolean;
+}
+
 export function Header() {
   const { user, logout } = useAuthStore();
+  const [engine, setEngine] = useState<EngineState | null>(null);
+  const [engineBusy, setEngineBusy] = useState(false);
+
+  const fetchStatus = async () => {
+    try {
+      const res = await fetch('/api/system/status');
+      if (res.ok) {
+        const data = await res.json();
+        const eng = data.engine || data;
+        setEngine({
+          running: Boolean(eng.running),
+          symbol: eng.symbol,
+          timeframe: eng.timeframe,
+          paper: eng.paper_trading,
+        });
+      }
+    } catch {
+      setEngine(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const toggleEngine = async () => {
+    const action = engine?.running ? 'stop' : 'start';
+    setEngineBusy(true);
+    try {
+      const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
+      const res = await fetch(`/api/engine/${action}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      toast.success(`Engine ${action} requested`);
+      setTimeout(fetchStatus, 1500);
+    } catch (e) {
+      toast.error(`Engine ${action} failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setEngineBusy(false);
+    }
+  };
+
+  const online = engine?.running ?? false;
 
   return (
     <header className="sticky top-0 z-20 border-b border-gray-200 bg-white/80 backdrop-blur-xl">
@@ -14,20 +72,41 @@ export function Header() {
             <Sparkles className="w-6 h-6 text-white" />
           </div>
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Command Center</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Command Center · v2.5</p>
             <h1 className="text-xl font-semibold text-gray-900 leading-tight">Multi-Agent Trading</h1>
-            <div className="hidden md:flex items-center space-x-2 text-xs text-gray-500">
-              <Activity className="w-3 h-3 text-emerald-500" />
-              <span>System online</span>
+            <div className="hidden md:flex items-center space-x-2 text-xs text-gray-500" data-testid="header-engine-status">
+              <Activity className={`w-3 h-3 ${online ? 'text-emerald-500' : 'text-gray-400'}`} />
+              <span>
+                {online
+                  ? `Engine running · ${engine?.symbol || ''}@${engine?.timeframe || ''}${engine?.paper ? ' · paper' : ''}`
+                  : 'Engine stopped'}
+              </span>
             </div>
           </div>
         </div>
 
         <div className="flex items-center space-x-4">
-          <div className="hidden md:flex items-center space-x-2 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>Live stream</span>
+          <div
+            className={`hidden md:flex items-center space-x-2 px-3 py-1 rounded-full text-xs border ${
+              online
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                : 'bg-gray-50 border-gray-200 text-gray-500'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+            <span>{online ? 'Live stream' : 'Offline'}</span>
           </div>
+
+          <Button
+            variant={online ? 'danger' : 'success'}
+            size="sm"
+            loading={engineBusy}
+            onClick={toggleEngine}
+            data-testid="engine-toggle-btn"
+            icon={online ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          >
+            {online ? 'Stop engine' : 'Start engine'}
+          </Button>
 
           <Button
             variant="ghost"

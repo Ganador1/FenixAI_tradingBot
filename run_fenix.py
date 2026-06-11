@@ -21,6 +21,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Load .env early so JWT_SECRET, API keys, etc. are visible to every module.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 # Create logs directory if it doesn't exist
 Path("logs").mkdir(exist_ok=True)
 

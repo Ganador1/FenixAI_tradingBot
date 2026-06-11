@@ -5,6 +5,7 @@ Replaces hardcoded global constants with proper configuration management
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -223,8 +224,10 @@ class TradingConstants:
                 "min_candles_for_bot_start": self.min_candles_for_bot_start,
             }
 
-            with open(config_path, "w") as f:
+            tmp_path = f"{config_path}.tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(config, f, indent=2)
+            os.replace(tmp_path, config_path)
 
             logger.info(f"Saved trading constants to {config_path}")
 

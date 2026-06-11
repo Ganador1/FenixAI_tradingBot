@@ -1,7 +1,7 @@
 import React, { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
-export interface CardProps {
+export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   children?: React.ReactNode;
   className?: string;
   onClick?: () => void;
@@ -49,6 +49,7 @@ export const Card: React.FC<CardProps> = ({
   className,
   onClick,
   hoverable = false,
+  ...rest
 }) => {
   return (
     <div
@@ -58,6 +59,7 @@ export const Card: React.FC<CardProps> = ({
         className
       )}
       onClick={onClick}
+      {...rest}
     >
       {children}
     </div>

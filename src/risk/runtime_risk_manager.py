@@ -109,6 +109,9 @@ class RuntimeRiskManager:
         # Métricas de drawdown
         self._peak_balance: float = 0.0
         self._current_balance: float = 0.0
+        # All-time high-water mark: only ever increases (except explicit re-anchor).
+        # Protects against drawdown erasure via daily resets or process restarts.
+        self._all_time_peak: float = 0.0
 
         # Cooldown tracking
         self._cooldown_start: datetime | None = None
@@ -121,15 +124,27 @@ class RuntimeRiskManager:
         if self.storage_path.exists():
             try:
                 with open(self.storage_path) as f:
-                    lines = f.readlines()
-                    if lines:
-                        last_line = json.loads(lines[-1])
+                    # Append-only JSONL: only the last line matters.
+                    last_raw = deque(f, maxlen=1)
+                if last_raw:
+                    last_line = json.loads(last_raw[0])
+                    self._peak_balance = last_line.get("peak_balance", 0.0)
+                    self._all_time_peak = max(
+                        last_line.get("all_time_peak", 0.0), self._peak_balance
+                    )
+                    self._current_balance = last_line.get("current_balance", self._peak_balance)
+                    self._last_trading_day = last_line.get("trading_day")
+                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    if self._last_trading_day == today:
+                        # Same trading day: restore daily metrics so the daily
+                        # loss limit survives a process restart.
                         self._daily_pnl = last_line.get("daily_pnl", 0.0)
-                        self._peak_balance = last_line.get("peak_balance", 0.0)
-                        self._current_balance = last_line.get("current_balance", self._peak_balance)
-                        self._last_trading_day = last_line.get("trading_day")
-                        if self._current_balance <= 0 and self._peak_balance > 0:
-                            self._current_balance = self._peak_balance
+                        self._daily_start_balance = last_line.get("daily_start_balance")
+                    else:
+                        self._daily_pnl = 0.0
+                        self._daily_start_balance = None
+                    if self._current_balance <= 0 and self._peak_balance > 0:
+                        self._current_balance = self._peak_balance
             except Exception as e:
                 logger.warning(f"Could not load risk state: {e}")
 
@@ -140,7 +155,9 @@ class RuntimeRiskManager:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "trading_day": trading_day,
             "daily_pnl": self._daily_pnl,
+            "daily_start_balance": self._daily_start_balance,
             "peak_balance": self._peak_balance,
+            "all_time_peak": self._all_time_peak,
             "current_balance": self._current_balance,
             "current_mode": self.current_status.mode,
             "risk_bias": self.current_status.risk_bias,
@@ -174,6 +191,26 @@ class RuntimeRiskManager:
             self._last_trading_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if self._daily_start_balance is None or self._daily_start_balance > (balance * 1.5):
                 self._daily_start_balance = balance
+            # The all-time peak is NOT cleared automatically: a >33% drop followed
+            # by a restart must not erase drawdown protection. Re-anchor it only
+            # with explicit operator consent.
+            if self._all_time_peak > (balance * 1.5):
+                if os.getenv("FENIX_RISK_ALLOW_REANCHOR", "0") == "1":
+                    self._all_time_peak = balance
+                    logger.warning(
+                        "RiskManager all-time peak re-anchored to %.2f by operator request "
+                        "(FENIX_RISK_ALLOW_REANCHOR=1)",
+                        balance,
+                    )
+                else:
+                    logger.error(
+                        "RiskManager: balance %.2f is far below all-time peak %.2f. "
+                        "Drawdown protection stays active. Set FENIX_RISK_ALLOW_REANCHOR=1 "
+                        "(or delete %s) if this is an intentional balance change.",
+                        balance,
+                        self._all_time_peak,
+                        self.storage_path,
+                    )
             logger.info(
                 "RiskManager balance baseline re-anchored to %.2f (peak/current reset, daily pnl cleared)",
                 balance,
@@ -187,12 +224,15 @@ class RuntimeRiskManager:
             self._daily_pnl = 0.0
             self._daily_start_balance = balance
             self._last_trading_day = today
+            # Intraday peak re-anchors daily; the all-time peak never resets here.
             self._peak_balance = balance
             logger.info(f"New trading day: {today}, reset daily PnL")
 
         # Actualizar peak
         if balance > self._peak_balance:
             self._peak_balance = balance
+        if balance > self._all_time_peak:
+            self._all_time_peak = balance
 
     def set_max_exposure_pct(self, max_exposure_pct: float) -> None:
         self._max_exposure_pct = max(0.0, float(max_exposure_pct))
@@ -356,6 +396,11 @@ class RuntimeRiskManager:
                 drawdown_pct = (
                     (self._peak_balance - self._current_balance) / self._peak_balance * 100
                 )
+            all_time_drawdown_pct = 0.0
+            if self._all_time_peak > 0:
+                all_time_drawdown_pct = (
+                    (self._all_time_peak - self._current_balance) / self._all_time_peak * 100
+                )
             daily_loss_pct = 0.0
             if self._daily_start_balance and self._daily_start_balance > 0:
                 daily_loss_pct = -self._daily_pnl / self._daily_start_balance * 100
@@ -370,9 +415,11 @@ class RuntimeRiskManager:
                 "avg_pnl": 0.0,
                 "loss_streak": 0,
                 "drawdown_pct": drawdown_pct,
+                "all_time_drawdown_pct": all_time_drawdown_pct,
                 "daily_pnl": self._daily_pnl,
                 "daily_loss_pct": daily_loss_pct,
                 "peak_balance": self._peak_balance,
+                "all_time_peak": self._all_time_peak,
                 "current_balance": self._current_balance,
             }
 
@@ -395,6 +442,12 @@ class RuntimeRiskManager:
         if self._peak_balance > 0:
             drawdown_pct = (self._peak_balance - self._current_balance) / self._peak_balance * 100
 
+        all_time_drawdown_pct = 0.0
+        if self._all_time_peak > 0:
+            all_time_drawdown_pct = (
+                (self._all_time_peak - self._current_balance) / self._all_time_peak * 100
+            )
+
         # Daily loss pct
         daily_loss_pct = 0.0
         if self._daily_start_balance and self._daily_start_balance > 0:
@@ -411,9 +464,11 @@ class RuntimeRiskManager:
             "avg_pnl": avg_pnl,
             "loss_streak": loss_streak,
             "drawdown_pct": drawdown_pct,
+            "all_time_drawdown_pct": all_time_drawdown_pct,
             "daily_pnl": self._daily_pnl,
             "daily_loss_pct": daily_loss_pct,
             "peak_balance": self._peak_balance,
+            "all_time_peak": self._all_time_peak,
             "current_balance": self._current_balance,
         }
 
@@ -443,6 +498,33 @@ class RuntimeRiskManager:
                 risk_bias=self.config.drawdown_risk_bias,
                 block_trading=True,
                 reason=f"Drawdown {drawdown_pct:.1f}% >= {self.config.severe_drawdown_pct}%",
+                cooldown_seconds=self.config.severe_cooldown_seconds,
+                expires_at=now + timedelta(seconds=self.config.severe_cooldown_seconds),
+                metrics_snapshot=metrics,
+            )
+            self._cooldown_start = now
+            self._alert_severe(metrics)
+            return self.current_status
+
+        # 1b. Evaluar SEVERE all-time drawdown (acumulado entre días/restarts).
+        # El peak intradía se re-ancla a medianoche; este check evita que pérdidas
+        # sostenidas (-5% diario) escapen al circuit breaker indefinidamente.
+        all_time_drawdown_pct = metrics.get("all_time_drawdown_pct", 0.0)
+        try:
+            max_alltime_dd = float(
+                os.getenv("FENIX_RISK_MAX_ALLTIME_DRAWDOWN_PCT", "")
+                or getattr(self.config, "max_alltime_drawdown_pct", 15.0)
+            )
+        except (TypeError, ValueError):
+            max_alltime_dd = 15.0
+        if max_alltime_dd > 0 and all_time_drawdown_pct >= max_alltime_dd:
+            self.current_status = RiskFeedbackStatus(
+                mode="SEVERE",
+                risk_bias=self.config.drawdown_risk_bias,
+                block_trading=True,
+                reason=(
+                    f"All-time drawdown {all_time_drawdown_pct:.1f}% >= {max_alltime_dd:.1f}%"
+                ),
                 cooldown_seconds=self.config.severe_cooldown_seconds,
                 expires_at=now + timedelta(seconds=self.config.severe_cooldown_seconds),
                 metrics_snapshot=metrics,

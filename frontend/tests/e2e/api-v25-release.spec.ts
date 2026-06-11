@@ -59,7 +59,9 @@ test.describe('v2.5 API contract', () => {
     expect(signal).not.toBeNull();
     expect(signal!.symbol).toBe('BTCUSDT');
     expect(signal!.timestamp_utc).toBeTruthy();
-    expect(['BUY', 'SELL', 'HOLD']).toContain(signal!.signal);
+    // NanoFenix v3.5 emits position vocabulary (LONG/SHORT/FLAT/HOLD);
+    // older builds used order vocabulary (BUY/SELL).
+    expect(['LONG', 'SHORT', 'FLAT', 'HOLD', 'BUY', 'SELL']).toContain(signal!.signal);
 
     const stopRes = await request.post(`${API}/api/nanofenix/stop?symbol=BTCUSDT`, {
       timeout: 20_000,

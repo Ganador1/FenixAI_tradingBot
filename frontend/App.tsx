@@ -18,6 +18,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { MarketData } from "@/pages/MarketData";
 import { Trading } from "@/pages/Trading";
 import { Agents } from "@/pages/Agents";
+import { Companions } from "@/pages/Companions";
 import { ReasoningBank } from "@/pages/ReasoningBank";
 import { SystemMonitor } from "@/pages/SystemMonitor";
 import { UsersPage } from "@/pages/Users";
@@ -68,6 +69,7 @@ function App(): JSX.Element {
             <Route path="market" element={<MarketData />} />
             <Route path="trading" element={<Trading />} />
             <Route path="agents" element={<Agents />} />
+            <Route path="companions" element={<Companions />} />
             <Route path="reasoning" element={<ReasoningBank />} />
             <Route path="system" element={<SystemMonitor />} />
             <Route path="users" element={<UsersPage />} />
