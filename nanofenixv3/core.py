@@ -155,7 +155,18 @@ class NanoFenixV3:
                 self._signal_state_file = None
 
         # ── Auto-save model periodically ──
-        self._model_save_path = resolved_model_path
+        # Always save to THIS symbol's canonical path. When warm-starting from
+        # another market's pretrained model (e.g. ETHUSDT -> ETHUSDC), the
+        # borrowed file must stay read-only or we contaminate it with data
+        # from a different microstructure.
+        own_model_path = f"nanofenixv3/pretrained_{self.symbol.lower()}.pkl"
+        if model_path and Path(model_path).resolve() != Path(own_model_path).resolve():
+            logger.info(
+                "Warm-start model %s is read-only; autosaves go to %s",
+                model_path,
+                own_model_path,
+            )
+        self._model_save_path = own_model_path
         self._autosave_every = max(60, _env_int("NANOFENIXV3_AUTOSAVE_EVERY", 120))
         self._last_model_save_bar = 0
         self._load_runtime_state()

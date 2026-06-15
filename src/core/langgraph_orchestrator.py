@@ -1555,6 +1555,61 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
             if not messages:
                 raise ValueError("Could not format decision prompt")
 
+            # === REASONING BANK RETRIEVAL (live path) ===
+            # Without this, memory is write-only: entries accumulate but the
+            # Decision Agent never sees past outcomes nor distilled strategies.
+            if reasoning_bank and REASONING_BANK_AVAILABLE:
+                try:
+                    bank_query = json.dumps(
+                        {
+                            "technical": (state.get("technical_report") or {}).get("signal"),
+                            "qabba": (state.get("qabba_report") or {}).get("signal"),
+                            "timeframe": state.get("timeframe", "15m"),
+                        }
+                    )
+                    historical_context = get_agent_context_from_bank(
+                        reasoning_bank=reasoning_bank,
+                        agent_name="decision_agent",
+                        current_prompt=bank_query,
+                        limit=3,
+                    )
+                    if historical_context:
+                        messages[0]["content"] += "\n\n" + historical_context
+                        logger.info("🧠 ReasoningBank: Retrieved context for Decision Agent")
+
+                    from src.core.orchestrator.bank_helper import (
+                        get_synthesized_strategies_block,
+                    )
+
+                    strategies_block = get_synthesized_strategies_block(
+                        reasoning_bank=reasoning_bank,
+                        agent_name="decision_agent",
+                    )
+                    if strategies_block:
+                        messages[0]["content"] += "\n\n" + strategies_block
+                        logger.info("🧠 ReasoningBank: Injected synthesized strategies")
+
+                    # Agent scorecards: tell the LLM which agents have been
+                    # right historically so it can weigh their reports.
+                    from src.analysis.agent_scorecards import get_agent_scorecards
+
+                    scores = get_agent_scorecards().get_scores()
+                    score_lines = [
+                        f"- {s.agent}: {s.success_rate:.0%} accuracy over {s.evaluated} evaluated calls"
+                        for s in scores.values()
+                        if s.evaluated >= 20
+                    ]
+                    if score_lines:
+                        messages[0]["content"] += (
+                            "\n\n### Agent track records (evaluated outcomes):\n"
+                            + "\n".join(score_lines)
+                            + "\nGive more weight to agents with stronger track records."
+                        )
+                        logger.info("🧠 Scorecards: Injected agent track records")
+                except Exception as e:
+                    logger.warning("Decision Agent: reasoning context unavailable: %s", e)
+            # === END REASONING BANK RETRIEVAL ===
+
             # Convertir a formato de mensajes para el sistema de reintentos
             llm_messages = [
                 {"role": "system", "content": messages[0]["content"]},
@@ -1745,7 +1800,8 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
                 entry_price=str(state.get("current_price", "N/A")),
                 balance=str(
                     state.get("account_balance_usdt")
-                    or os.getenv("FENIX_BALANCE_FALLBACK_USDT", "N/A")
+                    or os.getenv("FENIX_BALANCE_FALLBACK_USDT")
+                    or "N/A"
                 ),
                 open_positions=str(state.get("open_positions", 0)),
                 daily_pnl=str(state.get("daily_pnl", 0)),
@@ -1980,6 +2036,7 @@ class FenixTradingGraph:
         social_data: dict[str, Any] | None = None,
         fear_greed_value: str | None = None,
         thread_id: str = "default",
+        account_balance_usdt: float | None = None,
     ) -> FenixAgentState:
         """
         Executes the full trading graph.
@@ -2019,6 +2076,7 @@ class FenixTradingGraph:
             "news_data": news_data or [],
             "social_data": social_data or {},
             "fear_greed_value": fear_greed_value or "N/A",
+            "account_balance_usdt": account_balance_usdt,
             "messages": [],
             "errors": [],
             "execution_times": {},

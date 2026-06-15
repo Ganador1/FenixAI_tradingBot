@@ -1226,6 +1226,17 @@ class TradingEngine:
                 except Exception as e:
                     logger.error("Failed to generate chart: %s", e)
 
+            # Multi-timeframe context for the full graph. Reuses the strict
+            # HTF bias helper (cached); set FENIX_STRICT_MTF_BIAS_TIMEFRAME
+            # (e.g. "1h") to enable. Empty dict when unset.
+            mtf_context_payload: dict[str, Any] = {}
+            try:
+                htf_bias = await self._get_strict_mtf_bias_context()
+                if htf_bias:
+                    mtf_context_payload["htf"] = htf_bias
+            except Exception as e:
+                logger.debug("MTF context unavailable: %s", e)
+
             # Execute LangGraph analysis (always, even without visual)
             result = await self._trading_graph.invoke(
                 symbol=self.symbol,
@@ -1240,11 +1251,17 @@ class TradingEngine:
                     "bid_depth": micro.bid_depth,
                     "ask_depth": micro.ask_depth,
                 },
-                mtf_context={},  # Add empty context if needed
+                mtf_context=mtf_context_payload,
                 chart_image_b64=chart_b64,
                 news_data=news_data or [],
                 social_data=social_data or {},
                 fear_greed_value=fear_greed_value or "N/A",
+                account_balance_usdt=(
+                    self._get_cached_balance()
+                    or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
+                    or None
+                ),
+                # thread_id argument removed as persistence is disabled
                 # thread_id argument removed as persistence is disabled
                 # thread_id=f"{self.symbol}_{self.timeframe}",
             )
@@ -2504,6 +2521,23 @@ class TradingEngine:
                     await self._hydrate_tracked_position_from_exchange()
                     return None
 
+                # If the protective SL/TP algo order already closed the
+                # position on the exchange, a reduce-only close would be
+                # rejected (-2022). Confirm flat first and just record it.
+                try:
+                    _, _, already_flat = await self._confirm_exchange_flat_snapshot()
+                except Exception:
+                    already_flat = False
+                if already_flat:
+                    logger.info(
+                        "Exchange already flat for %s (protective order filled); recording exit",
+                        self.symbol,
+                    )
+                    await self._close_position_record(
+                        close_result, tracked_position=tracked_position
+                    )
+                    return close_result
+
                 close_order = None
                 try:
                     try:
@@ -3503,6 +3537,20 @@ class TradingEngine:
                     )
                     return
 
+        # R:R minimum filter: don't enter if the setup doesn't offer enough
+        # reward relative to its risk.
+        if effective_decision in {"BUY", "SELL"}:
+            min_rr = _env_float("FENIX_MIN_RR_FOR_ENTRY", 0.0)
+            actual_rr = _safe_float(
+                (decision_data.get("risk_assessment") or {}).get("risk_reward_ratio")
+            )
+            if min_rr > 0 and actual_rr is not None and actual_rr < min_rr:
+                await _hold(
+                    f"rr_too_low_{actual_rr:.2f}<{min_rr:.1f}",
+                    filter_name="MIN_RR",
+                )
+                return
+
         if effective_decision in {"BUY", "SELL"}:
             await self._execute_trade(effective_decision, confidence, decision_data)
         else:
@@ -4334,6 +4382,27 @@ class TradingEngine:
                 f.write(json.dumps(signal_data) + "\n")
         except Exception as e:
             logger.error(f"Failed to log signal: {e}")
+
+    def _get_cached_balance(self) -> float | None:
+        """Return the last known balance without an API call.
+
+        Used to pass the balance into the LangGraph state so that the risk
+        manager agent can size positions. The actual balance API call is made
+        later in _execute_trade; here we just supply the best available value.
+        """
+        if self.risk_manager and hasattr(self.risk_manager, "_current_balance"):
+            bal = self.risk_manager._current_balance
+            if bal and bal > 0:
+                return bal
+        try:
+            bal = self.executor.get_balance()
+            if bal and bal > 0:
+                logger.debug("_get_cached_balance: from executor = %.2f", bal)
+                return bal
+        except Exception as e:
+            logger.debug("_get_cached_balance: executor failed: %s", e)
+        logger.warning("_get_cached_balance: returning None (balance unavailable)")
+        return None
 
     def get_status(self) -> dict[str, Any]:
         """Returns the current engine status."""

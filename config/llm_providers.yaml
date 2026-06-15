@@ -557,11 +557,11 @@ ollama_cloud:
   
   visual:
     provider_type: "ollama_local"
-    model_name: "cogito-2.1:671b:cloud"
+    model_name: "qwen3-vl:235b-cloud"
     temperature: 0.15
     max_tokens: 500
-    timeout: 30
-    supports_vision: false
+    timeout: 45
+    supports_vision: true
     api_base: "http://localhost:11434"
     fallback_provider_type: "ollama_local"
     fallback_model_name: "gemma4:31b:cloud"
@@ -626,11 +626,11 @@ OLLAMA_CLOUD:
   
   visual:
     provider_type: "ollama_local"
-    model_name: "cogito-2.1:671b:cloud"
+    model_name: "qwen3-vl:235b-cloud"
     temperature: 0.15
     max_tokens: 500
-    timeout: 30
-    supports_vision: false
+    timeout: 45
+    supports_vision: true
     api_base: "http://localhost:11434"
     fallback_provider_type: "ollama_local"
     fallback_model_name: "gemma4:31b:cloud"

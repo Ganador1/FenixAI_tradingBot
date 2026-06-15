@@ -1720,8 +1720,13 @@ async def test_manage_open_position_executes_live_reduce_only_for_rule_based_exi
             order_id="close-time-exit-1",
         )
     )
+    # Pre-check: position still open on exchange (not flat) -> live close
+    # order must be sent. Post-close: exchange confirms flat.
     engine._confirm_exchange_flat_snapshot = AsyncMock(
-        return_value=({"positionAmt": "0.000", "markPrice": "85.20"}, 0.0, True)
+        side_effect=[
+            ({"positionAmt": "-0.060", "markPrice": "85.20"}, -0.06, False),
+            ({"positionAmt": "0.000", "markPrice": "85.20"}, 0.0, True),
+        ]
     )
     engine.executor.get_recent_trades = MagicMock(
         return_value=[
@@ -1744,7 +1749,8 @@ async def test_manage_open_position_executes_live_reduce_only_for_rule_based_exi
         quantity=0.06,
         reduce_only=True,
     )
-    engine._confirm_exchange_flat_snapshot.assert_awaited_once()
+    # Awaited twice: pre-close flat check + post-close confirmation.
+    assert engine._confirm_exchange_flat_snapshot.await_count == 2
     engine._hydrate_tracked_position_from_exchange.assert_not_awaited()
     engine._close_position_record.assert_awaited_once()
     recorded = engine._close_position_record.await_args.args[0]

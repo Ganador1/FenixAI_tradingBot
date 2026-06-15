@@ -84,6 +84,66 @@ def get_agent_context_from_bank(
         return ""
 
 
+# Synthesized strategies are recomputed at most every TTL seconds (they only
+# change as outcome labels accumulate, so frequent recomputation is wasted).
+_STRATEGY_CACHE: dict[str, tuple[float, str]] = {}
+_STRATEGY_CACHE_TTL = 600.0
+
+
+def get_synthesized_strategies_block(
+    reasoning_bank: Any | None,
+    agent_name: str,
+    max_strategies: int = 3,
+) -> str:
+    """Return a distilled-strategies prompt block (ReasoningBank paper core).
+
+    Unlike raw historical context, these are aggregate rules mined from
+    evaluated outcomes ("high-confidence BUYs succeed 73%"), which is the
+    actionable distillation the paper showed matters most.
+    """
+    if not reasoning_bank or not REASONING_BANK_AVAILABLE:
+        return ""
+
+    import time as _time
+
+    cached = _STRATEGY_CACHE.get(agent_name)
+    if cached and (_time.monotonic() - cached[0]) < _STRATEGY_CACHE_TTL:
+        return cached[1]
+
+    block = ""
+    try:
+        strategies = reasoning_bank.synthesize_strategies(
+            agent_name=agent_name,
+            min_success_rate=0.60,
+            min_sample_size=10,
+        )
+        if strategies:
+            lines = ["### Proven strategies (mined from evaluated outcomes):"]
+            for strat in strategies[:max_strategies]:
+                rule = strat.get("rule", "")
+                rate = strat.get("success_rate", 0.0)
+                n = strat.get("sample_size", 0)
+                reward = strat.get("avg_reward")
+                # Skip non-actionable rules: "HOLD is effective" has ~zero
+                # reward by construction and only reinforces the bot's
+                # existing HOLD bias. Also skip rules with no positive
+                # expected reward — high success rate with <=0 reward means
+                # the rule wins often but earns nothing.
+                if "HOLD" in rule.upper():
+                    continue
+                if isinstance(reward, (int, float)) and reward <= 0:
+                    continue
+                reward_txt = f", avg reward {reward:+.2f}%" if isinstance(reward, (int, float)) else ""
+                lines.append(f"- {rule} (success {rate:.0%}, n={n}{reward_txt})")
+            if len(lines) > 1:
+                block = "\n".join(lines)
+    except Exception as e:
+        logger.debug("Strategy synthesis unavailable for %s: %s", agent_name, e)
+
+    _STRATEGY_CACHE[agent_name] = (_time.monotonic(), block)
+    return block
+
+
 def store_agent_decision(
     reasoning_bank: Any | None,
     agent_name: str,

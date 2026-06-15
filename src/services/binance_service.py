@@ -165,27 +165,36 @@ class BinanceService:
         try:
             account = self._call_with_retries(self._client.futures_account, retries=1)
             if isinstance(account, dict):
+                # In single-asset mode totalMarginBalance only reflects the
+                # USDT bucket, so a USDC-funded account would read near-zero.
+                # Always compute the stablecoin sum and take the max.
                 total_margin = float(account.get("totalMarginBalance", 0.0) or 0.0)
-                if total_margin > 0:
-                    return total_margin
 
+                stable_total = 0.0
                 for asset in account.get("assets", []) or []:
                     if asset.get("asset") not in {"USDT", "USDC"}:
                         continue
                     margin_balance = float(asset.get("marginBalance", 0.0) or 0.0)
                     wallet_balance = float(asset.get("walletBalance", 0.0) or 0.0)
                     available = float(asset.get("availableBalance", 0.0) or 0.0)
-                    return max(margin_balance, wallet_balance, available)
+                    stable_total += max(margin_balance, wallet_balance, available)
+
+                best = max(total_margin, stable_total)
+                if best > 0:
+                    return best
         except Exception as e:
             logger.error(f"Failed to get futures account balance: {e}")
 
         try:
             balances = self._call_with_retries(self._client.futures_account_balance, retries=1)
+            stable_total = 0.0
             for balance in balances:
                 if balance.get("asset") in {"USDT", "USDC"}:
                     wallet = float(balance.get("balance", 0.0) or 0.0)
                     available = float(balance.get("availableBalance", 0.0) or 0.0)
-                    return max(wallet, available)
+                    stable_total += max(wallet, available)
+            if stable_total > 0:
+                return stable_total
         except Exception as e:
             logger.error(f"Failed to get USDT balance: {e}")
         return 0.0
@@ -219,6 +228,27 @@ class BinanceService:
             )
         except Exception as e:
             logger.error(f"Failed to place market order for {symbol}: {e}")
+            raise e
+
+    def place_limit_order(
+        self, symbol: str, side: str, quantity: float, price: float, reduce_only: bool = False
+    ) -> dict[str, Any]:
+        """Place a limit order (Futures, post-only for maker fee)."""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+
+        try:
+            return self._client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type="LIMIT",
+                timeInForce="GTX",  # Post-only: rejected if would fill immediately
+                quantity=quantity,
+                price=price,
+                reduceOnly=reduce_only,
+            )
+        except Exception as e:
+            logger.error(f"Failed to place limit order for {symbol}: {e}")
             raise e
 
     def place_algo_order(

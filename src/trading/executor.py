@@ -278,16 +278,78 @@ class OrderExecutor:
                     timestamp=timestamp,
                 )
 
-            # Execute market order.
-            logger.info(f"Executing MARKET {side} {formatted_qty} {self.symbol}")
-
-            response = await asyncio.to_thread(
-                self.service.place_market_order,
-                symbol=self.symbol,
-                side=side,
-                quantity=float(formatted_qty),
-                reduce_only=reduce_only,
+            # Execute order: prefer limit (maker fee 0%) with fallback to market.
+            use_limit = (
+                not reduce_only
+                and os.getenv("FENIX_USE_LIMIT_ENTRY", "0") == "1"
             )
+            limit_price: float | None = None
+
+            if use_limit:
+                try:
+                    # Place a post-only limit at the current best price on our
+                    # side of the book — if the book moves before we post, GTX
+                    # rejects and we fall back to market.
+                    ticker = await asyncio.to_thread(
+                        self.service.get_ticker_price, self.symbol
+                    )
+                    if ticker and ticker > 0:
+                        # BUY: bid slightly below mid; SELL: ask slightly above.
+                        offset = float(os.getenv("FENIX_LIMIT_OFFSET_TICKS", "1"))
+                        tick = getattr(self, "_tick_size", 0.01) or 0.01
+                        if side == "BUY":
+                            limit_price = ticker - (offset * tick)
+                        else:
+                            limit_price = ticker + (offset * tick)
+                        limit_price = round(limit_price, self.price_precision)
+                except Exception as e:
+                    logger.debug("Limit price calc failed, using market: %s", e)
+                    use_limit = False
+
+            if use_limit and limit_price:
+                logger.info(
+                    f"Executing LIMIT {side} {formatted_qty} {self.symbol} @ {limit_price}"
+                )
+                try:
+                    response = await asyncio.to_thread(
+                        self.service.place_limit_order,
+                        symbol=self.symbol,
+                        side=side,
+                        quantity=float(formatted_qty),
+                        price=limit_price,
+                        reduce_only=reduce_only,
+                    )
+                    # GTX limit: if not filled immediately, cancel and use market.
+                    limit_status = (response or {}).get("status", "")
+                    if limit_status != "FILLED":
+                        limit_oid = (response or {}).get("orderId")
+                        if limit_oid:
+                            try:
+                                await asyncio.to_thread(
+                                    self.service.cancel_order, self.symbol, limit_oid
+                                )
+                            except Exception:
+                                pass
+                        logger.info(
+                            "Limit order status=%s (not filled), falling back to market",
+                            limit_status,
+                        )
+                        use_limit = False
+                        response = None
+                except Exception as e:
+                    # GTX rejection or other limit failure -> fall back to market
+                    logger.info("Limit order rejected (%s), falling back to market", e)
+                    use_limit = False
+
+            if not use_limit or not limit_price:
+                logger.info(f"Executing MARKET {side} {formatted_qty} {self.symbol}")
+                response = await asyncio.to_thread(
+                    self.service.place_market_order,
+                    symbol=self.symbol,
+                    side=side,
+                    quantity=float(formatted_qty),
+                    reduce_only=reduce_only,
+                )
 
             order_id = response.get("orderId")
             if not order_id:

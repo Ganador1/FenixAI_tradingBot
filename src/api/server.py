@@ -242,7 +242,7 @@ async def lifespan(app: FastAPI):
     try:
         from src.analysis.auto_evaluator import AutoEvaluator
 
-        auto_evaluator = AutoEvaluator(symbol="BTCUSDT", evaluation_horizon_minutes=15)
+        auto_evaluator = AutoEvaluator(symbol="BTCUSDT", timeframe="15m")
         _track_task(asyncio.create_task(auto_evaluator.start()))
         logger.info("✅ AutoEvaluator started")
     except Exception as e:

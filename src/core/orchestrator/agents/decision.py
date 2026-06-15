@@ -23,6 +23,7 @@ from src.core.orchestrator.agents.base import (
 from src.core.orchestrator.bank_helper import (
     REASONING_BANK_AVAILABLE,
     get_agent_context_from_bank,
+    get_synthesized_strategies_block,
     store_agent_decision,
 )
 from src.core.orchestrator.retry_system import invoke_with_retry_and_validation
@@ -173,6 +174,20 @@ def _rebuild_directional_score_from_state(state: FenixAgentState) -> tuple[float
     w_qabba = _decision_weight("FENIX_W_QABBA", 0.45 if short_tf else 0.30)
     w_visual = _decision_weight("FENIX_W_VISUAL", 0.10 if short_tf else 0.25)
     w_sentiment = _decision_weight("FENIX_W_SENTIMENT", 0.0 if short_tf else 0.15)
+
+    # Agent scorecards (arXiv:2402.03755): scale static weights by each
+    # agent's evaluated accuracy so consistently-right agents gain influence.
+    try:
+        from src.analysis.agent_scorecards import get_scorecard_multipliers
+
+        _mults = get_scorecard_multipliers()
+    except Exception:
+        _mults = {}
+    if _mults:
+        w_tech *= _mults.get("tech", 1.0)
+        w_qabba *= _mults.get("qabba", 1.0)
+        w_visual *= _mults.get("visual", 1.0)
+        w_sentiment *= _mults.get("sentiment", 1.0)
 
     active_agents: list[tuple[str, str, float, float]] = []
     if tech_report:
@@ -350,6 +365,18 @@ def create_decision_agent_node(llm: Any, reasoning_bank: Any = None):
                             messages[0]["content"] + "\n\n" + historical_context
                         )
                         logger.info("🧠 ReasoningBank: Retrieved context for Decision Agent")
+
+                    # Distilled strategies (ReasoningBank paper): aggregate
+                    # rules mined from evaluated outcomes, not raw history.
+                    strategies_block = get_synthesized_strategies_block(
+                        reasoning_bank=reasoning_bank,
+                        agent_name="decision_agent",
+                    )
+                    if strategies_block and messages:
+                        messages[0]["content"] = (
+                            messages[0]["content"] + "\n\n" + strategies_block
+                        )
+                        logger.info("🧠 ReasoningBank: Injected synthesized strategies")
                 except Exception as e:
                     logger.warning(f"Decision Agent: Failed to retrieve reasoning context: {e}")
             # === END REASONING BANK RETRIEVAL ===

@@ -206,6 +206,29 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
         "--adaptive-fusion",
         "--output-path", str(signal_path),
     ]
+
+    # Warm start: explicit model via env, else pretrained for this symbol,
+    # else the closest market (same base asset, e.g. ETHUSDT for ETHUSDC) so
+    # online learning starts from a useful prior instead of from scratch.
+    nano_dir = repo_root / "nanofenixv3"
+    model_path = os.getenv("NANOFENIX_PRETRAINED_MODEL", "").strip() or None
+    if not model_path:
+        exact = nano_dir / f"pretrained_{symbol.lower()}.pkl"
+        if exact.exists():
+            model_path = str(exact)
+        else:
+            base = symbol.upper().replace("USDC", "USDT")
+            sibling = nano_dir / f"pretrained_{base.lower()}.pkl"
+            if sibling.exists():
+                model_path = str(sibling)
+                logger.info("NanoFenix warm-start from sibling market model: %s", sibling.name)
+    if model_path:
+        cmd.extend(["--model", model_path])
+
+    # Persist live training so each session continues learning from the last.
+    runtime_path = nano_dir / f"runtime_{symbol.lower()}_live.pkl"
+    cmd.extend(["--runtime-state-path", str(runtime_path)])
+
     logger.info("Launching NanoFenix companion: %s", " ".join(cmd))
     try:
         proc = subprocess.Popen(cmd, env=env)
@@ -236,7 +259,7 @@ def _stop_nanofenix_companion(proc: subprocess.Popen | None) -> None:
 async def main():
     """Main function."""
     args = parse_args()
-    
+
     print("""
     ╔═══════════════════════════════════════════════════════════════╗
     ║                                                               ║
@@ -245,7 +268,7 @@ async def main():
     ║                                                               ║
     ╚═══════════════════════════════════════════════════════════════╝
     """)
-    
+
     logger.info("Starting Fenix Trading Bot (v2.5)")
     logger.info(f"  Mode: {args.mode.upper()}")
     logger.info(f"  Symbol: {args.symbol}")
@@ -297,7 +320,7 @@ async def main():
             os.environ["FENIX_NANOFENIX_HARD_VETO_REASONS"] = args.nanofenix_hard_veto_reasons
             logger.info(f"  Companion signal path: {signal_path}")
             logger.info(f"  Hard-veto reasons: {args.nanofenix_hard_veto_reasons}")
-    
+
     # Verify Ollama
     logger.info("Verifying Ollama connection...")
     try:
@@ -306,28 +329,28 @@ async def main():
         if response.status_code != 200:
             logger.error("Ollama is not available. Run: ollama serve")
             return 1
-        
+
         models = [m["name"] for m in response.json().get("models", [])]
         if args.model not in models and not any(args.model.split(":")[0] in m for m in models):
             logger.warning(f"Model {args.model} not found. Available: {models[:5]}")
             args.model = models[0] if models else "gemma3:1b"
             logger.info(f"Using alternative model: {args.model}")
-        
+
         logger.info(f"✅ Ollama OK - Model: {args.model}")
-        
+
     except Exception as e:
         logger.error(f"Error connecting to Ollama: {e}")
         return 1
-    
+
     # Verify Binance
     use_testnet = args.mode == "paper" or args.testnet
     logger.info(f"Verifying Binance connection {'(TESTNET)' if use_testnet else '(PRODUCTION)'}...")
     try:
         from src.trading.binance_client import BinanceClient
-        
+
         client = BinanceClient(testnet=use_testnet)
         connected = await client.connect()
-        
+
         if connected:
             price = await client.get_price(args.symbol)
             if price:
@@ -337,14 +360,14 @@ async def main():
                 logger.warning(f"Could not get price for {args.symbol}")
         else:
             logger.warning("Could not connect to Binance, continuing in simulated mode")
-        
+
         await client.close()
-        
+
     except ImportError:
         logger.warning("Binance client not available, continuing in simulated mode")
     except Exception as e:
         logger.warning(f"Error connecting to Binance: {e}")
-    
+
     # Start API server if requested
     if args.api:
         logger.info("🚀 Starting API server (Frontend Backend)...")
@@ -383,10 +406,29 @@ async def main():
         # Start
         logger.info("Trading engine ready")
 
+        # AutoEvaluator: label ReasoningBank entries against actual market
+        # moves. Without it, CLI sessions write memory that is never evaluated
+        # (success stays None) so scorecards and distilled strategies starve.
+        evaluator_task = None
+        try:
+            from src.analysis.auto_evaluator import AutoEvaluator
+
+            auto_evaluator = AutoEvaluator(symbol=args.symbol, timeframe=args.timeframe)
+            evaluator_task = asyncio.create_task(auto_evaluator.start())
+            logger.info(
+                "AutoEvaluator started (horizon=%sm, cost=%.2f%%)",
+                auto_evaluator.horizon,
+                auto_evaluator.cost_pct,
+            )
+        except Exception as e:
+            logger.warning(f"AutoEvaluator unavailable: {e}")
+
         # Execute
         try:
             await engine.start()
         finally:
+            if evaluator_task is not None:
+                evaluator_task.cancel()
             _stop_nanofenix_companion(nanofenix_proc)
 
         return 0
@@ -403,52 +445,52 @@ async def main():
 async def run_simple_test(args):
     """Executes a simplified test without the full engine."""
     logger.info("=== Simplified Test Mode ===")
-    
+
     from src.prompts.agent_prompts import format_prompt
     from langchain_ollama import ChatOllama
     from langchain_core.messages import SystemMessage, HumanMessage
     from src.trading.binance_client import BinanceClient
-    
+
     # Connect to Binance
     client = BinanceClient(testnet=True)
     await client.connect()
-    
+
     # Get real data
     price = await client.get_price(args.symbol)
     klines = await client.get_klines(args.symbol, args.timeframe, limit=50)
-    
+
     logger.info(f"Data received: {args.symbol} @ ${price:,.2f}")
     logger.info(f"Klines: {len(klines)} candles")
-    
+
     # Calculate simple indicators
     if klines:
         closes = [k["close"] for k in klines]
-        
+
         # Simple RSI
         gains = [max(0, closes[i] - closes[i-1]) for i in range(1, len(closes))]
         losses = [max(0, closes[i-1] - closes[i]) for i in range(1, len(closes))]
         avg_gain = sum(gains[-14:]) / 14 if len(gains) >= 14 else 0
         avg_loss = sum(losses[-14:]) / 14 if len(losses) >= 14 else 0.0001
         rsi = 100 - (100 / (1 + avg_gain / avg_loss))
-        
+
         # Simple EMA
         ema_9 = sum(closes[-9:]) / 9 if len(closes) >= 9 else closes[-1]
         ema_21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]
-        
+
         indicators = {
             "rsi": round(rsi, 2),
             "ema_9": round(ema_9, 2),
             "ema_21": round(ema_21, 2),
             "price": price,
         }
-        
+
         logger.info(f"Indicators: RSI={rsi:.1f}, EMA9={ema_9:.0f}, EMA21={ema_21:.0f}")
     else:
         indicators = {"rsi": 50, "price": price}
-    
+
     # Run analysis with LLM
     logger.info("Running analysis with LLM...")
-    
+
     messages = format_prompt(
         "technical_analyst",
         symbol=args.symbol,
@@ -456,21 +498,21 @@ async def run_simple_test(args):
         indicators_json=str(indicators),
         current_price=str(price),
     )
-    
+
     llm = ChatOllama(
         model=args.model,
         temperature=0.1,
         num_predict=500,
     )
-    
+
     response = llm.invoke([
         SystemMessage(content=messages[0]["content"]),
         HumanMessage(content=messages[1]["content"]),
     ])
-    
+
     logger.info("=== Technical Agent Response ===")
     print(response.content[:1000])
-    
+
     await client.close()
     return 0
 
