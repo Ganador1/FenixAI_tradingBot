@@ -678,10 +678,10 @@ class RuntimeRiskManager:
         exposure_ok, exposure_reason = self._check_total_exposure(size, side)
         if not exposure_ok:
             exposure = self.get_total_exposure()
-            return True, RiskFeedbackStatus(
+            return False, RiskFeedbackStatus(
                 mode=status.mode,
                 risk_bias=status.risk_bias,
-                block_trading=False,
+                block_trading=True,
                 reason=exposure_reason,
                 metrics_snapshot={
                     "total_exposure": float(exposure.get("total_exposure", 0.0)),

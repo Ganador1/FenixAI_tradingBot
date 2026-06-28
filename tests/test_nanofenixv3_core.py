@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import types
 
 import numpy as np
@@ -117,6 +118,68 @@ def test_core_runtime_state_round_trip_avoids_feature_warmup(tmp_path, monkeypat
     assert restored.features.bar_count == bot.features.bar_count
     assert restored._tick_count == 12345
     assert restored.features.compute_features() is not None
+
+
+def test_unique_tmp_path_is_not_shared_between_writers(tmp_path):
+    target = tmp_path / "signal.json"
+
+    first = core_module._unique_tmp_path(target)
+    second = core_module._unique_tmp_path(target)
+
+    assert first != second
+    assert first.parent == target.parent
+    assert second.parent == target.parent
+    assert first.name.startswith("signal.json.")
+    assert second.name.startswith("signal.json.")
+    assert first.name.endswith(".tmp")
+    assert second.name.endswith(".tmp")
+
+
+def test_companion_signal_includes_producer_identity(tmp_path, monkeypatch):
+    signal_path = tmp_path / "companion.json"
+    monkeypatch.setenv("NANOFENIX_SIGNAL_STATE_PATH", str(signal_path))
+    monkeypatch.setenv("NANOFENIXV3_RUN_ID", "run-test-123")
+
+    bot = core_module.NanoFenixV3(
+        symbol="ETHUSDC",
+        balance=1000.0,
+        model_path=str(tmp_path / "model.pkl"),
+    )
+
+    bot._publish_companion_signal(
+        bar_idx=1,
+        close=2000.0,
+        signal="SHORT",
+        pred_bps=-3.5,
+        confidence=0.72,
+        ema_trend=-2.1,
+        range_bps=4.2,
+        buy_vol_ratio=0.44,
+        regime_ctx={"regime": "TRENDING", "volatility": "LOW", "trend": "BEAR"},
+        event_intensity=1.1,
+        readiness={"ready": True, "reasons": [], "utility_score": 0.7},
+        short_readiness={
+            "ready": True,
+            "reasons": [],
+            "utility_score": 0.8,
+            "direction_accuracy": 0.61,
+            "direction_samples": 50,
+            "calibration_samples": 80,
+        },
+        long_readiness={
+            "ready": False,
+            "reasons": ["low_direction_accuracy"],
+            "utility_score": 0.2,
+            "direction_accuracy": 0.49,
+            "direction_samples": 50,
+            "calibration_samples": 80,
+        },
+        policy={"allow_execute": True, "source": "short_only"},
+    )
+
+    payload = json.loads(signal_path.read_text(encoding="utf-8"))
+    assert payload["run_id"] == "run-test-123"
+    assert payload["producer_pid"] == os.getpid()
 
 
 def test_core_can_restore_from_interval_runtime_fallback_when_custom_target_is_empty(

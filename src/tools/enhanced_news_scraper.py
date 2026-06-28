@@ -19,6 +19,7 @@ Improvements:
 import logging
 import hashlib
 import json
+import os
 import time
 import re
 from datetime import datetime, timedelta
@@ -220,6 +221,10 @@ class EnhancedNewsScraper:
         
         self.cache = EnhancedCache(cache_dir, ttl_minutes=cache_ttl)
         self.http = ResilientHTTPSession()
+        try:
+            self.request_timeout = float(os.getenv("FENIX_RSS_REQUEST_TIMEOUT_SEC", "10"))
+        except ValueError:
+            self.request_timeout = 10.0
         
         # Track source performance
         self.source_stats = defaultdict(lambda: {
@@ -308,8 +313,15 @@ class EnhancedNewsScraper:
             return cached
         
         try:
-            # Fetch RSS feed
-            feed = feedparser.parse(url, request_headers=self.http.session.headers)
+            # Fetch with the resilient HTTP client so source outages cannot hang indefinitely.
+            response = self.http.get(url, timeout=self.request_timeout)
+            response.raise_for_status()
+            payload = response.content or getattr(response, "text", "")
+            feed = feedparser.parse(
+                payload,
+                request_headers=self.http.session.headers,
+                response_headers=getattr(response, "headers", None),
+            )
             
             if feed.get('bozo', False):
                 # Feed has errors

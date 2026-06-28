@@ -18,7 +18,7 @@ import os
 import signal
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Load .env early so JWT_SECRET, API keys, etc. are visible to every module.
@@ -42,6 +42,51 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("Fenix")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _find_nanofenix_companion_pids(symbol: str) -> list[int]:
+    """Return running NanoFenix companion PIDs for a symbol."""
+    normalized_symbol = symbol.upper()
+    try:
+        output = subprocess.check_output(
+            ["ps", "-axo", "pid=,command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    pids: list[int] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        command = parts[1]
+        if pid == os.getpid():
+            continue
+        if "run_nanofenixv3.py" not in command or "--companion" not in command:
+            continue
+        has_symbol = (
+            f"--symbol {normalized_symbol}" in command
+            or f"--symbol={normalized_symbol}" in command
+        )
+        if has_symbol:
+            pids.append(pid)
+    return pids
 
 
 def parse_args():
@@ -167,7 +212,7 @@ Examples:
     )
     parser.add_argument(
         "--nanofenix-hard-veto-reasons",
-        default="direction_mismatch,high_uncertainty,stale_signal,symbol_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
+        default="direction_mismatch,high_uncertainty,stale_signal,symbol_mismatch,run_id_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
         help=(
             "Comma-separated NanoFenix veto reasons that hard-block a Fenix entry. "
             "Soft reasons (e.g. low_actionable_edge, companion_not_ready) are observed "
@@ -192,11 +237,22 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
 
     Path("logs").mkdir(exist_ok=True)
     signal_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.json"
+    if _env_bool("FENIX_NANOFENIX_COMPANION_SINGLETON", True):
+        existing_pids = _find_nanofenix_companion_pids(symbol)
+        if existing_pids:
+            logger.error(
+                "Refusing to launch NanoFenix companion for %s; existing companion PID(s): %s",
+                symbol,
+                existing_pids,
+            )
+            return None, None
 
     env = os.environ.copy()
     if observer_only:
         env["NANOFENIXV3_COMPANION_OBSERVER_ONLY"] = "1"
     env["NANOFENIX_SIGNAL_STATE_PATH"] = str(signal_path)
+    run_id = f"{symbol.lower()}-{os.getpid()}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+    env["NANOFENIXV3_RUN_ID"] = run_id
 
     cmd = [
         sys.executable,
@@ -227,14 +283,34 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
 
     # Persist live training so each session continues learning from the last.
     runtime_path = nano_dir / f"runtime_{symbol.lower()}_live.pkl"
+    env["NANOFENIXV3_RUNTIME_STATE_PATH"] = str(runtime_path)
     cmd.extend(["--runtime-state-path", str(runtime_path)])
 
     logger.info("Launching NanoFenix companion: %s", " ".join(cmd))
+    companion_log_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.log"
+    companion_log = None
     try:
-        proc = subprocess.Popen(cmd, env=env)
+        os.environ["FENIX_NANOFENIX_EXPECTED_RUN_ID"] = run_id
+        companion_log = companion_log_path.open("a", buffering=1, encoding="utf-8")
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=companion_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     except (OSError, ValueError) as e:
         logger.warning("Could not launch NanoFenix companion: %s", e)
+        os.environ.pop("FENIX_NANOFENIX_EXPECTED_RUN_ID", None)
         return None, None
+    finally:
+        if companion_log is not None:
+            companion_log.close()
+    pid_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.pid"
+    try:
+        pid_path.write_text(str(proc.pid), encoding="utf-8")
+    except OSError as e:
+        logger.debug("Could not write NanoFenix companion pidfile %s: %s", pid_path, e)
     logger.info("NanoFenix companion PID=%s, signal=%s", proc.pid, signal_path)
     return proc, signal_path
 

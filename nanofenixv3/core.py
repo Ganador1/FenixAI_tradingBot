@@ -89,6 +89,10 @@ def _default_runtime_state_path(symbol: str, interval: float) -> Path:
     return Path(f"nanofenixv3/runtime_{symbol.lower()}_{_runtime_interval_tag(interval)}.pkl")
 
 
+def _unique_tmp_path(target: Path) -> Path:
+    return target.with_name(f"{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+
+
 def _signal_to_action(signal: str) -> str:
     normalized = str(signal or "").strip().upper()
     if normalized in {"LONG", "BUY", "UP"}:
@@ -139,6 +143,9 @@ class NanoFenixV3:
         self._running = False
         self._tick_count = 0
         self._start_time = 0.0
+        self._run_id = os.getenv("NANOFENIXV3_RUN_ID", "").strip() or (
+            f"{self.symbol.lower()}-{os.getpid()}-{int(time.time())}"
+        )
         self._seen_book_ticker = False
         self._observer_only = _env_bool("NANOFENIXV3_COMPANION_OBSERVER_ONLY", False)
 
@@ -490,7 +497,7 @@ class NanoFenixV3:
             "feature_engine": self.features.export_state(),
             "aggregator": self.aggregator.export_state(),
         }
-        tmp = self._runtime_state_path.with_suffix(self._runtime_state_path.suffix + ".tmp")
+        tmp = _unique_tmp_path(self._runtime_state_path)
         try:
             with open(tmp, "wb") as f:
                 pickle.dump(state, f)
@@ -534,11 +541,19 @@ class NanoFenixV3:
 
         try:
             action = _signal_to_action(signal)
+            run_id = getattr(self, "_run_id", None)
+            if not run_id:
+                run_id = f"{self.symbol.lower()}-{os.getpid()}-{int(time.time())}"
+                self._run_id = run_id
             payload = {
                 # ── Core signal ──
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "symbol": self.symbol,
                 "version": "v3",
+                "run_id": run_id,
+                "producer_pid": os.getpid(),
+                "runtime_state_path": str(getattr(self, "_runtime_state_path", "")),
+                "model_save_path": str(getattr(self, "_model_save_path", "")),
                 "bar_index": int(bar_idx),
                 "close": float(close),
                 "signal": str(signal),  # LONG / SHORT / HOLD
@@ -617,7 +632,7 @@ class NanoFenixV3:
                 ),
                 "source": str((policy or {}).get("source", "none")),
             }
-            tmp = self._signal_state_file.with_suffix(self._signal_state_file.suffix + ".tmp")
+            tmp = _unique_tmp_path(self._signal_state_file)
             tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
             tmp.replace(self._signal_state_file)
         except Exception as e:

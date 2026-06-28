@@ -553,11 +553,11 @@ ollama_cloud:
     supports_vision: false
     api_base: "http://localhost:11434"
     fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen3-coder-next:cloud"
+    fallback_model_name: "gemma4:31b:cloud"
   
   visual:
     provider_type: "ollama_local"
-    model_name: "qwen3-vl:235b-cloud"
+    model_name: "gemini-3-flash-preview:cloud"
     temperature: 0.15
     max_tokens: 500
     timeout: 45
@@ -568,14 +568,14 @@ ollama_cloud:
   
   qabba:
     provider_type: "ollama_local"
-    model_name: "cogito-2.1:671b:cloud"
+    model_name: "deepseek-v4-pro:cloud"
     temperature: 0.05
     max_tokens: 800
     timeout: 25
     supports_vision: false
     api_base: "http://localhost:11434"
     fallback_provider_type: "ollama_local"
-    fallback_model_name: "deepseek-v3.1:671b:cloud"
+    fallback_model_name: "deepseek-v4-pro:cloud"
   
   sentiment:
     provider_type: "ollama_local"
@@ -622,11 +622,11 @@ OLLAMA_CLOUD:
     supports_vision: false
     api_base: "http://localhost:11434"
     fallback_provider_type: "ollama_local"
-    fallback_model_name: "qwen3-coder-next:cloud"
+    fallback_model_name: "gemma4:31b:cloud"
   
   visual:
     provider_type: "ollama_local"
-    model_name: "qwen3-vl:235b-cloud"
+    model_name: "gemini-3-flash-preview:cloud"
     temperature: 0.15
     max_tokens: 500
     timeout: 45
@@ -637,14 +637,14 @@ OLLAMA_CLOUD:
   
   qabba:
     provider_type: "ollama_local"
-    model_name: "cogito-2.1:671b:cloud"
+    model_name: "deepseek-v4-pro:cloud"
     temperature: 0.05
     max_tokens: 800
     timeout: 25
     supports_vision: false
     api_base: "http://localhost:11434"
     fallback_provider_type: "ollama_local"
-    fallback_model_name: "deepseek-v3.1:671b:cloud"
+    fallback_model_name: "deepseek-v4-pro:cloud"
   
   sentiment:
     provider_type: "ollama_local"

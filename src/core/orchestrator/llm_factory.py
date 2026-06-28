@@ -405,6 +405,13 @@ class LLMFactory:
                 model_name_lc = str(model or "").lower()
                 strict_json_output = bool(json_schema)
 
+                # Models that exhaust their generation budget in reasoning/thinking
+                # and return empty `content` when strict JSON format is required.
+                _reasoning_incompatible = any(
+                    k in model_name_lc
+                    for k in ("deepseek", "minimax", "glm", "kimi")
+                )
+
                 if reasoning_override is not None:
                     ollama_kwargs["reasoning"] = reasoning_override
                 elif agent_type == "risk_manager":
@@ -412,13 +419,28 @@ class LLMFactory:
                     # For Qwen3.5 local, leaving reasoning enabled can exhaust num_predict
                     # and return empty `content`, breaking JSON parsing.
                     ollama_kwargs["reasoning"] = False
-                elif agent_type == "qabba" and strict_json_output and "deepseek" in model_name_lc:
-                    # DeepSeek V3.x on Ollama Cloud can consume the whole generation budget in
+                elif strict_json_output and _reasoning_incompatible:
+                    # These models consume the whole generation budget in
                     # `reasoning_content` and return empty `content` when strict JSON is required.
-                    # QABBA needs the final JSON more than hidden chain-of-thought.
                     ollama_kwargs["reasoning"] = False
 
-                if json_schema:
+                # Some cloud models don't support the ``format`` parameter at all
+                # (minimax returns corrupted JSON, glm/kimi ignore it).  For these
+                # models we omit ``format`` entirely and rely on the downstream
+                # JSON parser to extract the object from free-text output.
+                _format_incompatible = any(
+                    k in model_name_lc
+                    for k in ("minimax", "glm", "kimi", "nemotron")
+                )
+
+                if _format_incompatible:
+                    # Do NOT set format — let the model respond naturally and
+                    # the orchestrator's JSON extractor will handle it.
+                    logger.info(
+                        f"🏭 LLMFactory: Model {model} incompatible with format param, "
+                        f"skipping format enforcement for {agent_type}"
+                    )
+                elif json_schema:
                     ollama_kwargs["format"] = json_schema
                     logger.info(
                         f"🏭 LLMFactory: Using JSON schema for {agent_type} to prevent thinking blocks"

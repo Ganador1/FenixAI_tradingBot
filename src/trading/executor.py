@@ -776,10 +776,10 @@ class OrderExecutor:
         self,
         *,
         position_id: str,
-        entry_order_id: int,
-        entry_side: Literal["BUY", "SELL"],
-        quantity: float,
-        entry_price: float,
+        entry_order_id: int | None = None,
+        entry_side: Literal["BUY", "SELL"] | None = None,
+        quantity: float | None = None,
+        entry_price: float | None = None,
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> OrderResult:
@@ -807,6 +807,45 @@ class OrderExecutor:
                     timestamp=timestamp,
                 )
 
+            resolved_entry_order_id = entry_order_id
+            if resolved_entry_order_id is None:
+                resolved_entry_order_id = int(getattr(existing_position, "entry_order_id", 0) or 0)
+
+            resolved_entry_side = str(
+                entry_side or getattr(existing_position, "entry_side", "")
+            ).upper()
+            if resolved_entry_side not in {"BUY", "SELL"}:
+                return OrderResult(
+                    success=False,
+                    status="INVALID_ENTRY_SIDE",
+                    message=f"invalid entry_side for {position_id}: {resolved_entry_side}",
+                    timestamp=timestamp,
+                )
+
+            resolved_quantity = float(
+                quantity if quantity is not None else getattr(existing_position, "quantity", 0.0)
+            )
+            if resolved_quantity <= 0:
+                return OrderResult(
+                    success=False,
+                    status="INVALID_QUANTITY",
+                    message=f"invalid quantity for {position_id}: {resolved_quantity}",
+                    timestamp=timestamp,
+                )
+
+            resolved_entry_price = float(
+                entry_price
+                if entry_price is not None and float(entry_price) > 0
+                else getattr(existing_position, "entry_price", 0.0)
+            )
+            if resolved_entry_price <= 0:
+                return OrderResult(
+                    success=False,
+                    status="INVALID_ENTRY_PRICE",
+                    message=f"invalid entry_price for {position_id}: {resolved_entry_price}",
+                    timestamp=timestamp,
+                )
+
             cancelled = await monitor.cancel_all_for_position(position_id)
             if not cancelled:
                 return OrderResult(
@@ -820,21 +859,21 @@ class OrderExecutor:
                 monitor.unregister_position(position_id)
 
             sl_order_id, tp_order_id = await self._place_protective_orders(
-                entry_side=entry_side,
-                quantity=quantity,
+                entry_side=resolved_entry_side,
+                quantity=resolved_quantity,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                entry_price=entry_price,
+                entry_price=resolved_entry_price,
             )
 
             if hasattr(monitor, "register_position"):
                 monitor.register_position(
                     position_id=position_id,
                     symbol=self.symbol,
-                    entry_order_id=entry_order_id,
-                    entry_side=entry_side,
-                    quantity=quantity,
-                    entry_price=entry_price,
+                    entry_order_id=resolved_entry_order_id,
+                    entry_side=resolved_entry_side,
+                    quantity=resolved_quantity,
+                    entry_price=resolved_entry_price,
                     sl_order_id=sl_order_id,
                     tp_order_id=tp_order_id,
                     sl_price=stop_loss,
@@ -845,9 +884,9 @@ class OrderExecutor:
                 success=True,
                 status="PROTECTION_REFRESHED",
                 position_id=position_id,
-                order_id=entry_order_id,
-                entry_price=entry_price,
-                executed_qty=quantity,
+                order_id=resolved_entry_order_id,
+                entry_price=resolved_entry_price,
+                executed_qty=resolved_quantity,
                 sl_order_id=sl_order_id,
                 tp_order_id=tp_order_id,
                 message=f"Protection refreshed for {position_id}",
