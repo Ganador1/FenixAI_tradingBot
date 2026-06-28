@@ -42,6 +42,12 @@ from src.tools.twitter_scraper import TwitterScraper
 from src.trading.binance_client import BinanceClient
 from src.trading.executor import OrderExecutor
 from src.trading.market_data import get_market_data_manager
+from src.trading.persistence import (
+    expire_stale_pending_orders,
+    persist_open_position,
+    persist_order_fill,
+    persist_position_close,
+)
 from src.trading.trade_manager import ExitReason, get_trade_manager
 
 # Import LangGraph orchestrator
@@ -295,6 +301,7 @@ class TradingEngine:
         # NanoFenix companion observability (advisory mode).
         self._project_root = project_root
         self._nanofenix_companion_enabled = _env_flag("FENIX_ENABLE_NANOFENIX_COMPANION", False)
+        self._nanofenix_expected_run_id = os.getenv("FENIX_NANOFENIX_EXPECTED_RUN_ID", "").strip()
         raw_signal_path = os.getenv(
             "FENIX_NANOFENIX_SIGNAL_PATH",
             f"logs/nanofenixv3_companion_{self.symbol.lower()}.json",
@@ -436,6 +443,10 @@ class TradingEngine:
         )
         self._engine_cleanup_on_stop = _env_flag("FENIX_CLEANUP_ON_STOP", False)
         self._engine_enforce_llm_risk = _env_flag("FENIX_ENFORCE_LLM_RISK", False)
+        self._stale_pending_order_max_age_hours = _env_float(
+            "FENIX_STALE_PENDING_ORDER_MAX_AGE_HOURS",
+            24.0,
+        )
         self._engine_leverage = _env_float("FENIX_LEVERAGE", 1.0)
         self._risk_max_exposure_pct = _env_float("FENIX_MAX_EXPOSURE_PCT", 0.50)
         self._risk_exposure_leverage_multiplier = _env_float(
@@ -529,6 +540,7 @@ class TradingEngine:
         self._llm_config = llm_config
         self.enable_visual = enable_visual_agent
         self.enable_sentiment = enable_sentiment_agent
+        self._sentiment_fetch_timeout_sec = _env_float("FENIX_SENTIMENT_FETCH_TIMEOUT_SEC", 10.0)
 
         # Initialize RiskManager
         self.risk_manager = get_risk_manager() if RISK_MANAGER_AVAILABLE else None
@@ -585,6 +597,7 @@ class TradingEngine:
 
             # Register market data callbacks
             self.market_data.on_kline(self._on_kline_received)
+            await self._expire_stale_pending_orders()
 
             logger.info("✅ TradingEngine initialized successfully")
             return True
@@ -592,6 +605,24 @@ class TradingEngine:
         except Exception as e:
             logger.error(f"Failed to initialize TradingEngine: {e}", exc_info=True)
             return False
+
+    async def _expire_stale_pending_orders(self) -> None:
+        max_age_hours = max(0.0, float(self._stale_pending_order_max_age_hours or 0.0))
+        if max_age_hours <= 0:
+            return
+
+        try:
+            expired_count = await expire_stale_pending_orders(max_age_hours=max_age_hours)
+        except Exception as exc:
+            logger.debug("Failed to expire stale pending orders: %s", exc, exc_info=True)
+            return
+
+        if expired_count:
+            logger.info(
+                "Expired %d stale pending DB orders older than %.1f hours",
+                expired_count,
+                max_age_hours,
+            )
 
     async def start(self) -> None:
         """Starts the trading engine."""
@@ -667,6 +698,28 @@ class TradingEngine:
             raise
         except Exception as exc:
             logger.warning("Startup analysis cycle failed: %s", exc)
+
+    async def _run_blocking_sentiment_call(
+        self,
+        label: str,
+        func: Callable[[], Any],
+        *,
+        fallback: Any,
+    ) -> Any:
+        timeout_sec = _env_float(
+            "FENIX_SENTIMENT_FETCH_TIMEOUT_SEC",
+            getattr(self, "_sentiment_fetch_timeout_sec", 10.0),
+        )
+        try:
+            if timeout_sec <= 0:
+                return await asyncio.to_thread(func)
+            return await asyncio.wait_for(asyncio.to_thread(func), timeout=timeout_sec)
+        except TimeoutError:
+            logger.warning("%s sentiment fetch timed out after %.2fs", label, timeout_sec)
+            return fallback
+        except Exception as exc:
+            logger.warning("%s sentiment fetch failed: %s", label, exc)
+            return fallback
 
     async def stop(self) -> None:
         """Stops the trading engine."""
@@ -1037,11 +1090,12 @@ class TradingEngine:
             # 3. Get news (if enabled)
             news_data = []
             if self.enable_sentiment:
-                try:
-                    news_data = self.news_scraper.fetch_crypto_news(limit=10)
-                    logger.info(f"📰 Fetched {len(news_data)} news articles")
-                except Exception as e:
-                    logger.warning("Failed to fetch news: %s", e)
+                news_data = await self._run_blocking_sentiment_call(
+                    "news",
+                    lambda: self.news_scraper.fetch_crypto_news(limit=10),
+                    fallback=[],
+                )
+                logger.info(f"📰 Fetched {len(news_data)} news articles")
                 # Send news update event to frontend
                 if (callback := self.on_agent_event) is not None:
                     await callback(
@@ -1056,32 +1110,32 @@ class TradingEngine:
             social_data = {}
             fear_greed_value = None
             if self.enable_sentiment:
-                try:
-                    twitter_data = (
+                twitter_data = await self._run_blocking_sentiment_call(
+                    "twitter",
+                    lambda: (
                         self.twitter_scraper._run() if hasattr(self.twitter_scraper, "_run") else {}
-                    )
-                except Exception as e:
-                    logger.warning(f"Twitter scraper failed: {e}")
-                    twitter_data = {}
+                    ),
+                    fallback={},
+                )
 
-                try:
-                    reddit_data = (
+                reddit_data = await self._run_blocking_sentiment_call(
+                    "reddit",
+                    lambda: (
                         self.reddit_scraper._run() if hasattr(self.reddit_scraper, "_run") else {}
-                    )
-                except Exception as e:
-                    logger.warning(f"Reddit scraper failed: {e}")
-                    reddit_data = {}
+                    ),
+                    fallback={},
+                )
 
-                try:
-                    fg = (
+                fg = await self._run_blocking_sentiment_call(
+                    "fear_greed",
+                    lambda: (
                         self.fear_greed_tool._run(1)
                         if hasattr(self.fear_greed_tool, "_run")
                         else None
-                    )
-                    fear_greed_value = fg if fg is not None else "N/A"
-                except Exception as e:
-                    logger.warning(f"FearGreed tool failed: {e}")
-                    fear_greed_value = "N/A"
+                    ),
+                    fallback=None,
+                )
+                fear_greed_value = fg if fg is not None else "N/A"
 
                 social_data = {
                     "twitter": twitter_data,
@@ -2008,6 +2062,18 @@ class TradingEngine:
             sl_order_id=sl_order_id,
             tp_order_id=tp_order_id,
         )
+        try:
+            await persist_open_position(
+                symbol=self.symbol,
+                side=side,
+                quantity=quantity,
+                entry_price=entry_price,
+                current_price=_safe_float(snapshot.get("markPrice")) or entry_price,
+                position_id=f"position:{trade_id}",
+                opened_at=getattr(position, "entry_time", None),
+            )
+        except Exception:
+            logger.debug("Could not persist hydrated position for %s", self.symbol, exc_info=True)
 
         if self.risk_manager and RISK_MANAGER_AVAILABLE:
             try:
@@ -2172,6 +2238,67 @@ class TradingEngine:
 
     def _get_min_entry_confidence(self) -> str:
         return os.getenv("FENIX_MIN_ENTRY_CONFIDENCE", "MEDIUM").strip().upper()
+
+    def _allow_consensus_same_side_add(
+        self,
+        *,
+        decision: str,
+        confidence: str,
+        companion_policy: dict[str, Any] | None,
+        decision_data: dict[str, Any],
+        tracked_position: Any,
+    ) -> tuple[bool, str]:
+        if decision != "SELL":
+            return False, "consensus_same_side_add_only_sell"
+        if not _env_flag("FENIX_ALLOW_CONSENSUS_SAME_SIDE_ADD_SELL", False):
+            return False, "consensus_same_side_add_disabled"
+        if not isinstance(companion_policy, dict):
+            return False, "consensus_same_side_add_missing_companion_policy"
+
+        companion_action = self._nanofenix_signal_to_action(
+            companion_policy.get("action") or companion_policy.get("signal") or "HOLD"
+        )
+        if companion_action != "SELL":
+            return False, "consensus_same_side_add_companion_not_sell"
+        if not bool(companion_policy.get("allow_execute", False)):
+            return False, "consensus_same_side_add_companion_not_allow_execute"
+        if not self._nanofenix_confirms_action("SELL", companion_policy):
+            return False, "consensus_same_side_add_companion_not_confirmed"
+
+        technical_signal = str(decision_data.get("_execution_technical_signal") or "HOLD").upper()
+        technical_conf = _safe_float(decision_data.get("_execution_technical_confidence")) or 0.0
+        if technical_signal != "SELL" or technical_conf < _env_float(
+            "FENIX_CONSENSUS_ADD_TECH_MIN_CONF", 0.60
+        ):
+            return False, "consensus_same_side_add_technical_not_aligned"
+
+        qabba_signal = str(decision_data.get("_execution_qabba_signal") or "HOLD").upper()
+        qabba_conf = _safe_float(decision_data.get("_execution_qabba_confidence")) or 0.0
+        if qabba_signal != "SELL" or qabba_conf < _env_float(
+            "FENIX_CONSENSUS_ADD_QABBA_MIN_CONF", 0.70
+        ):
+            return False, "consensus_same_side_add_qabba_not_aligned"
+
+        mtf_signal = str(decision_data.get("_execution_mtf_signal") or "HOLD").upper()
+        mtf_conf = _safe_float(decision_data.get("_execution_mtf_confidence")) or 0.0
+        if mtf_signal != "SELL" or mtf_conf < _env_float(
+            "FENIX_CONSENSUS_ADD_MTF_MIN_CONF", 0.60
+        ):
+            return False, "consensus_same_side_add_mtf_not_aligned"
+
+        min_conf = os.getenv("FENIX_CONSENSUS_ADD_MIN_CONFIDENCE", "HIGH").strip().upper()
+        directional_score = abs(_safe_float(decision_data.get("_directional_score")) or 0.0)
+        directional_min = _env_float("FENIX_CONSENSUS_ADD_MIN_DIRECTIONAL_SCORE", 0.70)
+        if _confidence_rank(confidence) < _confidence_rank(min_conf) and directional_score < directional_min:
+            return False, "consensus_same_side_add_confidence_or_score_too_low"
+
+        if tracked_position is not None:
+            entry_count = int(getattr(tracked_position, "entry_count", 1) or 1)
+            max_entries = max(1, int(_env_float("FENIX_CONSENSUS_ADD_MAX_ENTRIES", 2)))
+            if entry_count >= max_entries:
+                return False, "consensus_same_side_add_entry_cap_reached"
+
+        return True, "consensus_same_side_add_allowed"
 
     def _get_flip_min_confidence(self) -> str:
         return os.getenv("FENIX_MIN_FLIP_CONFIDENCE", "MEDIUM").strip().upper()
@@ -2353,6 +2480,15 @@ class TradingEngine:
                 except Exception:
                     pass
 
+        try:
+            await persist_position_close(
+                symbol=self.symbol,
+                close_result=close_result,
+                tracked_position=tracked_position,
+            )
+        except Exception:
+            logger.debug("Could not persist closed position for %s", self.symbol, exc_info=True)
+
         digest = close_result.get("reasoning_digest") or getattr(
             tracked_position, "reasoning_digest", None
         )
@@ -2387,10 +2523,14 @@ class TradingEngine:
         if not hasattr(self.executor, "refresh_position_protection"):
             return
 
+        position_side = str(getattr(position, "side", "LONG") or "LONG").upper()
+        entry_side = "BUY" if position_side == "LONG" else "SELL"
+
         refresh_result = await self.executor.refresh_position_protection(
             position_id=getattr(position, "protection_position_id", None),
-            side=str(getattr(position, "side", "LONG")).upper(),
+            entry_side=entry_side,
             quantity=float(getattr(position, "quantity", 0.0) or 0.0),
+            entry_price=_safe_float(getattr(position, "entry_price", None)),
             stop_loss=_safe_float(getattr(position, "stop_loss", None)),
             take_profit=_safe_float(getattr(position, "take_profit", None)),
         )
@@ -3082,6 +3222,23 @@ class TradingEngine:
         directional_score, score_source = self._build_directional_score(result, decision_data)
         decision_data["_directional_score"] = directional_score
         decision_data["_directional_score_source"] = score_source
+        decision_data["_execution_technical_signal"] = str(
+            technical_report.get("signal") or "HOLD"
+        ).upper()
+        decision_data["_execution_technical_confidence"] = (
+            _safe_float(technical_report.get("confidence")) or 0.0
+        )
+        decision_data["_execution_qabba_signal"] = str(
+            qabba_report.get("signal") or "HOLD"
+        ).upper()
+        decision_data["_execution_qabba_confidence"] = (
+            _safe_float(qabba_report.get("confidence")) or 0.0
+        )
+        decision_data["_execution_market_condition"] = str(
+            indicators.get("market_condition") or ""
+        ).upper()
+        decision_data["_execution_chop_regime"] = str(indicators.get("chop_regime") or "").upper()
+        decision_data["_execution_trend_conflict"] = bool(indicators.get("trend_conflict"))
         self._update_nanofenix_timing_regime(
             technical_report=technical_report,
             qabba_report=qabba_report,
@@ -3122,6 +3279,35 @@ class TradingEngine:
                 decision_data["hold_reason"] = reason
             self._consecutive_holds += 1
             await self._manage_open_position(new_signal="HOLD")
+
+        # MTF veto in full-graph path: if the 1h (or configured HTF) bias
+        # strongly opposes the decision, block the entry. This was previously
+        # only active in the lite consensus path but not in the LangGraph path.
+        if decision in {"BUY", "SELL"}:
+            htf_bias = None
+            try:
+                htf_bias = await self._get_strict_mtf_bias_context()
+            except Exception:
+                pass
+            decision_data["_execution_mtf_signal"] = "HOLD"
+            decision_data["_execution_mtf_confidence"] = 0.0
+            if htf_bias and isinstance(htf_bias, dict):
+                htf_signal = self._normalize_lite_signal(htf_bias.get("signal"))
+                htf_conf = _safe_float(htf_bias.get("confidence")) or 0.0
+                decision_data["_execution_mtf_signal"] = htf_signal
+                decision_data["_execution_mtf_confidence"] = htf_conf
+                mtf_veto_conf = _env_float("FENIX_STRICT_MTF_OPPOSING_VETO_CONF", 0.90)
+                if (
+                    htf_signal in {"BUY", "SELL"}
+                    and htf_signal != decision
+                    and htf_conf >= mtf_veto_conf
+                ):
+                    await _hold(
+                        f"mtf_veto:{htf_bias.get('timeframe', 'HTF')} "
+                        f"bias={htf_signal}({htf_conf:.2f}) opposes {decision}",
+                        filter_name="MTF_VETO",
+                    )
+                    return
 
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
@@ -3613,6 +3799,10 @@ class TradingEngine:
         symbol = str(signal.get("symbol") or "").upper()
         if symbol and symbol != self.symbol:
             reasons.append("symbol_mismatch")
+        expected_run_id = str(getattr(self, "_nanofenix_expected_run_id", "") or "").strip()
+        signal_run_id = str(signal.get("run_id") or "").strip()
+        if expected_run_id and signal_run_id != expected_run_id:
+            reasons.append("run_id_mismatch")
 
         companion_action = self._nanofenix_signal_to_action(
             signal.get("action") or signal.get("signal") or "HOLD"
@@ -3668,6 +3858,9 @@ class TradingEngine:
         return {
             "enabled": True,
             "signal_path": str(getattr(self, "_nanofenix_signal_path", "")),
+            "run_id": signal_run_id or None,
+            "expected_run_id": expected_run_id or None,
+            "producer_pid": signal.get("producer_pid"),
             "decision": decision,
             "effective_signal": decision,
             "allow_execute": len(reasons) == 0,
@@ -3986,10 +4179,21 @@ class TradingEngine:
         same_side_position = (current_position_amt > 0 and decision == "BUY") or (
             current_position_amt < 0 and decision == "SELL"
         )
+        consensus_add_allowed = False
+        consensus_add_reason = ""
+        if same_side_position:
+            consensus_add_allowed, consensus_add_reason = self._allow_consensus_same_side_add(
+                decision=decision,
+                confidence=confidence,
+                companion_policy=companion_policy,
+                decision_data=decision_data,
+                tracked_position=tracked_position,
+            )
         if (
             same_side_position
             and isinstance(companion_policy, dict)
             and not bool(companion_policy.get("allow_add_to_position", False))
+            and not consensus_add_allowed
         ):
             logger.info(
                 "Trade skipped: NanoFenix policy disallows same-side add for %s", self.symbol
@@ -4000,11 +4204,22 @@ class TradingEngine:
                     {
                         "reason": companion_policy.get("reason")
                         or "nanofenix_policy_disallows_same_side_add",
+                            "consensus_override": consensus_add_reason,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             return
-        if same_side_position and not _env_flag("FENIX_ALLOW_ADD_TO_POSITION", False):
+        if same_side_position and consensus_add_allowed:
+            logger.info(
+                "Consensus same-side add override enabled for %s: %s",
+                self.symbol,
+                consensus_add_reason,
+            )
+        if (
+            same_side_position
+            and not _env_flag("FENIX_ALLOW_ADD_TO_POSITION", False)
+            and not consensus_add_allowed
+        ):
             logger.info("Trade skipped: same-side position already open for %s", self.symbol)
             if (callback := self.on_agent_event) is not None:
                 await callback(
@@ -4222,11 +4437,12 @@ class TradingEngine:
             logger.info(
                 f"✅ Trade executed: {decision} {result.executed_qty} @ {result.entry_price}"
             )
+            tracked_position = None
             if getattr(self, "trade_manager", None) is not None and hasattr(
                 self.trade_manager, "open_position"
             ):
                 try:
-                    self.trade_manager.open_position(
+                    tracked_position = self.trade_manager.open_position(
                         symbol=self.symbol,
                         side="LONG" if decision == "BUY" else "SHORT",
                         entry_price=float(result.entry_price)
@@ -4246,6 +4462,31 @@ class TradingEngine:
                     )
                 except Exception as e:
                     logger.debug("Could not open tracked position: %s", e)
+
+            executed_qty = float(result.executed_qty) if result.executed_qty else quantity
+            executed_price = float(result.entry_price) if result.entry_price else entry_price
+            try:
+                await persist_order_fill(
+                    symbol=self.symbol,
+                    side=decision,
+                    quantity=executed_qty,
+                    price=executed_price,
+                    order_id=str(result.order_id) if result.order_id else None,
+                    realized_pnl=0.0,
+                )
+                await persist_open_position(
+                    symbol=self.symbol,
+                    side="LONG" if decision == "BUY" else "SHORT",
+                    quantity=executed_qty,
+                    entry_price=executed_price,
+                    current_price=executed_price,
+                    position_id=f"position:{result.order_id}"
+                    if result.order_id
+                    else f"position:{self.symbol}:{datetime.now(timezone.utc).isoformat()}",
+                    opened_at=getattr(tracked_position, "entry_time", None),
+                )
+            except Exception:
+                logger.debug("Could not persist executed trade for %s", self.symbol, exc_info=True)
 
             if (callback := self.on_agent_event) is not None:
                 await callback(

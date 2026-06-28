@@ -1,5 +1,6 @@
 import types
 import asyncio
+from unittest.mock import AsyncMock
 
 
 def _stub_news_scraper(monkeypatch):
@@ -75,6 +76,13 @@ def test_engine_initialize_passes_graph_flags(monkeypatch):
     monkeypatch.setattr(engine_module, "FearGreedTool", lambda *args, **kwargs: types.SimpleNamespace())
     monkeypatch.setattr(engine_module, "get_reasoning_bank", lambda: None)
     monkeypatch.setattr(engine_module, "get_risk_manager", lambda: None)
+    expire_stale_pending_orders = AsyncMock(return_value=2)
+    monkeypatch.setattr(
+        engine_module,
+        "expire_stale_pending_orders",
+        expire_stale_pending_orders,
+        raising=False,
+    )
     monkeypatch.setattr(engine_module, "LANGGRAPH_AVAILABLE", True)
 
     def _fake_get_trading_graph(**kwargs):
@@ -99,3 +107,5 @@ def test_engine_initialize_passes_graph_flags(monkeypatch):
     assert captured["enable_visual"] is False
     assert captured["enable_sentiment"] is False
     assert captured["enable_risk"] is False
+    expire_stale_pending_orders.assert_awaited_once()
+    assert expire_stale_pending_orders.await_args.kwargs["max_age_hours"] == 24.0

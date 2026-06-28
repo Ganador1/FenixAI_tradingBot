@@ -553,6 +553,14 @@ async def invoke_with_retry_and_validation(
             response = await llm.ainvoke(messages)
             content = response.content if hasattr(response, "content") else str(response)
 
+            # Some models (minimax, glm, kimi) put everything in reasoning_content
+            # and leave content empty.  Fall back to reasoning_content when content
+            # is blank or clearly not useful.
+            if not content or not content.strip():
+                rc = getattr(response, "reasoning_content", None)
+                if rc:
+                    content = rc
+
             # Extract JSON
             parsed = _extract_json_from_content(content, required_keys=required_keys)
 

@@ -170,6 +170,22 @@ def test_sell_trade_intent_still_counts_as_new_exposure():
     assert "Total exposure would exceed limit" in message
 
 
+def test_check_trade_allowed_blocks_when_total_exposure_would_exceed_limit():
+    manager = RuntimeRiskManager()
+    manager.update_balance(100.0)
+    manager.set_max_exposure_pct(0.5)
+    manager.set_exposure_leverage_multiplier(6.0)
+    manager.update_open_position("ETHUSDT", size=280.0, notional=280.0, side="short")
+
+    allowed, status = manager.check_trade_allowed("ETHUSDT", size=40.0, side="sell")
+
+    assert allowed is False
+    assert status.block_trading is True
+    assert "Total exposure would exceed limit" in status.reason
+    assert status.metrics_snapshot["total_exposure"] == 280.0
+    assert status.metrics_snapshot["max_exposure"] == 300.0
+
+
 def test_update_balance_reanchors_stale_persisted_baseline_without_trades():
     manager = RuntimeRiskManager()
     manager._peak_balance = 5000.0

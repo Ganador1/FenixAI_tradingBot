@@ -142,7 +142,8 @@ def test_default_kline_watchdog_grace_is_one_interval_plus_small_buffer():
 
 
 @pytest.mark.asyncio
-async def test_hydrate_tracked_position_from_exchange_registers_live_position():
+async def test_hydrate_tracked_position_from_exchange_registers_live_position(monkeypatch):
+    import src.trading.engine as engine_module
     from src.trading.engine import TradingEngine
 
     engine = _build_minimal_engine(symbol="SOLUSDT", timeframe="15m")
@@ -164,6 +165,8 @@ async def test_hydrate_tracked_position_from_exchange_registers_live_position():
     engine.risk_manager = MagicMock()
     engine.risk_manager.open_trade.return_value = None
     engine.on_agent_event = AsyncMock()
+    persist_open_position = AsyncMock()
+    monkeypatch.setattr(engine_module, "persist_open_position", persist_open_position, raising=False)
 
     hydrated = await TradingEngine._hydrate_tracked_position_from_exchange(engine)
 
@@ -181,6 +184,10 @@ async def test_hydrate_tracked_position_from_exchange_registers_live_position():
     engine.risk_manager.open_trade.assert_called_once()
     engine.on_agent_event.assert_awaited_once()
     assert engine.on_agent_event.await_args.args[0] == "position:hydrated"
+    persist_open_position.assert_awaited_once()
+    assert persist_open_position.await_args.kwargs["symbol"] == "SOLUSDT"
+    assert persist_open_position.await_args.kwargs["side"] == "SHORT"
+    assert persist_open_position.await_args.kwargs["quantity"] == pytest.approx(0.06)
 
 
 def test_rest_kline_payload_is_converted_to_closed_kline_data():
@@ -877,6 +884,39 @@ def test_build_nanofenix_policy_payload_blocks_direction_mismatch():
     assert "direction_mismatch" in policy["reasons"] or "direction_not_confirmed" in policy["reasons"]
 
 
+def test_build_nanofenix_policy_payload_blocks_unexpected_run_id():
+    from src.trading.engine import TradingEngine
+
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_signal_path = "logs/test.json"
+    engine._nanofenix_max_signal_age_sec = 25.0
+    engine._nanofenix_expected_run_id = "expected-run"
+    engine._read_nanofenix_companion_signal = MagicMock(
+        return_value={
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "_signal_age_sec": 0.0,
+            "symbol": "BTCUSDT",
+            "signal": "LONG",
+            "action": "BUY",
+            "confidence": 0.82,
+            "pred_bps": 3.2,
+            "direction_accuracy": 0.72,
+            "companion_ready": True,
+            "run_id": "stale-run",
+            "producer_pid": 99999,
+        }
+    )
+
+    policy = TradingEngine._build_nanofenix_policy_payload(engine, "BUY")
+
+    assert policy is not None
+    assert policy["allow_execute"] is False
+    assert "run_id_mismatch" in policy["reasons"]
+    assert policy["run_id"] == "stale-run"
+    assert policy["producer_pid"] == 99999
+
+
 def test_normalize_technical_report_adds_numeric_confidence():
     from src.trading.engine import TradingEngine
 
@@ -1532,13 +1572,16 @@ async def test_reconcile_tracked_position_with_exchange_uses_exchange_fill_price
 
 
 @pytest.mark.asyncio
-async def test_close_position_record_passes_realized_metrics_to_risk_manager():
+async def test_close_position_record_passes_realized_metrics_to_risk_manager(monkeypatch):
+    import src.trading.engine as engine_module
     from src.trading.engine import TradingEngine
 
     engine = _build_minimal_engine(symbol="ETHUSDT", timeframe="1m")
     engine.risk_manager = MagicMock()
     engine.risk_manager.close_trade.return_value = True
     engine.on_agent_event = AsyncMock()
+    persist_position_close = AsyncMock()
+    monkeypatch.setattr(engine_module, "persist_position_close", persist_position_close, raising=False)
 
     close_result = {
         "trade_id": "trade-win-1",
@@ -1557,6 +1600,9 @@ async def test_close_position_record_passes_realized_metrics_to_risk_manager():
         success=True,
         symbol="ETHUSDT",
     )
+    persist_position_close.assert_awaited_once()
+    assert persist_position_close.await_args.kwargs["symbol"] == "ETHUSDT"
+    assert persist_position_close.await_args.kwargs["close_result"] is close_result
 
 
 @pytest.mark.asyncio
@@ -1881,10 +1927,16 @@ async def test_cleanup_flat_symbol_orders_falls_back_to_symbol_scope_when_target
 
 @pytest.mark.asyncio
 async def test_execute_trade_allows_add_when_flag_enabled(monkeypatch):
+    import src.trading.engine as engine_module
+
     monkeypatch.setenv("FENIX_ALLOW_ADD_TO_POSITION", "1")
 
     engine = _build_minimal_engine(timeframe="1m")
     engine.on_agent_event = AsyncMock()
+    persist_order_fill = AsyncMock()
+    persist_open_position = AsyncMock()
+    monkeypatch.setattr(engine_module, "persist_order_fill", persist_order_fill, raising=False)
+    monkeypatch.setattr(engine_module, "persist_open_position", persist_open_position, raising=False)
 
     executor = MagicMock()
     executor.get_balance.return_value = 100.0
@@ -1913,6 +1965,11 @@ async def test_execute_trade_allows_add_when_flag_enabled(monkeypatch):
     assert executor.execute_market_order.await_count == 1
     assert any(call.args[0] == "trade_executed" for call in engine.on_agent_event.await_args_list)
     assert any(call.args[0] == "position:opened" for call in engine.on_agent_event.await_args_list)
+    persist_order_fill.assert_awaited_once()
+    persist_open_position.assert_awaited_once()
+    assert persist_order_fill.await_args.kwargs["symbol"] == "BTCUSDT"
+    assert persist_order_fill.await_args.kwargs["side"] == "BUY"
+    assert persist_order_fill.await_args.kwargs["order_id"] == "123"
 
 
 @pytest.mark.asyncio

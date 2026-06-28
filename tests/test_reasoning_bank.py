@@ -161,6 +161,45 @@ class TestReasoningBank:
         )
         assert isinstance(similar, list)
 
+    def test_update_entry_outcome_updates_duplicate_digests(self, reasoning_bank):
+        """Verificar que duplicados del mismo prompt no quedan pendientes."""
+        first = reasoning_bank.store_entry(
+            agent_name="technical",
+            prompt="Repeated market prompt",
+            normalized_result={"action": "BUY", "confidence": 0.7},
+            raw_response="Response",
+            backend="ollama",
+            latency_ms=100.0,
+        )
+        second = reasoning_bank.store_entry(
+            agent_name="technical",
+            prompt="Repeated market prompt",
+            normalized_result={"action": "BUY", "confidence": 0.7},
+            raw_response="Response",
+            backend="ollama",
+            latency_ms=100.0,
+        )
+
+        assert first.prompt_digest == second.prompt_digest
+
+        updated = reasoning_bank.update_entry_outcome(
+            agent_name="technical",
+            prompt_digest=first.prompt_digest,
+            success=True,
+            reward=0.42,
+            reward_notes="dedupe check",
+        )
+
+        assert updated is True
+        matches = [
+            entry
+            for entry in reasoning_bank.get_recent(agent_name="technical", limit=10)
+            if entry.prompt_digest == first.prompt_digest
+        ]
+        assert len(matches) == 2
+        assert all(entry.success is True for entry in matches)
+        assert all(entry.reward == 0.42 for entry in matches)
+
 
 class TestReasoningBankPersistence:
     """Tests para persistencia de ReasoningBank."""

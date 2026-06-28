@@ -122,6 +122,7 @@ class AutoEvaluator:
             "visual_agent",
         ]
         now = datetime.now(timezone.utc)
+        evaluated_digests: set[tuple[str, str]] = set()
 
         for agent_name in agents:
             entries = self.bank.get_recent(agent_name, limit=100)  # Check last 100 entries
@@ -129,6 +130,9 @@ class AutoEvaluator:
             for entry in entries:
                 if entry.success is not None:
                     continue  # Already evaluated
+                digest_key = (entry.agent, entry.prompt_digest)
+                if digest_key in evaluated_digests:
+                    continue
 
                 try:
                     # Handle timezone aware/naive
@@ -142,6 +146,7 @@ class AutoEvaluator:
                         continue
 
                     # Ready to evaluate
+                    evaluated_digests.add(digest_key)
                     await self.evaluate_entry(entry, created_at, eval_time)
 
                 except Exception as e:

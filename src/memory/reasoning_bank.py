@@ -12,7 +12,7 @@ import json
 import threading
 from collections import deque
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional
 
@@ -380,20 +380,22 @@ class ReasoningBank:
             if not agent_cache:
                 return False
             
-            # Buscar y actualizar en cache
+            # Buscar y actualizar todas las entradas equivalentes en cache. Los
+            # prompts idénticos pueden aparecer más de una vez y deben dejar de
+            # quedar pendientes después de una evaluación.
             updated = False
+            evaluated_at = datetime.now(timezone.utc).isoformat()
             for entry in agent_cache:
                 if entry.prompt_digest == prompt_digest:
                     entry.success = success
                     entry.reward = reward
-                    entry.evaluated_at = datetime.utcnow().isoformat()
+                    entry.evaluated_at = evaluated_at
                     entry.trade_id = trade_id
                     entry.reward_signal = reward_signal
                     entry.near_miss = near_miss
                     if reward_notes:
                         entry.reward_notes = reward_notes
                     updated = True
-                    break
             
             if not updated:
                 return False
