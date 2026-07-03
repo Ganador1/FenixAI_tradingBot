@@ -1,14 +1,16 @@
-version: "3.8"
-
 # FenixAI Monitoring Stack
-# Run with: docker-compose -f docker-compose.monitoring.yml up -d
+# Prefer the integrated stack:
+#   docker compose --profile monitoring up -d
+#
+# Compatibility mode for an already-running Fenix API stack:
+#   docker compose -f docker-compose.monitoring.yml up -d
 
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.13.0
     container_name: fenix-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -19,24 +21,24 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
     networks:
-      - monitoring
+      - fenix-network
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.1.0
     container_name: fenix-grafana
     ports:
-      - "3001:3000"  # Using 3001 to avoid conflict with frontend dev server
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=fenix_admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:3001
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-fenix_admin_change_me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3001}
     networks:
-      - monitoring
+      - fenix-network
     depends_on:
       - prometheus
     restart: unless-stopped
@@ -48,5 +50,6 @@ volumes:
     driver: local
 
 networks:
-  monitoring:
-    driver: bridge
+  fenix-network:
+    external: true
+    name: fenix-network

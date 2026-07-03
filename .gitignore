@@ -120,18 +120,33 @@ reasoning_bank/
 *.pickle
 
 # ============================================================================
+# Charts & Training Data (heavy files, not for git)
+# ============================================================================
+cache/charts/
+cache/charts/archive/
+data/training_dataset/
+
+# ============================================================================
 # Environment & Secrets
 # ============================================================================
 .env
 .env.local
 .env.*.local
-.env.example
 *.key
 *.pem
 *.crt
 secrets.json
 config/secrets*.yaml
-security/
+# Solo el directorio security/ de la RAÍZ (dumps locales); src/security/ es
+# código fuente y debe versionarse (el patrón sin anclar ocultaba
+# src/security/prompt_sanitizer.py).
+/security/
+
+# Herramientas locales de la sesión (no son parte del proyecto)
+.claude/
+nohup.out
+_tmp_status.py
+debug_visual_raw.log
 
 # ============================================================================
 # OS Generated Files
