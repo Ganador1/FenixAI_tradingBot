@@ -302,7 +302,8 @@ minifenix/analyze_performance.py
 minifenix/multi_symbol_trader.py
 
 # Session / agent metadata (Claude Code, AGENTS.md and related notes)
-memory/
+# Solo memory/ de la RAÍZ (notas de sesión); src/memory/ es código fuente.
+/memory/
 plans/
 # Solo tools/ de la RAÍZ; src/tools/ es código fuente (el patrón sin anclar
 # bloqueaba nuevos archivos del paquete de herramientas).
