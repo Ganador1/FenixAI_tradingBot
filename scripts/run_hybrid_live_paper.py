@@ -101,7 +101,9 @@ class EngineSpec:
 
 DEFAULT_OLLAMA_CLOUD_URL = os.getenv("OLLAMA_CLOUD_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_LOCAL_URL = os.getenv("OLLAMA_LOCAL_URL", "http://localhost:11434")
-DEFAULT_FANOUT_VISION_MODEL = os.getenv("FENIX_FANOUT_VISION_MODEL", "qwen3-vl:235b-cloud")
+# gemma4:31b:cloud es el modelo con visión confirmado en el catálogo actual de
+# Ollama Cloud (qwen3-vl:235b-cloud ya no existe en el plan).
+DEFAULT_FANOUT_VISION_MODEL = os.getenv("FENIX_FANOUT_VISION_MODEL", "gemma4:31b:cloud")
 TEAM_AGENT_KEYS = {"technical", "qabba", "decision", "sentiment", "visual", "risk_manager"}
 TOKEN_ENV_KEYS = {
     "technical": "FENIX_TECHNICAL_MAX_TOKENS",

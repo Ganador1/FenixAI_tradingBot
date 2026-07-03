@@ -522,8 +522,12 @@ def main() -> None:
     env.setdefault("FENIX_RETRY_429_WAIT_JITTER_SEC", str(args.retry_429_wait_jitter_sec))
     env.setdefault("FENIX_LLM_MAX_CONCURRENT_REQUESTS", str(args.llm_max_concurrent_requests))
     env["FENIX_MAX_TOKENS_MULTIPLIER"] = str(args.max_tokens_multiplier)
-    env.setdefault("FENIX_DISABLE_VISUAL_SHORT_TF", "1")
-    env.setdefault("FENIX_DISABLE_SENTIMENT_SHORT_TF", "1")
+    # Only default-disable short-TF visual/sentiment if the caller has not
+    # explicitly enabled them (e.g. for Ollama Cloud Max stress tests).
+    if os.getenv("FENIX_DISABLE_VISUAL_SHORT_TF") is None:
+        env.setdefault("FENIX_DISABLE_VISUAL_SHORT_TF", "1")
+    if os.getenv("FENIX_DISABLE_SENTIMENT_SHORT_TF") is None:
+        env.setdefault("FENIX_DISABLE_SENTIMENT_SHORT_TF", "1")
 
     # Save run metadata
     run_metadata = {

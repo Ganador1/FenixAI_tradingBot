@@ -1,4 +1,5 @@
 from scripts.run_hybrid_live_paper import _compatible_engine_kwargs
+from scripts.run_hybrid_live_paper import DEFAULT_FANOUT_VISION_MODEL
 from scripts.run_hybrid_live_paper import _visual_enabled_for_timeframe
 
 
@@ -47,3 +48,7 @@ def test_visual_enabled_for_timeframe_supports_global_disable(monkeypatch):
 
     assert _visual_enabled_for_timeframe("3m") is False
     assert _visual_enabled_for_timeframe("15m") is False
+
+
+def test_default_fanout_vision_model_uses_verified_gemma_cloud_id():
+    assert DEFAULT_FANOUT_VISION_MODEL == "gemma4:31b:cloud"
