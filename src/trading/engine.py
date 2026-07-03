@@ -646,6 +646,14 @@ class TradingEngine:
             self._running = False
             return
 
+        # Backfill de velas cerradas ANTES de abrir el WS: así los indicadores
+        # del primer ciclo son reales y el dedupe por open_time evita que el
+        # stream re-ingiera lo ya sembrado.
+        try:
+            await self._backfill_closed_klines()
+        except Exception:
+            logger.warning("Backfill inicial de velas falló", exc_info=True)
+
         # Start market data streams
         await self.market_data.start()
         if self._last_closed_kline_at is None:
@@ -869,6 +877,67 @@ class TradingEngine:
             "source": "rest_kline_watchdog",
         }
 
+    async def _backfill_closed_klines(self, *, limit: int | None = None) -> int:
+        """Siembra el buffer de indicadores con velas CERRADAS históricas.
+
+        Sin esto, el buffer se llenaba solo del WebSocket y los indicadores
+        del arranque se calculaban sobre snapshots de la vela en formación
+        (pseudo-ticks) en vez de velas reales del timeframe — el 2026-07-01
+        eso produjo un RSI de 88.9 cuando el real de 15m era ~31 y cerró en
+        falso una posición ganadora.
+        """
+        if limit is None:
+            limit = int(os.getenv("FENIX_KLINE_BACKFILL_LIMIT", "60") or 60)
+        if limit <= 0:
+            return 0
+
+        client = BinanceClient(testnet=self.use_testnet)
+        connected = False
+        try:
+            connected = await client.connect()
+            if not connected:
+                logger.warning("Backfill de velas históricas: no se pudo conectar")
+                return 0
+
+            klines = await client.get_klines(self.symbol, self.timeframe, limit=limit)
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            injected = 0
+            last_open: int | None = None
+            for kline in klines or []:
+                open_time = int(kline.get("timestamp") or 0)
+                close_time = int(kline.get("close_time") or 0)
+                if open_time <= 0:
+                    continue
+                if close_time > now_ms:
+                    # Vela aún en formación: no contamina el buffer.
+                    continue
+                self._ingest_kline(self._rest_kline_to_kline_data(kline))
+                last_open = open_time
+                injected += 1
+
+            if last_open is not None:
+                # Marca la última vista para que el WS no re-ingiera duplicados.
+                self._last_closed_kline_open_time = last_open
+                self._last_closed_kline_at = datetime.now(timezone.utc)
+            if injected:
+                logger.info(
+                    "📥 Backfill: %d velas %s cerradas sembradas en el buffer de indicadores",
+                    injected,
+                    self.timeframe,
+                )
+            return injected
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Backfill de velas históricas falló: %s", exc)
+            return 0
+        finally:
+            if connected:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+
     async def _poll_closed_kline_fallback(self, *, limit: int = 3) -> int:
         client = BinanceClient(testnet=self.use_testnet)
         connected = False
@@ -987,7 +1056,16 @@ class TradingEngine:
         """Callback when a new kline is received."""
         try:
             if not kline_data.get("is_closed", False):
-                self._ingest_kline(kline_data)
+                # La vela EN FORMACIÓN no entra al buffer de indicadores:
+                # ingerir cada snapshot parcial convertía la serie "15m" en
+                # pseudo-ticks (RSI 88.9 con el real de 15m en ~31, cierre en
+                # falso del 2026-07-01). Solo refresca el precio de mercado.
+                try:
+                    close_price = _safe_float(kline_data.get("close"))
+                    if close_price > 0 and self.market_data is not None:
+                        self.market_data.current_price = close_price
+                except Exception:
+                    pass
                 return
 
             close_lock = getattr(self, "_closed_kline_lock", None)
@@ -1060,6 +1138,17 @@ class TradingEngine:
         start_time = datetime.now(timezone.utc)
         logger.info("=" * 50)
         logger.info("🔄 Starting analysis cycle")
+
+        # Prune old charts periodically (every ~100 cycles ≈ once a day)
+        if not hasattr(self, "_chart_cleanup_counter"):
+            self._chart_cleanup_counter = 0
+        self._chart_cleanup_counter += 1
+        if self._chart_cleanup_counter % 100 == 0:
+            try:
+                self.pro_chart_generator.archive_old_charts(max_age_days=7)
+            except Exception:
+                pass
+
         if (callback := self.on_agent_event) is not None:
             try:
                 await callback(
@@ -1181,6 +1270,8 @@ class TradingEngine:
         try:
             # Generate chart for Visual Agent
             chart_b64 = None
+            chart_indicators_summary: dict[str, Any] = {}
+            chart_candles_count = 0
             if self.enable_visual:
                 try:
                     # If few candles or very short timeframe, use history to avoid empty charts
@@ -1240,14 +1331,26 @@ class TradingEngine:
                             kline_data=kline_data,
                             symbol=self.symbol,
                             timeframe=self.timeframe,
-                            show_indicators=["ema_9", "ema_21", "bb_bands", "vwap"],
+                            show_indicators=[
+                                "ema_9",
+                                "ema_21",
+                                "ema_50",
+                                "bb_bands",
+                                "supertrend",
+                                "vwap",
+                                "pivots",
+                            ],
                             show_volume=True,
-                            show_rsi=True,
-                            show_macd=True,
+                            show_rsi=False,
+                            show_macd=False,
                         )
                         chart_b64 = pro_result.get("image_b64")
                         if chart_b64:
-                            logger.info("🖼️ Professional chart generated (%d chars)", len(chart_b64))
+                            chart_indicators_summary = pro_result.get("indicators_summary") or {}
+                            chart_candles_count = int(pro_result.get("candles_count") or 0)
+                            logger.info(
+                                "🖼️ Professional chart generated (%d chars)", len(chart_b64)
+                            )
                     except Exception as pro_err:
                         logger.warning("Professional chart failed, falling back: %s", pro_err)
                         chart_b64 = None
@@ -1262,6 +1365,8 @@ class TradingEngine:
                         )
                         chart_b64 = chart_result.get("image_b64")
                         if chart_b64:
+                            chart_indicators_summary = chart_result.get("indicators_summary") or {}
+                            chart_candles_count = int(chart_result.get("candles_count") or 0)
                             logger.info("🖼️ Fallback chart generated (%d chars)", len(chart_b64))
 
                     if not chart_b64:
@@ -1291,6 +1396,21 @@ class TradingEngine:
             except Exception as e:
                 logger.debug("MTF context unavailable: %s", e)
 
+            # Fetch real account balance from Binance for the risk manager
+            real_balance = None
+            try:
+                if not self.paper_trading and self.binance_client:
+                    bal = await self.binance_client.get_balance("USDT")
+                    if bal and bal > 0:
+                        # Also check USDC since ETHUSDC uses USDC as quote
+                        usdc_bal = await self.binance_client.get_balance("USDC")
+                        real_balance = bal + (usdc_bal or 0)
+                        logger.debug(
+                            f"Real balance for risk manager: USDT={bal} + USDC={usdc_bal} = {real_balance}"
+                        )
+            except Exception as e:
+                logger.debug("Could not fetch real balance for risk manager: %s", e)
+
             # Execute LangGraph analysis (always, even without visual)
             result = await self._trading_graph.invoke(
                 symbol=self.symbol,
@@ -1307,11 +1427,14 @@ class TradingEngine:
                 },
                 mtf_context=mtf_context_payload,
                 chart_image_b64=chart_b64,
+                chart_candles_count=chart_candles_count,
+                chart_indicators_summary=chart_indicators_summary,
                 news_data=news_data or [],
                 social_data=social_data or {},
                 fear_greed_value=fear_greed_value or "N/A",
                 account_balance_usdt=(
-                    self._get_cached_balance()
+                    real_balance
+                    or self._get_cached_balance()
                     or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
                     or None
                 ),
@@ -2142,6 +2265,9 @@ class TradingEngine:
         counts = getattr(self, "_filter_block_counts", None)
         if isinstance(counts, dict):
             counts[name] = counts.get(name, 0) + 1
+        # Sin esta línea los bloqueos solo se ven en el frontend y las
+        # sesiones live/paper quedan sin rastro de por qué no se entró.
+        logger.info("🚫 Entry blocked by filter %s%s", name, f": {details}" if details else "")
         if (callback := self.on_agent_event) is not None:
             payload = {"filter": name, "timestamp": datetime.now(timezone.utc).isoformat()}
             if details:
@@ -2281,15 +2407,16 @@ class TradingEngine:
 
         mtf_signal = str(decision_data.get("_execution_mtf_signal") or "HOLD").upper()
         mtf_conf = _safe_float(decision_data.get("_execution_mtf_confidence")) or 0.0
-        if mtf_signal != "SELL" or mtf_conf < _env_float(
-            "FENIX_CONSENSUS_ADD_MTF_MIN_CONF", 0.60
-        ):
+        if mtf_signal != "SELL" or mtf_conf < _env_float("FENIX_CONSENSUS_ADD_MTF_MIN_CONF", 0.60):
             return False, "consensus_same_side_add_mtf_not_aligned"
 
         min_conf = os.getenv("FENIX_CONSENSUS_ADD_MIN_CONFIDENCE", "HIGH").strip().upper()
         directional_score = abs(_safe_float(decision_data.get("_directional_score")) or 0.0)
         directional_min = _env_float("FENIX_CONSENSUS_ADD_MIN_DIRECTIONAL_SCORE", 0.70)
-        if _confidence_rank(confidence) < _confidence_rank(min_conf) and directional_score < directional_min:
+        if (
+            _confidence_rank(confidence) < _confidence_rank(min_conf)
+            and directional_score < directional_min
+        ):
             return False, "consensus_same_side_add_confidence_or_score_too_low"
 
         if tracked_position is not None:
@@ -3207,11 +3334,31 @@ class TradingEngine:
             if _is_plausible_approved_notional(approved_size, max_notional_usd=max_notional_usd):
                 decision_data["position_size"] = approved_size
             else:
-                logger.warning(
-                    "Ignoring implausible approved_size=%s from risk_manager for %s",
-                    approved_size,
-                    self.symbol,
+                # Algunos modelos devuelven approved_size en cantidad del
+                # activo base (p.ej. 0.246 ETH) en vez de notional USD. Si la
+                # conversión por el precio de entrada cae en rango plausible,
+                # se reinterpreta como cantidad y se convierte.
+                as_notional = (
+                    approved_size * entry_price if entry_price and entry_price > 0 else None
                 )
+                if as_notional is not None and _is_plausible_approved_notional(
+                    as_notional, max_notional_usd=max_notional_usd
+                ):
+                    decision_data["position_size"] = as_notional
+                    logger.warning(
+                        "approved_size=%s from risk_manager for %s parece cantidad base; "
+                        "convertido a notional USD=%.2f (entry=%.2f)",
+                        approved_size,
+                        self.symbol,
+                        as_notional,
+                        entry_price,
+                    )
+                else:
+                    logger.warning(
+                        "Ignoring implausible approved_size=%s from risk_manager for %s",
+                        approved_size,
+                        self.symbol,
+                    )
 
         if dynamic_levels.get("risk_reward_ratio") is not None:
             risk_assessment["risk_reward_ratio"] = _safe_float(
@@ -3228,9 +3375,7 @@ class TradingEngine:
         decision_data["_execution_technical_confidence"] = (
             _safe_float(technical_report.get("confidence")) or 0.0
         )
-        decision_data["_execution_qabba_signal"] = str(
-            qabba_report.get("signal") or "HOLD"
-        ).upper()
+        decision_data["_execution_qabba_signal"] = str(qabba_report.get("signal") or "HOLD").upper()
         decision_data["_execution_qabba_confidence"] = (
             _safe_float(qabba_report.get("confidence")) or 0.0
         )
@@ -3273,6 +3418,8 @@ class TradingEngine:
             nonlocal decision
             if filter_name:
                 await self._emit_filter_blocked(filter_name, {"reason": reason} if reason else None)
+            elif reason:
+                logger.info("⏸️ %s -> HOLD: %s", decision, reason)
             decision = "HOLD"
             decision_data["effective_decision"] = "HOLD"
             if reason:
@@ -4204,7 +4351,7 @@ class TradingEngine:
                     {
                         "reason": companion_policy.get("reason")
                         or "nanofenix_policy_disallows_same_side_add",
-                            "consensus_override": consensus_add_reason,
+                        "consensus_override": consensus_add_reason,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 )
@@ -4352,9 +4499,11 @@ class TradingEngine:
         ):
             floor_qty = max(
                 step_size,
-                _ceil_to_step(min_notional / entry_price, step_size)
-                if min_notional > 0
-                else step_size,
+                (
+                    _ceil_to_step(min_notional / entry_price, step_size)
+                    if min_notional > 0
+                    else step_size
+                ),
             )
             floor_notional = floor_qty * entry_price
             max_margin_for_floor = _env_float("FENIX_MIN_QTY_FLOOR_MAX_MARGIN_USD", 0.0)
@@ -4445,9 +4594,9 @@ class TradingEngine:
                     tracked_position = self.trade_manager.open_position(
                         symbol=self.symbol,
                         side="LONG" if decision == "BUY" else "SHORT",
-                        entry_price=float(result.entry_price)
-                        if result.entry_price
-                        else entry_price,
+                        entry_price=(
+                            float(result.entry_price) if result.entry_price else entry_price
+                        ),
                         quantity=float(result.executed_qty) if result.executed_qty else quantity,
                         signal_timestamp=datetime.now(timezone.utc).isoformat(),
                         stop_loss=stop_loss,
@@ -4480,9 +4629,11 @@ class TradingEngine:
                     quantity=executed_qty,
                     entry_price=executed_price,
                     current_price=executed_price,
-                    position_id=f"position:{result.order_id}"
-                    if result.order_id
-                    else f"position:{self.symbol}:{datetime.now(timezone.utc).isoformat()}",
+                    position_id=(
+                        f"position:{result.order_id}"
+                        if result.order_id
+                        else f"position:{self.symbol}:{datetime.now(timezone.utc).isoformat()}"
+                    ),
                     opened_at=getattr(tracked_position, "entry_time", None),
                 )
             except Exception:
@@ -4543,9 +4694,11 @@ class TradingEngine:
                         pnl=0.0,  # Will be updated on close
                         pnl_pct=0.0,
                         success=True,  # Will be updated when result is known
-                        size=float(result.executed_qty) * float(result.entry_price)
-                        if result.executed_qty and result.entry_price
-                        else 0.0,
+                        size=(
+                            float(result.executed_qty) * float(result.entry_price)
+                            if result.executed_qty and result.entry_price
+                            else 0.0
+                        ),
                     )
                     if hasattr(self.risk_manager, "open_trade"):
                         self.risk_manager.open_trade(trade_record)
@@ -4654,9 +4807,9 @@ class TradingEngine:
             "paper_trading": self.paper_trading,
             "kline_count": self._kline_count,
             "consecutive_holds": self._consecutive_holds,
-            "last_decision_time": self._last_decision_time.isoformat()
-            if self._last_decision_time
-            else None,
+            "last_decision_time": (
+                self._last_decision_time.isoformat() if self._last_decision_time else None
+            ),
             "current_price": self.market_data.current_price,
             "langgraph_available": self._trading_graph is not None,
         }

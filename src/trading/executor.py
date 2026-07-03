@@ -323,19 +323,67 @@ class OrderExecutor:
                     limit_status = (response or {}).get("status", "")
                     if limit_status != "FILLED":
                         limit_oid = (response or {}).get("orderId")
+                        cancel_confirmed = limit_oid is None
                         if limit_oid:
                             try:
                                 await asyncio.to_thread(
                                     self.service.cancel_order, self.symbol, limit_oid
                                 )
-                            except Exception:
-                                pass
-                        logger.info(
-                            "Limit order status=%s (not filled), falling back to market",
-                            limit_status,
-                        )
-                        use_limit = False
-                        response = None
+                                cancel_confirmed = True
+                            except Exception as cancel_err:
+                                # If we cannot confirm the cancel, the limit order may
+                                # still fill. Falling back to market here would risk a
+                                # DOUBLE position, so re-check the order status first.
+                                logger.warning(
+                                    "Cancel of limit order %s failed (%s); re-checking status "
+                                    "before market fallback",
+                                    limit_oid,
+                                    cancel_err,
+                                )
+                                try:
+                                    order_state = await asyncio.to_thread(
+                                        self.service.get_order, self.symbol, limit_oid
+                                    )
+                                    final_status = (order_state or {}).get("status", "")
+                                    if final_status == "FILLED":
+                                        logger.info(
+                                            "Limit order %s filled during cancel race; "
+                                            "using it as entry",
+                                            limit_oid,
+                                        )
+                                        response = order_state
+                                        limit_status = "FILLED"
+                                    else:
+                                        cancel_confirmed = final_status in (
+                                            "CANCELED",
+                                            "EXPIRED",
+                                            "REJECTED",
+                                        )
+                                except Exception as status_err:
+                                    logger.error(
+                                        "Could not verify limit order %s after failed cancel: %s",
+                                        limit_oid,
+                                        status_err,
+                                    )
+                        if limit_status != "FILLED":
+                            if not cancel_confirmed:
+                                self.circuit_breaker.record_failure()
+                                return OrderResult(
+                                    success=False,
+                                    status="LIMIT_CANCEL_UNCONFIRMED",
+                                    order_id=limit_oid,
+                                    message=(
+                                        "Limit order cancel could not be confirmed; "
+                                        "aborting market fallback to avoid double position"
+                                    ),
+                                    timestamp=timestamp,
+                                )
+                            logger.info(
+                                "Limit order status=%s (not filled), falling back to market",
+                                limit_status,
+                            )
+                            use_limit = False
+                            response = None
                 except Exception as e:
                     # GTX rejection or other limit failure -> fall back to market
                     logger.info("Limit order rejected (%s), falling back to market", e)
