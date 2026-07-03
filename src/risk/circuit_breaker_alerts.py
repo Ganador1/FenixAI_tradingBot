@@ -45,12 +45,29 @@ class CircuitBreakerNotifier:
         self._last_alert_time: datetime | None = None
         self._alert_cooldown_minutes: int = 5  # Evitar spam
 
+    @staticmethod
+    def _clean_credential(value: str | None, name: str) -> str | None:
+        """Descarta credenciales vacías o placeholders de .env.example."""
+        if not value:
+            return None
+        lowered = value.strip().lower()
+        if not lowered or any(marker in lowered for marker in ("your_", "changeme", "example", "xxx")):
+            logger.info("%s parece un placeholder; canal de alertas deshabilitado", name)
+            return None
+        return value.strip()
+
     def _load_config_from_env(self) -> AlertConfig:
         """Carga configuración desde variables de entorno."""
         return AlertConfig(
-            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
-            discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
+            telegram_bot_token=self._clean_credential(
+                os.getenv("TELEGRAM_BOT_TOKEN"), "TELEGRAM_BOT_TOKEN"
+            ),
+            telegram_chat_id=self._clean_credential(
+                os.getenv("TELEGRAM_CHAT_ID"), "TELEGRAM_CHAT_ID"
+            ),
+            discord_webhook_url=self._clean_credential(
+                os.getenv("DISCORD_WEBHOOK_URL"), "DISCORD_WEBHOOK_URL"
+            ),
             enable_alerts=os.getenv("ENABLE_CIRCUIT_BREAKER_ALERTS", "true").lower() == "true",
             min_alert_level=os.getenv("MIN_ALERT_LEVEL", "SEVERE"),
         )
@@ -145,6 +162,15 @@ _Time: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC_
             async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
                     logger.info("Telegram alert sent successfully")
+                elif 400 <= resp.status < 500 and resp.status != 429:
+                    # Token o chat_id inválidos: error permanente, deshabilitar
+                    # el canal para no repetir el error en cada alerta.
+                    response_text = await resp.text()
+                    logger.error(
+                        f"Telegram API error {resp.status} (credenciales inválidas?); "
+                        f"deshabilitando alertas Telegram para esta sesión - {response_text}"
+                    )
+                    self.config.telegram_bot_token = None
                 else:
                     response_text = await resp.text()
                     logger.error(f"Telegram API error: {resp.status} - {response_text}")
@@ -206,6 +232,13 @@ _Time: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC_
             ) as resp:
                 if resp.status == 204:
                     logger.info("Discord alert sent successfully")
+                elif 400 <= resp.status < 500 and resp.status != 429:
+                    response_text = await resp.text()
+                    logger.error(
+                        f"Discord API error {resp.status} (webhook inválido?); "
+                        f"deshabilitando alertas Discord para esta sesión - {response_text}"
+                    )
+                    self.config.discord_webhook_url = None
                 else:
                     response_text = await resp.text()
                     logger.error(f"Discord API error: {resp.status} - {response_text}")
