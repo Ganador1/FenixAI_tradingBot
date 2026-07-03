@@ -34,6 +34,32 @@ python run_fenix.py --api
 cd frontend && npm install && npm run client:dev
 ```
 
+## Docker
+
+The Docker stack uses Python 3.12 by default, matching the current local virtualenv
+series. Copy `.env.example` to `.env` and set `JWT_SECRET`; for non-local use,
+also replace the Redis and Grafana fallback passwords.
+
+```bash
+cp .env.example .env
+# Edit .env with real secrets before live/testnet use.
+
+# API + Redis only
+docker compose up -d --build
+
+# API + Redis + Prometheus + Grafana
+docker compose --profile monitoring up -d --build
+```
+
+Default local endpoints:
+
+- API: `http://127.0.0.1:8001`
+- Prometheus, with monitoring profile: `http://127.0.0.1:9090`
+- Grafana, with monitoring profile: `http://127.0.0.1:3001`
+
+Redis is intentionally not published to the host by default; the API reaches it on
+the internal Compose network.
+
 ## Environment Variables (Important)
 
 - `ALLOW_EXPOSE_API` (default: false) — Set to `true` explicitly to bind to `0.0.0.0` (external exposure). Only enable if intentionally exposing.

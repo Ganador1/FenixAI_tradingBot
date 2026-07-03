@@ -56,6 +56,58 @@ Thank you all so much for your massive support!
 
 ---
 
+## ✨ What's New in v2.6 (in development)
+
+> **Data-integrity release** — v2.6 is built around one flagship discovery and fix: live indicators were being computed on partial-candle snapshots instead of closed candles. Everything else hardens the stack around it: smarter NanoFenix self-monitoring, a rebuilt vision pipeline, prompt-injection defenses, and a dashboard that finally shows *why* the engine did (or didn't) trade.
+
+### 🔬 Indicator Integrity (flagship fix)
+
+| Fix | Details |
+|-----|---------|
+| **Closed-candle indicator buffer** | The engine was feeding every in-progress candle snapshot into the indicator buffer, turning the "15m" series into pseudo-ticks. A live trade was closed on a phantom RSI of 88.9 when the real 15m RSI was ~31. Partial candles now only refresh the market price. |
+| **REST candle backfill on startup** | The indicator buffer is seeded with the last ~60 closed candles before the WebSocket starts (`FENIX_KLINE_BACKFILL_LIMIT`), so the very first analysis cycle works with a real series instead of warming up on ticks. |
+| **Entry-filter observability** | Every blocked entry now logs its exact reason (MTF veto, directional score, min confidence, cooldown…) instead of only emitting a silent frontend event. |
+| **Limit-order cancel race** | `OrderExecutor` no longer falls back to a market order when a GTX limit cancel cannot be confirmed — removes a double-position risk. |
+
+### 🤖 NanoFenix v3.6 — Self-Monitoring Companion
+
+| Feature | Details |
+|---------|---------|
+| **Drift-triggered retraining** | Page-Hinkley test on normalized forecast error forces an early retrain when the market shifts, instead of waiting for the fixed retrain cadence. A post-retrain cooldown prevents echo firing. |
+| **Per-regime meta-labeling** | Signal success is tracked per market regime (TRENDING / CHOP / VOLATILE / DEAD) with exponential decay; the meta-probability gate tightens only in regimes where the signal historically fails. |
+| **Safeguards composing** | Observed live: drift fired, candidate retrains validated below threshold, and the old model was kept — drift detection and the retrain quality gate working together. |
+| **Honest telemetry** | `drift_retrain_count`, `regime_meta_prob` and regime sample counts are reported even on HOLD signals, and surfaced in the dashboard. |
+
+### 👁️ Vision Pipeline Overhaul
+
+| Fix | Details |
+|-----|---------|
+| **Prompt formatting bug** | The visual prompt contained a literal JSON example with unescaped braces — `str.format()` crashed before the image ever reached the model. |
+| **Chart generator accuracy** | The chart labeled an SMA 50 as "EMA 50", had no pivot overlay, and drew a false vertical line from SuperTrend warmup zeros. Now: true EMA 50, R3..S3 pivot levels, NaN warmup. |
+| **Chart metadata in the prompt** | The vision model receives the real candle count plus numeric EMA/Bollinger/VWAP/SuperTrend/pivot values alongside the image. |
+| **Compact JSON contract** | Single-line, ~300-char response schema with a raised token budget — eliminates truncated-JSON retry loops. |
+
+### 🛡️ Security Hardening
+
+- **Prompt-injection defenses**: scraped news/social content is wrapped as untrusted data (`src/security/prompt_sanitizer.py`) and the sentiment prompt is instructed to never follow instructions embedded in it.
+- **Alert config validation**: placeholder Telegram/Discord credentials are detected at startup, and permanently-failing channels disable themselves after a 4xx instead of erroring every cycle.
+- **Risk sizing contract**: `approved_size` is explicitly USD notional in the risk prompt, with an automatic base-asset→notional conversion guard in the engine.
+
+### ☁️ LLM Serving — Ollama Cloud Max
+
+- Benchmarked 7 team mixes across two symbols with the statistical harness: **zero LLM timeouts** across all runs, and 10 concurrent heavy-model requests confirmed.
+- **deepseek-v4-flash** runs the full 6-agent cycle in **21–27s** (vs ~60–90s baselines); deepseek-v4-pro is nearly as fast once warm. `qwen3.5:397b`, `minimax-m3` and `nemotron-3-ultra` were ruled out for short timeframes with data.
+- New recommended team: v4-flash analysts + v4-pro on decision/risk.
+- Sentiment data sources repaired: Reddit via RSS with TTL cache and fair rotation, dead news feeds replaced, gzip feed-parsing fix.
+
+### 📊 Dashboard
+
+- **Execution Flow feed**: live decision → filters → orders timeline, including every veto with its reason.
+- **NanoFenix health panel**: dual-horizon accuracy, drift score & forced-retrain count, per-regime meta-probability, paper-trader scoreboard, and readiness with block reasons.
+- **Live-session wiring**: engine events reach the dashboard via a Redis bridge (`REDIS_URL`), external companions are detected (no duplicate spawns), and previously-dropped events (filters, positions, trades, NanoFenix policy) are now forwarded.
+
+---
+
 ## ✨ What's New in v2.5
 
 > **Reliability-focused release** — v2.5 brings short-timeframe latency work, a complete performance optimisation pass, NanoFenix v3.5 as a first-class companion signal, DeepSeek v4 cloud experiments, and a full suite of live/paper reliability fixes.
@@ -359,6 +411,21 @@ Access the dashboard at: **http://localhost:5173**
 
 Note: For safety, the API will bind to 127.0.0.1 by default. To allow external binding, set `ALLOW_EXPOSE_API=true`.
 If you want to enable demo accounts for local development, set `CREATE_DEMO_USERS=true` and (optionally) `DEFAULT_DEMO_PASSWORD` to control the demo password. Avoid enabling demo users in production.
+
+### Docker
+
+```bash
+cp .env.example .env
+# Set JWT_SECRET; replace Redis/Grafana fallback passwords before non-local use.
+
+# API + Redis
+docker compose up -d --build
+
+# API + Redis + Prometheus + Grafana
+docker compose --profile monitoring up -d --build
+```
+
+Docker defaults to Python 3.12, publishes the API only on `127.0.0.1:8001`, and keeps Redis internal to the Compose network.
 
 ---
 
