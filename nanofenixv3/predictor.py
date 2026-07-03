@@ -114,6 +114,27 @@ POLICY_BIAS_DEADZONE_BPS = _env_float("NANOFENIXV3_BIAS_DEADZONE_BPS", 0.15)
 POLICY_MIN_ERROR_SAMPLES = _env_int("NANOFENIXV3_POLICY_MIN_ERROR_SAMPLES", 4)
 POLICY_FEE_BUFFER_BPS = _env_float("NANOFENIXV3_POLICY_FEE_BUFFER_BPS", 0.35)
 
+# ── Drift-triggered retrain (Page-Hinkley sobre error de predicción) ──
+# El drift_score existente solo bloquea ejecución; esto además fuerza un
+# retrain anticipado cuando el error absoluto sube de forma persistente,
+# en vez de esperar la cadencia normal de RETRAIN_EVERY.
+DRIFT_RETRAIN_ENABLED = os.getenv("NANOFENIXV3_DRIFT_RETRAIN", "1").strip() == "1"
+DRIFT_PH_DELTA = _env_float("NANOFENIXV3_DRIFT_PH_DELTA", 0.05)
+DRIFT_PH_THRESHOLD = _env_float("NANOFENIXV3_DRIFT_PH_THRESHOLD", 20.0)
+DRIFT_MIN_EVALS = _env_int("NANOFENIXV3_DRIFT_MIN_EVALS", 60)
+# Tras un disparo, ignorar N evaluaciones: las predicciones del modelo viejo
+# siguen resolviéndose hasta HORIZON_LONG barras después del retrain y
+# re-acumulan el estadístico en falso (observado en vivo: disparos a 1-2 min).
+DRIFT_COOLDOWN_EVALS = _env_int("NANOFENIXV3_DRIFT_COOLDOWN_EVALS", 240)
+
+# ── Meta-labeling por régimen ──
+# El meta-gate global no distingue si la señal históricamente funciona en
+# TRENDING pero falla en CHOP; este tracker pondera la probabilidad meta
+# con la tasa de éxito específica del régimen actual.
+REGIME_META_MIN_SAMPLES = _env_int("NANOFENIXV3_REGIME_META_MIN_SAMPLES", 15)
+REGIME_META_BLEND = _env_float("NANOFENIXV3_REGIME_META_BLEND", 0.35)
+REGIME_META_DECAY = _env_float("NANOFENIXV3_REGIME_META_DECAY", 0.995)
+
 
 def _normalize_fusion_regime(regime: str) -> str:
     normalized = (regime or "").strip().upper()
@@ -205,6 +226,150 @@ class OnlineConfidenceCalibrator:
             self._updates = max(0, int(state.get("updates", 0)))
         except Exception as exc:
             logger.debug("Failed to restore calibrator state: %s", exc)
+
+
+class PageHinkleyDrift:
+    """Test de Page-Hinkley sobre el error absoluto de predicción, normalizado.
+
+    Detecta subidas persistentes del error (concept drift) para pedir un
+    retrain anticipado. El error se normaliza contra una EMA lenta del propio
+    error, de modo que el test es adimensional y no depende de la volatilidad
+    absoluta del símbolo.
+    """
+
+    def __init__(
+        self,
+        delta: float = DRIFT_PH_DELTA,
+        threshold: float = DRIFT_PH_THRESHOLD,
+        min_samples: int = DRIFT_MIN_EVALS,
+        slow_alpha: float = 0.005,
+        cooldown_evals: int = DRIFT_COOLDOWN_EVALS,
+    ):
+        self._delta = float(delta)
+        self._threshold = float(threshold)
+        self._min_samples = int(min_samples)
+        self._slow_alpha = float(slow_alpha)
+        self._cooldown_evals = int(cooldown_evals)
+        self._cooldown_left: int = 0
+        self._baseline: float | None = None  # EMA lenta del error absoluto
+        self._mean: float = 0.0  # media incremental del error normalizado
+        self._cum: float = 0.0
+        self._cum_min: float = 0.0
+        self._n: int = 0
+        self.drift_count: int = 0
+
+    def update(self, abs_error: float) -> bool:
+        x = max(0.0, float(abs_error))
+        if not np.isfinite(x):
+            return False
+        if self._baseline is None:
+            self._baseline = x if x > 0 else 1.0
+        norm = x / max(self._baseline, 1e-6)
+        self._baseline += self._slow_alpha * (x - self._baseline)
+        if self._cooldown_left > 0:
+            # Post-retrain: las predicciones del modelo anterior siguen
+            # resolviéndose; solo actualizamos la EMA base, no el test.
+            self._cooldown_left -= 1
+            return False
+        self._n += 1
+        self._mean += (norm - self._mean) / self._n
+        self._cum += norm - self._mean - self._delta
+        self._cum_min = min(self._cum_min, self._cum)
+        if self._n >= self._min_samples and (self._cum - self._cum_min) > self._threshold:
+            self.drift_count += 1
+            self.reset_window()
+            self._cooldown_left = self._cooldown_evals
+            return True
+        return False
+
+    def reset_window(self) -> None:
+        """Reinicia la ventana del test conservando la EMA base del error."""
+        self._mean = 0.0
+        self._cum = 0.0
+        self._cum_min = 0.0
+        self._n = 0
+
+    def export_state(self) -> dict[str, object]:
+        return {
+            "baseline": float(self._baseline) if self._baseline is not None else None,
+            "mean": float(self._mean),
+            "cum": float(self._cum),
+            "cum_min": float(self._cum_min),
+            "n": int(self._n),
+            "drift_count": int(self.drift_count),
+        }
+
+    def restore_state(self, state: dict[str, object] | None) -> None:
+        if not state:
+            return
+        try:
+            baseline = state.get("baseline")
+            self._baseline = float(baseline) if baseline is not None else None
+            self._mean = float(state.get("mean", 0.0) or 0.0)
+            self._cum = float(state.get("cum", 0.0) or 0.0)
+            self._cum_min = float(state.get("cum_min", 0.0) or 0.0)
+            self._n = int(state.get("n", 0) or 0)
+            self.drift_count = int(state.get("drift_count", 0) or 0)
+        except Exception as exc:
+            logger.debug("Failed to restore drift detector state: %s", exc)
+
+
+class RegimeMetaTracker:
+    """Meta-labeling por régimen: éxito histórico de la señal según régimen.
+
+    Contadores éxito/fracaso con decaimiento exponencial por régimen
+    normalizado (TRENDING/CHOP/VOLATILE/DEAD), con prior Laplace 1/1.
+    """
+
+    REGIMES = ("TRENDING", "CHOP", "VOLATILE", "DEAD", "UNKNOWN")
+
+    def __init__(self, decay: float = REGIME_META_DECAY):
+        self._decay = float(decay)
+        self._success: dict[str, float] = {r: 1.0 for r in self.REGIMES}
+        self._failure: dict[str, float] = {r: 1.0 for r in self.REGIMES}
+
+    def _key(self, regime: str) -> str:
+        normalized = _normalize_fusion_regime(regime)
+        return normalized if normalized in self._success else "UNKNOWN"
+
+    def update(self, regime: str, success: bool) -> None:
+        key = self._key(regime)
+        self._success[key] *= self._decay
+        self._failure[key] *= self._decay
+        if success:
+            self._success[key] += 1.0
+        else:
+            self._failure[key] += 1.0
+
+    def probability(self, regime: str) -> tuple[float, float]:
+        """Devuelve (probabilidad de éxito, muestras efectivas) del régimen."""
+        key = self._key(regime)
+        s, f = self._success[key], self._failure[key]
+        total = s + f
+        # Restar el prior (1/1) para reportar muestras efectivas reales.
+        return float(s / max(total, 1e-9)), float(max(0.0, total - 2.0))
+
+    def export_state(self) -> dict[str, object]:
+        return {
+            "decay": float(self._decay),
+            "success": dict(self._success),
+            "failure": dict(self._failure),
+        }
+
+    def restore_state(self, state: dict[str, object] | None) -> None:
+        if not state:
+            return
+        try:
+            success = state.get("success")
+            failure = state.get("failure")
+            if isinstance(success, dict) and isinstance(failure, dict):
+                for regime in self.REGIMES:
+                    if regime in success:
+                        self._success[regime] = float(success[regime])
+                    if regime in failure:
+                        self._failure[regime] = float(failure[regime])
+        except Exception as exc:
+            logger.debug("Failed to restore regime meta state: %s", exc)
 
 
 def _event_weight_from_frame(frame: pd.DataFrame, horizon: int) -> np.ndarray:
@@ -541,14 +706,19 @@ class DualHorizonPredictor:
 
         # Track each horizon on its own clock.
         # The 120s model must not be judged with a 30s realized return.
-        self._pending_short_evals: deque[tuple[int, float, float, float]] = deque(maxlen=500)
-        self._pending_long_evals: deque[tuple[int, float, float, float]] = deque(maxlen=500)
+        # Tuplas: (bar_idx, pred_bps, pred_close, raw_conf, regime)
+        self._pending_short_evals: deque[tuple] = deque(maxlen=500)
+        self._pending_long_evals: deque[tuple] = deque(maxlen=500)
         self._short_dir_correct: deque[int] = deque(maxlen=DIR_ACCURACY_WINDOW)
         self._long_dir_correct: deque[int] = deque(maxlen=DIR_ACCURACY_WINDOW)
         self._recent_signed_errors: deque[float] = deque(maxlen=DIR_ACCURACY_WINDOW)
         self._recent_abs_errors: deque[float] = deque(maxlen=DIR_ACCURACY_WINDOW)
         self._short_calibrator = OnlineConfidenceCalibrator()
         self._long_calibrator = OnlineConfidenceCalibrator()
+        self._regime_meta = RegimeMetaTracker()
+        self._drift_detector = PageHinkleyDrift()
+        self._drift_retrain_pending = False
+        self._drift_retrain_count = 0
         self._adaptive_fusion_enabled = ENABLE_ADAPTIVE_FUSION
         self._adaptive_fusion_min_margin = ADAPTIVE_FUSION_MIN_MARGIN
         self._adaptive_fusion = (
@@ -701,6 +871,15 @@ class DualHorizonPredictor:
         if dir_acc < min_direction_accuracy:
             reasons.append("low_direction_accuracy")
 
+        # SECURITY: If short signals will be used, require short accuracy > 50%
+        # A short accuracy below 50% means the model is anti-correlated (worse than random)
+        if use_short and self.short_direction_samples > 50:
+            short_acc = self.short_direction_accuracy
+            if short_acc < 0.50:
+                reasons.append("low_short_direction_accuracy")
+                # Force-disable short signals until accuracy improves
+                use_short = False
+
         sample_factor = min(
             1.0,
             dir_samples / max(float(min_direction_samples), 1.0),
@@ -776,6 +955,16 @@ class DualHorizonPredictor:
         probability = sum(weight * prob for weight, prob, _ in metrics) / max(total_weight, 1e-9)
         sample_count = sum(samples for _, _, samples in metrics)
         return float(probability), sample_count
+
+    def _blended_meta_probability(
+        self, meta_prob: float, regime: str
+    ) -> tuple[float, float, float]:
+        """Mezcla la probabilidad meta global con la histórica del régimen actual."""
+        regime_prob, regime_samples = self._regime_meta.probability(regime)
+        if regime_samples >= REGIME_META_MIN_SAMPLES:
+            blended = (1.0 - REGIME_META_BLEND) * meta_prob + REGIME_META_BLEND * regime_prob
+            return float(blended), regime_prob, regime_samples
+        return float(meta_prob), regime_prob, regime_samples
 
     def _min_bps_for_volatility(self, volatility_state: str) -> float:
         if volatility_state == "HIGH":
@@ -945,20 +1134,21 @@ class DualHorizonPredictor:
         pred_bps: float,
         close: float,
         raw_conf: float,
+        regime: str = "UNKNOWN",
     ) -> None:
         if (
             bar_idx <= 0 or close <= 0 or abs(pred_bps) < 0.1
         ):  # V3.5: lowered from BASE_MIN_BPS*0.5 to capture small signals for dir_acc
             return
         if horizon == HORIZON_LONG:
-            self._pending_long_evals.append((bar_idx, pred_bps, close, raw_conf))
+            self._pending_long_evals.append((bar_idx, pred_bps, close, raw_conf, regime))
             return
-        self._pending_short_evals.append((bar_idx, pred_bps, close, raw_conf))
+        self._pending_short_evals.append((bar_idx, pred_bps, close, raw_conf, regime))
 
     def _evaluate_horizon_queue(
         self,
         *,
-        pending: deque[tuple[int, float, float, float]],
+        pending: deque[tuple],
         dest: deque[int],
         horizon: int,
         current_bar_idx: int,
@@ -966,7 +1156,8 @@ class DualHorizonPredictor:
         calibrator: OnlineConfidenceCalibrator,
     ) -> None:
         while pending:
-            bar_idx, pred_bps, pred_close, raw_conf = pending[0]
+            bar_idx, pred_bps, pred_close, raw_conf, *extra = pending[0]
+            regime = str(extra[0]) if extra else "UNKNOWN"
             bars_elapsed = current_bar_idx - bar_idx
             if bars_elapsed < horizon:
                 break
@@ -983,6 +1174,14 @@ class DualHorizonPredictor:
             forecast_error = float(pred_bps - actual_ret)
             self._recent_signed_errors.append(forecast_error)
             self._recent_abs_errors.append(abs(forecast_error))
+            if DRIFT_RETRAIN_ENABLED and self._drift_detector.update(abs(forecast_error)):
+                self._drift_retrain_pending = True
+                logger.warning(
+                    "📉 Drift detectado (Page-Hinkley #%d, horizonte %ds): "
+                    "error de predicción subiendo de forma persistente — retrain anticipado",
+                    self._drift_detector.drift_count,
+                    horizon,
+                )
             if abs(actual_ret) > 0.3:
                 correct = int(np.sign(pred_bps) == np.sign(actual_ret))
                 dest.append(correct)
@@ -991,7 +1190,9 @@ class DualHorizonPredictor:
                         "long" if horizon == HORIZON_LONG else "short",
                         bool(correct),
                     )
-            calibrator.update(raw_conf, self._is_meta_success(pred_bps, actual_ret))
+            meta_success = self._is_meta_success(pred_bps, actual_ret)
+            calibrator.update(raw_conf, meta_success)
+            self._regime_meta.update(regime, meta_success)
 
     def _realized_horizon_return_bps(
         self,
@@ -1031,20 +1232,36 @@ class DualHorizonPredictor:
         self._short.tick()
         self._long.tick()
 
+    @property
+    def drift_retrain_count(self) -> int:
+        return self._drift_retrain_count
+
     def should_retrain(self) -> bool:
         n = len(self._feat_buf)
+        if self._drift_retrain_pending and (n - HORIZON_LONG) >= MIN_SAMPLES:
+            return True
         return self._short.should_retrain(n) or self._long.should_retrain(n)
 
     def retrain(self) -> None:
-        """Retrain whichever model(s) need it."""
+        """Retrain whichever model(s) need it (o ambos si hay drift pendiente)."""
         feats = list(self._feat_buf)
         closes = list(self._close_buf)
         n = len(feats)
 
-        if self._short.should_retrain(n):
+        force = self._drift_retrain_pending and (n - HORIZON_LONG) >= MIN_SAMPLES
+        if force:
+            self._drift_retrain_pending = False
+            self._drift_retrain_count += 1
+            logger.info(
+                "🔄 Retrain forzado por drift (#%d) con %d muestras",
+                self._drift_retrain_count,
+                n,
+            )
+
+        if force or self._short.should_retrain(n):
             self._short.retrain(feats, closes)
 
-        if self._long.should_retrain(n):
+        if force or self._long.should_retrain(n):
             self._long.retrain(feats, closes)
 
     def predict_with_policy(
@@ -1056,6 +1273,10 @@ class DualHorizonPredictor:
         regime: str = "RANGING",
     ) -> dict[str, object]:
         min_bps = self._min_bps_for_volatility(volatility_state)
+        # Los contadores/telemetría reflejan siempre el estado real aunque la
+        # señal salga HOLD por un early-return (antes se reportaban 0/0.5 fijos
+        # y el dashboard mostraba drift_retrain_count=0 con 16 retrains hechos).
+        _regime_prob, _regime_samples = self._regime_meta.probability(regime)
         default_policy = {
             "signal": "HOLD",
             "pred_bps": 0.0,
@@ -1069,6 +1290,9 @@ class DualHorizonPredictor:
             "fast_weight": 0.5,
             "slow_weight": 0.5,
             "drift_score": 0.0,
+            "regime_meta_prob": round(_regime_prob, 3),
+            "regime_meta_samples": round(_regime_samples, 1),
+            "drift_retrain_count": int(self._drift_retrain_count),
             "allow_execute": False,
             "allow_add_to_position": False,
             "size_multiplier_hint": 0.0,
@@ -1157,6 +1381,7 @@ class DualHorizonPredictor:
                 pred_bps=short_bps,
                 close=close,
                 raw_conf=short_conf,
+                regime=regime,
             )
         if self._long.trained:
             self._queue_horizon_eval(
@@ -1165,6 +1390,7 @@ class DualHorizonPredictor:
                 pred_bps=long_bps,
                 close=close,
                 raw_conf=long_conf,
+                regime=regime,
             )
 
         if signal == "HOLD" or abs(expected_bps) < min_bps:
@@ -1184,6 +1410,9 @@ class DualHorizonPredictor:
             use_long=use_long,
             short_conf=short_conf,
             long_conf=long_conf,
+        )
+        meta_prob, regime_meta_prob, regime_meta_samples = self._blended_meta_probability(
+            meta_prob, regime
         )
 
         if dir_acc < 0.38 and dir_samples >= 30:
@@ -1253,6 +1482,9 @@ class DualHorizonPredictor:
             "fast_weight": round(short_weight, 3),
             "slow_weight": round(long_weight, 3),
             "drift_score": round(drift_score, 3),
+            "regime_meta_prob": round(regime_meta_prob, 3),
+            "regime_meta_samples": round(regime_meta_samples, 1),
+            "drift_retrain_count": int(self._drift_retrain_count),
             "allow_execute": allow_execute,
             "allow_add_to_position": self._allow_add_to_position(
                 edge_net_bps=edge_net_bps,
@@ -1380,6 +1612,7 @@ class DualHorizonPredictor:
             pred_bps=short_bps,
             close=close,
             raw_conf=short_conf,
+            regime=regime,
         )
         self._queue_horizon_eval(
             horizon=self._long.horizon,
@@ -1387,6 +1620,7 @@ class DualHorizonPredictor:
             pred_bps=long_bps,
             close=close,
             raw_conf=long_conf,
+            regime=regime,
         )
 
         # Final threshold check
@@ -1407,6 +1641,7 @@ class DualHorizonPredictor:
             short_conf=short_conf,
             long_conf=long_conf,
         )
+        meta_prob, _, _ = self._blended_meta_probability(meta_prob, regime)
 
         # HARD GATE: if dir accuracy < 38%, emit HOLD (V3.5: lowered from 45%)
         # But still expose pred_bps so companion file shows the raw prediction
@@ -1602,6 +1837,9 @@ class DualHorizonPredictor:
             self._recent_abs_errors.extend(
                 float(v) for v in data.get("recent_abs_errors", [])[-DIR_ACCURACY_WINDOW:]
             )
+            self._regime_meta.restore_state(data.get("regime_meta"))
+            self._drift_detector.restore_state(data.get("drift_detector"))
+            self._drift_retrain_count = int(data.get("drift_retrain_count", 0) or 0)
             self._sync_adaptive_fusion_history()
             logger.info(
                 f"📦 Pre-trained V3 model loaded | "
@@ -1642,6 +1880,9 @@ class DualHorizonPredictor:
                 "long_calibrator": self._long_calibrator.export_state(),
                 "recent_signed_errors": list(self._recent_signed_errors),
                 "recent_abs_errors": list(self._recent_abs_errors),
+                "regime_meta": self._regime_meta.export_state(),
+                "drift_detector": self._drift_detector.export_state(),
+                "drift_retrain_count": int(self._drift_retrain_count),
             }
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             with open(path, "wb") as f:
