@@ -378,7 +378,7 @@ export const UsersPage: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {users.filter(u => u.role === 'admin').length}
+              {users.filter(u => u.role === 'trader').length}
             </div>
             <p className="text-xs text-muted-foreground">
               Trading accounts

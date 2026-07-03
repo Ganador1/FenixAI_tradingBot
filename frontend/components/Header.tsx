@@ -89,12 +89,14 @@ export function Header() {
           <div
             className={`hidden md:flex items-center space-x-2 px-3 py-1 rounded-full text-xs border ${
               online
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                ? engine?.paper
+                  ? 'bg-amber-50 border-amber-200 text-amber-700'
+                  : 'bg-red-50 border-red-300 text-red-700'
                 : 'bg-gray-50 border-gray-200 text-gray-500'
             }`}
           >
-            <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-            <span>{online ? 'Live stream' : 'Offline'}</span>
+            <span className={`w-2 h-2 rounded-full ${online ? (engine?.paper ? 'bg-amber-500' : 'bg-red-500 animate-pulse') : 'bg-gray-400'}`} />
+            <span>{online ? (engine?.paper ? 'Paper Trading' : '🔴 LIVE') : 'Offline'}</span>
           </div>
 
           <Button

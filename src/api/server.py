@@ -7,6 +7,7 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit, urlunsplit
 
 import psutil
 import socketio
@@ -156,14 +157,68 @@ def _track_task(task: asyncio.Task) -> asyncio.Task:
 _METRICS_HISTORY: deque[dict] = deque(maxlen=240)
 _PROCESS_START = time.time()
 
-# Socket.IO Server
-sio = socketio.AsyncServer(
-    async_mode="asgi",
-    cors_allowed_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-)
+
+def _redact_url_password(url: str) -> str:
+    """Return a URL safe for logs by removing embedded credentials."""
+    try:
+        parsed = urlsplit(url)
+        if not parsed.password:
+            return url
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        username = parsed.username or ""
+        netloc = f"{username}:***@{host}" if username else f"***@{host}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    except Exception:
+        return "<redacted-url>"
+
+
+def _escape_sql_like(value: str) -> str:
+    """Escape SQL LIKE wildcards so user search text is treated literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# Socket.IO Server — with optional Redis message queue for multi-process communication
+# When REDIS_URL is set, the API server can receive events from external processes
+# (e.g. the live trading engine running separately via `run_fenix.py --mode live`).
+# The live process uses socketio.AsyncRedisManager(write_only=True) to emit events
+# that are broadcast to all connected frontend clients through this server.
+_redis_url = os.getenv("REDIS_URL", os.getenv("FENIX_REDIS_URL", ""))
+if _redis_url:
+    try:
+        _redis_channel = os.getenv("FENIX_REDIS_CHANNEL", "fenix_socketio")
+        _redis_mgr = socketio.AsyncRedisManager(_redis_url, channel=_redis_channel)
+        sio = socketio.AsyncServer(
+            async_mode="asgi",
+            client_manager=_redis_mgr,
+            cors_allowed_origins=[
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+            ],
+        )
+        logger.info(
+            "Socket.IO using Redis message queue: %s (channel=%s)",
+            _redact_url_password(_redis_url),
+            _redis_channel,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to connect Redis manager, using in-memory: {e}")
+        sio = socketio.AsyncServer(
+            async_mode="asgi",
+            cors_allowed_origins=[
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+            ],
+        )
+else:
+    sio = socketio.AsyncServer(
+        async_mode="asgi",
+        cors_allowed_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+    )
 
 
 async def handle_engine_event(event_type: str, data: dict):
@@ -176,6 +231,7 @@ async def handle_engine_event(event_type: str, data: dict):
                 "timestamp": data.get("timestamp"),
                 "reasoning": data.get("data", {}).get("reasoning", "")
                 or data.get("data", {}).get("visual_analysis", "")
+                or data.get("data", {}).get("analysis", "")
                 or "No reasoning",
                 "decision": data.get("data", {}).get("signal")
                 or data.get("data", {}).get("action")
@@ -189,6 +245,26 @@ async def handle_engine_event(event_type: str, data: dict):
             if data.get("fear_greed_value"):
                 payload["fear_greed_value"] = data.get("fear_greed_value")
             await sio.emit("agentOutput", payload)
+
+            # Persist to DB so the Agents page and Reasoning Bank can show it
+            try:
+                from src.config.database import SessionLocal as _SessionLocal
+
+                async with _SessionLocal() as db_session:
+                    db_output = AgentOutput(
+                        id=payload["id"],
+                        agent_id=data.get("agent_name", "unknown").replace(" ", "_"),
+                        agent_name=data.get("agent_name", "unknown"),
+                        timestamp=datetime.utcnow(),
+                        reasoning=payload["reasoning"],
+                        decision=payload["decision"],
+                        confidence=payload["confidence"],
+                        input_summary=payload["input_summary"],
+                    )
+                    db_session.add(db_output)
+                    await db_session.commit()
+            except Exception as db_err:
+                logger.debug(f"Could not persist agent output to DB: {db_err}")
 
         elif event_type == "final_decision":
             payload = {
@@ -213,6 +289,26 @@ async def handle_engine_event(event_type: str, data: dict):
             # Backwards-compatible event names for frontend
             await sio.emit("agent:reasoning", payload)
             await sio.emit("reasoningUpdate", payload)
+        elif event_type in ("filter:blocked", "filter:adjusted"):
+            # Filtros de entrada (MTF veto, directional score, confianza
+            # mínima…). Sin esto el dashboard no puede explicar por qué una
+            # decisión BUY/SELL no llegó a convertirse en orden.
+            await sio.emit(event_type, data or {})
+        elif event_type == "risk:blocked":
+            await sio.emit("risk:blocked", data or {})
+        elif event_type == "nanofenix:policy":
+            await sio.emit("nanofenix:policy", data or {})
+        elif event_type in ("trade_executed", "trade:simulated"):
+            payload = {"simulated": event_type == "trade:simulated", **(data or {})}
+            await sio.emit("trade:executed", payload)
+            # Alias camelCase que la página Trading ya escuchaba.
+            await sio.emit("tradeExecuted", payload)
+        elif event_type.startswith("position:"):
+            payload = {"kind": event_type, **(data or {})}
+            await sio.emit("position:update", payload)
+            await sio.emit("positionUpdate", payload)
+        elif event_type.startswith("analysis_cycle"):
+            await sio.emit("engine:cycle", {"kind": event_type, **(data or {})})
 
     except Exception as e:
         logger.error(f"Error handling engine event: {e}")
@@ -225,12 +321,35 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing Database...")
     await init_db()
 
-    logger.info("Initializing Trading Engine...")
+    # ── Engine config from env (so the API server matches the live process) ──
+    # When running `run_fenix.py --mode live` separately, that process uses
+    # its own TradingEngine.  The API server creates its OWN engine here.
+    # To make the dashboard reflect the live trading configuration, set:
+    #   FENIX_API_SYMBOL, FENIX_API_TIMEFRAME, FENIX_API_PAPER,
+    #   FENIX_API_ALLOW_LIVE, FENIX_USE_TESTNET
+    api_symbol = os.getenv("FENIX_API_SYMBOL", os.getenv("FENIX_SYMBOL", "BTCUSDT"))
+    api_timeframe = os.getenv("FENIX_API_TIMEFRAME", os.getenv("FENIX_TIMEFRAME", "15m"))
+    api_paper = os.getenv("FENIX_API_PAPER", "").lower()
+    # If FENIX_API_PAPER is unset, fall back to FENIX_LIVE mode detection
+    if api_paper == "":
+        api_paper_trading = not (os.getenv("FENIX_LIVE", "0") == "1")
+    else:
+        api_paper_trading = api_paper in ("1", "true", "yes", "on")
+
+    api_allow_live = (
+        os.getenv("FENIX_API_ALLOW_LIVE", "").lower() in ("1", "true", "yes", "on")
+        or os.getenv("FENIX_LIVE", "0") == "1"
+    )
+
+    logger.info(
+        f"Initializing Trading Engine: symbol={api_symbol} tf={api_timeframe} "
+        f"paper={api_paper_trading} allow_live={api_allow_live}"
+    )
     engine = TradingEngine(
-        symbol="BTCUSDT",
-        timeframe="15m",
-        paper_trading=True,
-        allow_live_trading=False,
+        symbol=api_symbol,
+        timeframe=api_timeframe,
+        paper_trading=api_paper_trading,
+        allow_live_trading=api_allow_live,
         use_testnet=os.getenv("FENIX_USE_TESTNET", "false").lower() == "true",
     )
     engine.on_agent_event = handle_engine_event
@@ -242,7 +361,7 @@ async def lifespan(app: FastAPI):
     try:
         from src.analysis.auto_evaluator import AutoEvaluator
 
-        auto_evaluator = AutoEvaluator(symbol="BTCUSDT", timeframe="15m")
+        auto_evaluator = AutoEvaluator(symbol=api_symbol, timeframe=api_timeframe)
         _track_task(asyncio.create_task(auto_evaluator.start()))
         logger.info("✅ AutoEvaluator started")
     except Exception as e:
@@ -454,7 +573,7 @@ async def _broadcast_nano_signals():
     last_emitted_ts: dict[str, str] = {}
     while True:
         try:
-            symbols = {"SOLUSDT", "BTCUSDT", "ETHUSDT"}
+            symbols = {"SOLUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDC"}
             if engine is not None and getattr(engine, "symbol", None):
                 symbols.add(str(engine.symbol).upper())
             for symbol in symbols:
@@ -584,8 +703,21 @@ async def _fetch_klines(symbol: str, interval: str, limit: int = 100) -> list[di
 
 
 async def _with_binance_client(testnet: bool, fn):
-    """Helper to ensure Binance client lifecycle is managed per request."""
-    client = BinanceClient(testnet=testnet)
+    """Helper to ensure Binance client lifecycle is managed per request.
+
+    When BINANCE_API_KEY and BINANCE_API_SECRET are set in the environment,
+    the client is created with those credentials so it can access private
+    endpoints (balance, positions, trades). Otherwise it falls back to a
+    public-data-only client.
+    """
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    if api_key and api_secret:
+        client = BinanceClient(
+            api_key=api_key, api_secret=api_secret, testnet=testnet
+        )
+    else:
+        client = BinanceClient(testnet=testnet)
     connected = await client.connect()
     if not connected:
         await client.close()
@@ -1066,30 +1198,83 @@ async def cancel_order(order_id: str = Path(...), db: AsyncSession = Depends(get
     raise HTTPException(status_code=404, detail="Order not found or cannot be cancelled")
 
 
+@app.get("/api/trading/balance")
+async def get_account_balance():
+    """Get real account balance from Binance Futures."""
+    testnet = engine.paper_trading if engine else True
+
+    async def _inner(client: BinanceClient):
+        # Get all asset balances
+        data = await client._request("GET", "/fapi/v2/balance", signed=True)
+        if not data:
+            return {"balances": [], "total_usdt": 0.0}
+
+        balances = []
+        total_usdt = 0.0
+        for item in data:
+            asset = item.get("asset", "")
+            balance = float(item.get("balance", 0))
+            if balance != 0:
+                cross_unpnl = float(item.get("crossWalletUnPnl", 0))
+                available = float(item.get("availableBalance", 0))
+                balances.append({
+                    "asset": asset,
+                    "balance": balance,
+                    "available": available,
+                    "unrealized_pnl": cross_unpnl,
+                })
+                # Approximate USDT equivalent (USDT and USDC are ~1:1)
+                if asset in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD"):
+                    total_usdt += balance
+
+        return {"balances": balances, "total_usdt": total_usdt}
+
+    result = await _with_binance_client(testnet, _inner)
+    if result is None:
+        return {"balances": [], "total_usdt": 0.0, "error": "Binance connection failed"}
+    return result
+
+
 @app.get("/api/trading/positions")
 async def get_positions(db: AsyncSession = Depends(get_db)):
-    """Get all open positions."""
-    # In production, this would fetch from exchange
-    if engine:
-        status = engine.get_status()
-        if status.get("position"):
-            pos = status["position"]
-            position = {
-                "id": str(uuid.uuid4()),
-                "symbol": engine.symbol,
-                "side": pos.get("side", "long"),
-                "quantity": pos.get("quantity", 0),
-                "entry_price": pos.get("entry_price", 0),
-                "current_price": pos.get("current_price", 0),
-                "unrealized_pnl": pos.get("unrealized_pnl", 0),
-                "realized_pnl": pos.get("realized_pnl", 0),
-                "opened_at": pos.get("opened_at", datetime.utcnow().isoformat()),
-            }
-            return {"positions": [position]}
+    """Get real open positions from Binance Futures."""
+    testnet = engine.paper_trading if engine else True
+
+    async def _inner(client: BinanceClient):
+        positions = await client.get_positions()
+        if not positions:
+            return {"positions": []}
+
+        result = []
+        for p in positions:
+            symbol = p.get("symbol", "")
+            qty = float(p.get("positionAmt", 0))
+            entry = float(p.get("entryPrice", 0))
+            pnl = float(p.get("unRealizedProfit", 0))
+            side = "LONG" if qty > 0 else "SHORT"
+            result.append({
+                "id": f"binance:{symbol}",
+                "symbol": symbol,
+                "side": side,
+                "quantity": abs(qty),
+                "entry_price": entry,
+                "current_price": float(p.get("markPrice", 0)),
+                "unrealized_pnl": pnl,
+                "realized_pnl": 0.0,
+                "opened_at": datetime.utcnow().isoformat(),
+                "leverage": int(p.get("leverage", 1)),
+                "margin_type": p.get("marginType", ""),
+            })
+        return {"positions": result}
+
+    # Try Binance first
+    result = await _with_binance_client(testnet, _inner)
+    if result is not None:
+        return result
 
     # Fallback to DB positions
-    result = await db.execute(select(Position).where(Position.is_open == True))
-    positions = result.scalars().all()
+    result_db = await db.execute(select(Position).where(Position.is_open == True))
+    positions = result_db.scalars().all()
     return {"positions": positions}
 
 
@@ -1099,14 +1284,50 @@ async def get_trade_history(
     symbol: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get trade history."""
+    """Get trade history — real Binance trades + DB trades merged."""
+    testnet = engine.paper_trading if engine else True
+    target_symbol = (symbol or (engine.symbol if engine else None))
+
+    # Try to fetch real trades from Binance
+    async def _inner(client: BinanceClient):
+        params = {"limit": min(limit, 100)}
+        if target_symbol:
+            params["symbol"] = target_symbol.upper()
+        data = await client._request("GET", "/fapi/v1/userTrades", params=params, signed=True)
+        if not data:
+            return []
+        trades = []
+        for t in data:
+            trades.append({
+                "id": f"binance:{t.get('id', '')}",
+                "symbol": t.get("symbol", ""),
+                "side": t.get("side", ""),
+                "quantity": float(t.get("qty", 0)),
+                "price": float(t.get("price", 0)),
+                "realized_pnl": float(t.get("realizedPnl", 0)),
+                "executed_at": datetime.utcfromtimestamp(
+                    t.get("time", 0) / 1000
+                ).isoformat(),
+                "commission": float(t.get("commission", 0)),
+                "commission_asset": t.get("commissionAsset", ""),
+                "maker": t.get("maker", False),
+            })
+        return trades
+
+    binance_trades = await _with_binance_client(testnet, _inner)
+
+    # Also get DB trades
     query = select(Trade).order_by(desc(Trade.executed_at)).limit(limit)
     if symbol:
         query = query.where(Trade.symbol == symbol)
-
     result = await db.execute(query)
-    trades = result.scalars().all()
-    return {"trades": trades}
+    db_trades = result.scalars().all()
+
+    # Merge: if Binance trades available, use those; otherwise fall back to DB
+    if binance_trades:
+        return {"trades": binance_trades, "source": "binance"}
+
+    return {"trades": db_trades, "source": "database"}
 
 
 @app.get("/api/trading/market")
@@ -1238,7 +1459,7 @@ async def get_agent(agent_id: str = Path(...), db: AsyncSession = Depends(get_db
     raise HTTPException(status_code=404, detail="Agent not found")
 
 
-@app.post("/api/agents/outputs")
+@app.post("/api/agents/outputs", dependencies=[Depends(require_control_access)])
 async def add_agent_output(output: AgentOutputResponse, db: AsyncSession = Depends(get_db)):
     """Add a new agent output (internal use)."""
     new_output = AgentOutput(
@@ -1462,8 +1683,13 @@ async def search_reasoning(
     db: AsyncSession = Depends(get_db),
 ):
     """Semantic search in ReasoningBank."""
-    # Simple text search for now
-    sql_query = select(AgentOutput).where(AgentOutput.reasoning.ilike(f"%{query}%")).limit(limit)
+    # SECURITY: Escape SQL LIKE wildcards to prevent wildcard injection
+    safe_query = _escape_sql_like(query)
+    sql_query = (
+        select(AgentOutput)
+        .where(AgentOutput.reasoning.ilike(f"%{safe_query}%", escape="\\"))
+        .limit(limit)
+    )
     result = await db.execute(sql_query)
     results = result.scalars().all()
     return {"results": results, "query": query}

@@ -9,6 +9,7 @@ import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Badge } from '../components/ui/Badge';
 import { Alert, AlertTitle, AlertDescription } from '../components/ui/Alert';
+import { ExecutionFlowFeed } from '../components/trading/ExecutionFlowFeed';
 
 interface Order {
   id: string;
@@ -74,18 +75,18 @@ export const Trading: React.FC = () => {
     fetchTradingData();
     
     if (socket) {
-      socket.on('orderUpdate', handleOrderUpdate);
-      socket.on('positionUpdate', handlePositionUpdate);
-      socket.on('tradeExecuted', handleTradeExecuted);
-      socket.on('marketData', handleMarketData);
+      socket.on('trade:executed', handleTradeExecuted);
+      socket.on('position:update', handlePositionUpdate);
+      socket.on('trade:signal', handleOrderUpdate);
+      socket.on('engine:cycle', handleMarketData);
     }
 
     return () => {
       if (socket) {
-        socket.off('orderUpdate', handleOrderUpdate);
-        socket.off('positionUpdate', handlePositionUpdate);
-        socket.off('tradeExecuted', handleTradeExecuted);
-        socket.off('marketData', handleMarketData);
+        socket.off('trade:executed', handleTradeExecuted);
+        socket.off('position:update', handlePositionUpdate);
+        socket.off('trade:signal', handleOrderUpdate);
+        socket.off('engine:cycle', handleMarketData);
       }
     };
   }, [socket]);
@@ -173,7 +174,19 @@ export const Trading: React.FC = () => {
     });
   };
 
-  const handlePositionUpdate = (position: Position) => {
+  const handlePositionUpdate = (payload: { kind?: string; id?: string; symbol?: string; side?: string; quantity?: number; entry_price?: number; current_price?: number; unrealized_pnl?: number; realized_pnl?: number; opened_at?: string } & Record<string, unknown>) => {
+    const position: Position = {
+      id: (payload.id || crypto.randomUUID()) as string,
+      symbol: payload.symbol || '',
+      side: payload.side as Position['side'] || 'long',
+      quantity: payload.quantity || 0,
+      entryPrice: payload.entry_price || 0,
+      currentPrice: payload.current_price || 0,
+      unrealizedPnl: payload.unrealized_pnl || 0,
+      realizedPnl: payload.realized_pnl || 0,
+      openedAt: payload.opened_at || new Date().toISOString(),
+      userId: 'system',
+    };
     setPositions(prev => {
       const existing = prev.find(p => p.id === position.id);
       if (existing) {
@@ -183,7 +196,17 @@ export const Trading: React.FC = () => {
     });
   };
 
-  const handleTradeExecuted = (trade: TradeHistory) => {
+  const handleTradeExecuted = (payload: { simulated?: boolean; symbol?: string; side?: string; quantity?: number; price?: number; realized_pnl?: number; executed_at?: string; id?: string } & Record<string, unknown>) => {
+    const trade: TradeHistory = {
+      id: (payload.id || crypto.randomUUID()) as string,
+      symbol: payload.symbol || '',
+      side: payload.side as TradeHistory['side'] || 'buy',
+      quantity: payload.quantity || 0,
+      price: payload.price || 0,
+      realizedPnl: payload.realized_pnl || 0,
+      executedAt: payload.executed_at || new Date().toISOString(),
+      userId: 'system',
+    };
     setTradeHistory(prev => [trade, ...prev]);
   };
 
@@ -334,7 +357,9 @@ export const Trading: React.FC = () => {
               {orders.filter(o => o.status === 'pending').length}
             </div>
             <p className="text-xs text-muted-foreground">
-              {orders.filter(o => o.side === 'buy').length} buy, {orders.filter(o => o.side === 'sell').length} sell
+              {/* buy/sell de las ordenes PENDIENTES, no de todo el historial */}
+              {orders.filter(o => o.status === 'pending' && o.side === 'buy').length} buy,{' '}
+              {orders.filter(o => o.status === 'pending' && o.side === 'sell').length} sell
             </p>
           </CardContent>
         </Card>
@@ -623,6 +648,9 @@ export const Trading: React.FC = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Live decision -> filters -> execution pipeline */}
+      <ExecutionFlowFeed />
     </div>
   );
 };

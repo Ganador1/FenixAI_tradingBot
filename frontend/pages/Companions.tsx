@@ -35,6 +35,20 @@ interface NanoSignal {
   uncertainty_bps?: number | null;
   actionable_edge_bps?: number | null;
   has_position?: boolean | null;
+  companion_ready?: boolean | null;
+  companion_block_reasons?: string[] | null;
+  short_direction_accuracy?: number | null;
+  long_direction_accuracy?: number | null;
+  direction_samples?: number | null;
+  val_accuracy?: number | null;
+  volatility_state?: string | null;
+  paper_trades?: number | null;
+  paper_win_rate?: number | null;
+  paper_pnl?: number | null;
+  drift_score?: number | null;
+  drift_retrain_count?: number | null;
+  regime_meta_prob?: number | null;
+  regime_meta_samples?: number | null;
   age_seconds?: number | null;
 }
 
@@ -62,7 +76,7 @@ interface MiniRegime {
   age_seconds: number;
 }
 
-const SYMBOLS = ['SOLUSDT', 'BTCUSDT', 'ETHUSDT'];
+const SYMBOLS = ['ETHUSDC', 'SOLUSDT', 'BTCUSDT', 'ETHUSDT'];
 
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
@@ -92,7 +106,7 @@ function signalBadgeVariant(signal?: string | null): 'success' | 'error' | 'defa
 }
 
 export function Companions() {
-  const [symbol, setSymbol] = useState<string>('SOLUSDT');
+  const [symbol, setSymbol] = useState<string>(SYMBOLS[0]);
   const [status, setStatus] = useState<NanoStatus | null>(null);
   const [signal, setSignal] = useState<NanoSignal | null>(null);
   const [signalError, setSignalError] = useState<string | null>(null);
@@ -293,8 +307,32 @@ export function Companions() {
                   {signal.allow_execute ? 'EXECUTE OK' : 'VETO'}
                 </Badge>
               )}
+              {signal.companion_ready !== null && signal.companion_ready !== undefined && (
+                <Badge
+                  variant={signal.companion_ready ? 'success' : 'error'}
+                  data-testid="nano-ready-badge"
+                >
+                  {signal.companion_ready ? 'READY' : 'NOT READY'}
+                </Badge>
+              )}
               {signal.has_position && <Badge variant="info">IN POSITION</Badge>}
             </div>
+
+            {!signal.companion_ready &&
+              (signal.companion_block_reasons?.length ?? 0) > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-2 mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5"
+                  data-testid="nano-block-reasons"
+                >
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span className="text-xs text-amber-700 font-medium">Blocked by:</span>
+                  {signal.companion_block_reasons?.map((r) => (
+                    <Badge key={r} variant="warning" className="text-xs">
+                      {r}
+                    </Badge>
+                  ))}
+                </div>
+              )}
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
@@ -313,6 +351,72 @@ export function Companions() {
                 </div>
               ))}
             </div>
+
+            {/* Dual-horizon model health + online-learning safeguards */}
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4" data-testid="nano-health-panel">
+              {[
+                {
+                  label: 'Short model (30s)',
+                  value: fmtPct(signal.short_direction_accuracy),
+                  hint: 'dir. accuracy',
+                },
+                {
+                  label: 'Long model (120s)',
+                  value: fmtPct(signal.long_direction_accuracy),
+                  hint: 'dir. accuracy',
+                },
+                {
+                  label: 'Drift score',
+                  value: fmtNum(signal.drift_score, 2),
+                  hint: `${signal.drift_retrain_count ?? 0} forced retrains`,
+                },
+                {
+                  label: 'Regime meta-prob',
+                  value: fmtPct(signal.regime_meta_prob),
+                  hint: `${Math.round(signal.regime_meta_samples ?? 0)} samples in ${signal.regime || '—'}`,
+                },
+              ].map((m) => (
+                <div key={m.label} className="rounded-xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+                  <p className="text-xs uppercase tracking-wide text-violet-400">{m.label}</p>
+                  <p className="text-lg font-semibold text-gray-900 mt-0.5">{m.value}</p>
+                  <p className="text-[11px] text-gray-400">{m.hint}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Internal paper-trader scoreboard */}
+            {(signal.paper_trades ?? 0) >= 0 && (
+              <div
+                className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-gray-100 bg-gray-50/60 px-4 py-3 text-sm"
+                data-testid="nano-paper-stats"
+              >
+                <span className="text-xs uppercase tracking-wide text-gray-400">Paper trader</span>
+                <span className="text-gray-600">
+                  Trades: <span className="font-semibold text-gray-900">{signal.paper_trades ?? 0}</span>
+                </span>
+                <span className="text-gray-600">
+                  Win rate:{' '}
+                  {/* paper_win_rate ya viene en escala 0-100 desde el executor */}
+                  <span className="font-semibold text-gray-900">
+                    {signal.paper_win_rate === null || signal.paper_win_rate === undefined
+                      ? '—'
+                      : `${signal.paper_win_rate.toFixed(1)}%`}
+                  </span>
+                </span>
+                <span className="text-gray-600">
+                  P&amp;L:{' '}
+                  <span
+                    className={`font-semibold ${(signal.paper_pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}
+                  >
+                    ${fmtNum(signal.paper_pnl, 2)}
+                  </span>
+                </span>
+                <span className="text-gray-600">
+                  Val accuracy:{' '}
+                  <span className="font-semibold text-gray-900">{fmtPct(signal.val_accuracy)}</span>
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800 text-sm" data-testid="nano-signal-empty">
