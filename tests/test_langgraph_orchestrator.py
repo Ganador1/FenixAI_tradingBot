@@ -1,6 +1,7 @@
 """
 Tests para el LangGraph Orchestrator.
 """
+
 import pytest
 
 
@@ -12,12 +13,12 @@ class TestFenixAgentState:
         from src.core.langgraph_orchestrator import FenixAgentState
 
         # FenixAgentState es un TypedDict
-        assert hasattr(FenixAgentState, '__annotations__')
+        assert hasattr(FenixAgentState, "__annotations__")
 
         annotations = FenixAgentState.__annotations__
-        assert 'symbol' in annotations
-        assert 'timeframe' in annotations
-        assert 'current_price' in annotations
+        assert "symbol" in annotations
+        assert "timeframe" in annotations
+        assert "current_price" in annotations
 
 
 class TestHelperFunctions:
@@ -127,7 +128,9 @@ async def test_risk_node_uses_live_symbol_and_entry_price(monkeypatch):
         )
 
     monkeypatch.setattr(mod, "format_prompt", fake_format_prompt)
-    monkeypatch.setattr(mod, "invoke_with_retry_and_validation", fake_invoke_with_retry_and_validation)
+    monkeypatch.setattr(
+        mod, "invoke_with_retry_and_validation", fake_invoke_with_retry_and_validation
+    )
     monkeypatch.setattr(mod, "save_legacy_agent_log", lambda *args, **kwargs: None)
 
     node = mod.create_risk_agent_node(llm=object(), reasoning_bank=None)
@@ -151,6 +154,80 @@ async def test_risk_node_uses_live_symbol_and_entry_price(monkeypatch):
     assert result["risk_assessment"]["verdict"] == "APPROVE"
 
 
+@pytest.mark.asyncio
+async def test_visual_node_prompt_indicators_match_professional_chart_contract(
+    monkeypatch, tmp_path
+):
+    from src.core import langgraph_orchestrator as mod
+
+    captured: dict[str, object] = {}
+
+    def fake_format_prompt(agent_name: str, **kwargs):
+        captured["agent_name"] = agent_name
+        captured["kwargs"] = kwargs
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]
+
+    class FakeLLM:
+        model = "gemma4:31b:cloud"
+
+        async def ainvoke(self, messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": (
+                        '{"action":"HOLD","confidence":0.4,"pattern":"Consolidation",'
+                        '"trend":"neutral","analysis":"Range-bound market"}'
+                    )
+                },
+            )()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "format_prompt", fake_format_prompt)
+    monkeypatch.setattr(mod, "save_legacy_agent_log", lambda *args, **kwargs: None)
+
+    node = mod.create_visual_agent_node(llm=FakeLLM(), reasoning_bank=None)
+
+    result = await node(
+        {
+            "chart_image_b64": "iVBORw0KGgo=",
+            "symbol": "ETHUSDC",
+            "timeframe": "15m",
+            "current_price": "1613.36",
+            "chart_candles_count": 80,
+            "chart_indicators_summary": {
+                "ema_50": {"value": 1617.3, "position": "above"},
+                "vwap": {"value": 1612.2, "position": "above"},
+                "pivots": {"r3": 1626.4, "pp": 1616.5, "s3": 1607.7},
+                "macd": {"trend": "bearish"},
+            },
+            "execution_times": {},
+            "errors": [],
+        }
+    )
+
+    indicators = captured["kwargs"]["visible_indicators"]
+    indicator_values = captured["kwargs"]["indicator_values"]
+    assert captured["agent_name"] == "visual_analyst"
+    assert captured["kwargs"]["timeframe"] == "15m"
+    assert captured["kwargs"]["candle_count"] == 80
+    assert "EMA 9/21/50" in indicators
+    assert "Bollinger Bands" in indicators
+    assert "SuperTrend" in indicators
+    assert "VWAP" in indicators
+    assert "Pivot Levels" in indicators
+    assert "Volume" in indicators
+    assert "SMA 50" not in indicators
+    assert '"ema_50"' in indicator_values
+    assert '"vwap"' in indicator_values
+    assert '"pivots"' in indicator_values
+    assert '"macd"' not in indicator_values
+    assert result["visual_report"]["action"] == "HOLD"
+
+
 class TestFenixTradingGraph:
     """Tests para el grafo de trading."""
 
@@ -163,7 +240,7 @@ class TestFenixTradingGraph:
 
     @pytest.mark.skipif(
         True,  # Skip por defecto, requiere LangGraph instalado
-        reason="Requiere LangGraph instalado"
+        reason="Requiere LangGraph instalado",
     )
     def test_graph_creation(self):
         """Verificar creación del grafo."""

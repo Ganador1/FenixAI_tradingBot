@@ -68,6 +68,7 @@ class FenixAgentState(TypedDict, total=False):
 
     # Generated Chart
     chart_image_b64: str | None
+    chart_candles_count: int
     chart_indicators_summary: dict[str, Any]
 
     # News data for sentiment agent

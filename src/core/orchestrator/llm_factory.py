@@ -128,7 +128,16 @@ class _MLXChatAdapter:
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
         self.timeout = int(timeout)
+        self.base_url = self._resolve_ollama_base_url()
         self._client = get_client()
+
+    @staticmethod
+    def _resolve_ollama_base_url() -> str:
+        return (
+            os.getenv("OLLAMA_BASE_URL")
+            or os.getenv("OLLAMA_HOST")
+            or "http://localhost:11434"
+        )
 
     @staticmethod
     def _normalize_role(raw_role: str) -> str:
@@ -162,8 +171,8 @@ class _MLXChatAdapter:
             return "\n".join(chunks).strip()
         return str(raw_content)
 
-    def _to_mlx_messages(self, messages: list[Any]) -> list[dict[str, str]]:
-        normalized: list[dict[str, str]] = []
+    def _to_mlx_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
         for message in messages or []:
             if isinstance(message, dict):
                 role = self._normalize_role(str(message.get("role", "user")))
@@ -173,7 +182,22 @@ class _MLXChatAdapter:
                     str(getattr(message, "role", None) or getattr(message, "type", None) or "user")
                 )
                 content = self._normalize_content(getattr(message, "content", ""))
-            normalized.append({"role": role, "content": content})
+            msg: dict[str, Any] = {"role": role, "content": content}
+
+            # Extract images from multimodal content (image_url format)
+            raw = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            if isinstance(raw, list):
+                images: list[str] = []
+                for part in raw:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:image") and "base64," in url:
+                            b64_data = url.split("base64,", 1)[1]
+                            images.append(b64_data)
+                if images:
+                    msg["images"] = images
+
+            normalized.append(msg)
 
         if not normalized:
             normalized = [{"role": "user", "content": ""}]
@@ -203,15 +227,54 @@ class _MLXChatAdapter:
     def invoke(self, messages: list[Any]) -> Any:
         payload = self._to_mlx_messages(messages)
         start = time.perf_counter()
-        response = self._client.chat(
-            model=self.model,
-            messages=payload,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
+
+        # Check if any message contains images (multimodal)
+        has_images = any("images" in msg for msg in payload if isinstance(msg, dict))
+
+        if has_images:
+            # Use Ollama API directly for vision models (MLXClient doesn't support images)
+            content = self._ollama_vision_chat(payload)
+        else:
+            response = self._client.chat(
+                model=self.model,
+                messages=payload,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+            content = str(getattr(response, "content", "") or "")
+
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        content = str(getattr(response, "content", "") or "")
         return self._as_response_message(content, self.model, elapsed_ms)
+
+    def _ollama_vision_chat(self, payload: list[dict]) -> str:
+        """Call Ollama API directly for vision/multimodal models."""
+        import json as _json
+        import urllib.request as _urllib
+
+        ollama_url = self.base_url or "http://localhost:11434"
+        api_payload = {
+            "model": self.model,
+            "messages": payload,
+            "stream": False,
+            "options": {
+                "num_predict": self.max_tokens or 2048,
+                "temperature": self.temperature or 0.1,
+            },
+        }
+
+        try:
+            req = _urllib.request.Request(
+                f"{ollama_url}/api/chat",
+                data=_json.dumps(api_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib.request.urlopen(req, timeout=180) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+                return data.get("message", {}).get("content", "")
+        except Exception as e:
+            logger.error(f"Ollama vision chat error: {e}")
+            return ""
 
     async def ainvoke(self, messages: list[Any]) -> Any:
         return await asyncio.to_thread(self.invoke, messages)

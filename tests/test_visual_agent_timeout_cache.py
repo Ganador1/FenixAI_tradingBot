@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 
 import pytest
 
@@ -23,6 +24,14 @@ class _LLMSlow:
     async def ainvoke(self, _messages):
         await asyncio.sleep(self._sleep_sec)
         return _Resp('{"action":"HOLD","confidence":0.5,"reason":"ok"}')
+
+
+class _LLMFast:
+    async def ainvoke(self, _messages):
+        return _Resp(
+            '{"action":"HOLD","confidence":0.5,"pattern":"Consolidation",'
+            '"trend":"neutral","analysis":"ok"}'
+        )
 
 
 @pytest.mark.asyncio
@@ -68,7 +77,9 @@ async def test_visual_timeout_falls_back_to_cache(monkeypatch):
         report={"action": "SELL", "confidence": 0.8, "reason": "cached"},
     )
 
-    node = create_visual_agent_node(_LLMSlow(sleep_sec=0.05), reasoning_bank=None, agent_cache=cache)
+    node = create_visual_agent_node(
+        _LLMSlow(sleep_sec=0.05), reasoning_bank=None, agent_cache=cache
+    )
     out = await node(
         {
             "symbol": "BTCUSDT",
@@ -81,3 +92,55 @@ async def test_visual_timeout_falls_back_to_cache(monkeypatch):
     report = out["visual_report"]
     assert report["action"] == "SELL"
     assert report.get("_cache_info", {}).get("reason") == "llm_timeout"
+
+
+@pytest.mark.asyncio
+async def test_visual_prompt_indicators_match_professional_chart_contract(monkeypatch, tmp_path):
+    visual_mod = importlib.import_module("src.core.orchestrator.agents.visual")
+    captured: dict[str, object] = {}
+
+    def fake_format_prompt(agent_name: str, **kwargs):
+        captured["agent_name"] = agent_name
+        captured["kwargs"] = kwargs
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(visual_mod, "format_prompt", fake_format_prompt)
+    monkeypatch.setattr(visual_mod, "save_legacy_agent_log", lambda *args, **kwargs: None)
+
+    node = visual_mod.create_visual_agent_node(_LLMFast(), reasoning_bank=None)
+    result = await node(
+        {
+            "symbol": "ETHUSDC",
+            "timeframe": "15m",
+            "chart_image_b64": "abc",
+            "chart_candles_count": 80,
+            "current_price": 1613.36,
+            "chart_indicators_summary": {
+                "ema_50": {"value": 1617.3, "position": "above"},
+                "vwap": {"value": 1612.2, "position": "above"},
+                "pivots": {"r3": 1626.4, "pp": 1616.5, "s3": 1607.7},
+                "rsi": {"value": 30.4},
+            },
+        }
+    )
+
+    indicators = captured["kwargs"]["visible_indicators"]
+    indicator_values = captured["kwargs"]["indicator_values"]
+    assert captured["agent_name"] == "visual_analyst"
+    assert captured["kwargs"]["candle_count"] == 80
+    assert "EMA 9/21/50" in indicators
+    assert "Bollinger Bands" in indicators
+    assert "SuperTrend" in indicators
+    assert "VWAP" in indicators
+    assert "Pivot Levels" in indicators
+    assert "Volume" in indicators
+    assert "SMA 50" not in indicators
+    assert '"ema_50"' in indicator_values
+    assert '"vwap"' in indicator_values
+    assert '"pivots"' in indicator_values
+    assert '"rsi"' not in indicator_values
+    assert result["visual_report"]["action"] == "HOLD"

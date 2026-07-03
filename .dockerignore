@@ -3,10 +3,10 @@
 # ==============================================================================
 
 # Virtual environments
-fenix_env/
-.venv/
-venv/
-env/
+**/fenix_env/
+**/.venv/
+**/venv/
+**/env/
 
 # Python artifacts
 __pycache__/
@@ -18,6 +18,14 @@ __pycache__/
 *.egg
 dist/
 build/
+
+# Node/frontend artifacts
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/playwright-report/
+frontend/test-results/
 
 # IDE and editor
 .idea/
@@ -35,14 +43,21 @@ htmlcov/
 .coverage
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .tox/
 
 # Logs (will be mounted as volume)
 logs/
+**/logs/
 *.log
+nohup.out
 
 # Data (will be mounted as volume)
 data/
+*.db
+*.sqlite
+*.sqlite3
+*.jsonl
 
 # Documentation artifacts
 docs/_build/
@@ -51,11 +66,13 @@ docs/_build/
 *.tmp
 *.temp
 .cache/
+_tmp_*
+tmp/
+tmp*/
 
 # Environment files (secrets)
-.env
-.env.local
-.env.production
+.env*
+!.env.example
 
 # AI Agent files
 AGENTS.md
@@ -65,6 +82,15 @@ IDENTITY.md
 SOUL.md
 TOOLS.md
 USER.md
+
+# Agent/session memory and generated artifacts
+memory/
+nanofenixv3/artifacts/
+nanofenixv3/__pycache__/
+nanofenixv3/signals/
+nanofenixv3/runtime_*.pkl
+llm_responses/
+backups/
 
 # Jupyter notebooks
 *.ipynb

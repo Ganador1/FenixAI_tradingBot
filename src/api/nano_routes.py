@@ -32,18 +32,21 @@ DEFAULT_SIGNAL_DIR = REPO_ROOT / "logs"
 # Process registry: symbol_upper -> Popen.
 _NANO_PROCESSES: dict[str, subprocess.Popen] = {}
 
-# Recommended v2.5 release configuration (matches docs/releases/v2.5*.md).
+# Recommended release configuration. Team updated 2026-07-01 after the Ollama
+# Cloud Max benchmark: deepseek-v4-flash analysts (21-27s cycles, 0 timeouts) +
+# deepseek-v4-pro on decision/risk (highest quality), gemini-3-flash visual.
 RELEASE_INFO = {
-    "version": "2.5.0",
+    "version": "2.5.1",
     "status": "release-candidate",
-    "recommended_symbol": "SOLUSDT",
+    "recommended_symbol": "ETHUSDC",
     "recommended_timeframe": "15m",
     "recommended_mode": "paper",
     "recommended_team": {
-        "technical": "ministral-3:14b-cloud",
-        "qabba": "ministral-3:14b-cloud",
-        "decision": "nemotron-3-nano:30b-cloud",
-        "risk_manager": "devstral-small-2:24b-cloud",
+        "technical": "deepseek-v4-flash:cloud",
+        "qabba": "deepseek-v4-flash:cloud",
+        "sentiment": "deepseek-v4-flash:cloud",
+        "decision": "deepseek-v4-pro:cloud",
+        "risk_manager": "deepseek-v4-pro:cloud",
         "visual": "gemini-3-flash-preview:cloud",
     },
     "nanofenix": {
@@ -61,7 +64,9 @@ RELEASE_INFO = {
     },
     "subsystems": {
         "fenix_core": "Main LangGraph multi-agent engine",
-        "nanofenix_v3_5": "Zero-LLM microstructure companion (LightGBM)",
+        "nanofenix_v3_5": "Zero-LLM microstructure companion (LightGBM, dual-horizon)",
+        "drift_retrain": "Page-Hinkley concept-drift detection -> forced retrain",
+        "regime_meta": "Per-regime meta-labeling gate on companion signals",
         "minifenix": "Two-speed slow-brain/fast-trigger research prototype",
         "fenix_experimental": "Brain/trigger/agent bridge runner",
     },
@@ -88,6 +93,22 @@ class NanoSignal(BaseModel):
     uncertainty_bps: float | None = None
     actionable_edge_bps: float | None = None
     has_position: bool | None = None
+    # v3.5+: readiness, precisión por horizonte y estadísticas paper.
+    companion_ready: bool | None = None
+    companion_block_reasons: list[str] | None = None
+    short_direction_accuracy: float | None = None
+    long_direction_accuracy: float | None = None
+    direction_samples: int | None = None
+    val_accuracy: float | None = None
+    volatility_state: str | None = None
+    paper_trades: int | None = None
+    paper_win_rate: float | None = None
+    paper_pnl: float | None = None
+    # Mejoras 2026-07: drift-retrain (Page-Hinkley) y meta-labeling por régimen.
+    drift_score: float | None = None
+    drift_retrain_count: int | None = None
+    regime_meta_prob: float | None = None
+    regime_meta_samples: float | None = None
     age_seconds: float | None = Field(
         None, description="Seconds since the companion last wrote this signal."
     )
@@ -151,6 +172,20 @@ def _to_signal_model(symbol: str, raw: dict, path: Path) -> NanoSignal:
         uncertainty_bps=raw.get("uncertainty_bps"),
         actionable_edge_bps=raw.get("actionable_edge_bps"),
         has_position=raw.get("has_position"),
+        companion_ready=raw.get("companion_ready"),
+        companion_block_reasons=raw.get("companion_block_reasons"),
+        short_direction_accuracy=raw.get("short_direction_accuracy"),
+        long_direction_accuracy=raw.get("long_direction_accuracy"),
+        direction_samples=raw.get("direction_samples"),
+        val_accuracy=raw.get("val_accuracy"),
+        volatility_state=raw.get("volatility_state"),
+        paper_trades=raw.get("paper_trades"),
+        paper_win_rate=raw.get("paper_win_rate"),
+        paper_pnl=raw.get("paper_pnl"),
+        drift_score=raw.get("drift_score"),
+        drift_retrain_count=raw.get("drift_retrain_count"),
+        regime_meta_prob=raw.get("regime_meta_prob"),
+        regime_meta_samples=raw.get("regime_meta_samples"),
         age_seconds=age,
         raw=raw,
     )
@@ -189,10 +224,16 @@ async def nano_status(symbol: str = Query("SOLUSDT")):
             age = max(0.0, time.time() - path.stat().st_mtime)
         except OSError:
             age = None
+    owned_running = proc is not None and proc.poll() is None
+    # Un companion lanzado FUERA de la API (p.ej. la sesión live con
+    # --with-nanofenix-companion) también cuenta como running si su señal
+    # está fresca: evita que el dashboard ofrezca "Start" y se lance un
+    # duplicado que pelee por el mismo archivo de señal.
+    external_running = not owned_running and age is not None and age < 30.0
     return NanoStatus(
         symbol=symbol_upper,
-        running=proc is not None and proc.poll() is None,
-        pid=proc.pid if proc is not None and proc.poll() is None else None,
+        running=owned_running or external_running,
+        pid=proc.pid if owned_running else None,
         signal_path=str(path) if path.exists() else None,
         signal_age_seconds=age,
     )
@@ -208,6 +249,25 @@ async def nano_start(req: NanoStartRequest):
     existing = _NANO_PROCESSES.get(symbol_upper)
     if existing is not None and existing.poll() is None:
         return await nano_status(symbol=symbol_upper)  # type: ignore[arg-type]
+
+    # Si hay un companion EXTERNO publicando señal fresca (p.ej. el de la
+    # sesión live), rechazar el spawn: dos companions sobre el mismo archivo
+    # de señal se pisan entre sí.
+    external_path = _signal_path_for(symbol_upper)
+    if external_path.exists():
+        try:
+            external_age = max(0.0, time.time() - external_path.stat().st_mtime)
+        except OSError:
+            external_age = None
+        if external_age is not None and external_age < 30.0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A NanoFenix companion for {symbol_upper} is already publishing "
+                    f"a fresh signal (age {external_age:.1f}s) from another process "
+                    "(e.g. the live session). Refusing to spawn a duplicate."
+                ),
+            )
 
     signal_path = _signal_path_for(symbol_upper)
     signal_path.parent.mkdir(parents=True, exist_ok=True)

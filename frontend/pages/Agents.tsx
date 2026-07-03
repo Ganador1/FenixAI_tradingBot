@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Brain, TrendingUp, Activity, Target, AlertCircle, RefreshCw } from 'lucide-react';
 // import { useAuthStore } from '../stores/authStore';
-import { useAgentStore, Agent, ReasoningEntry } from '../stores/agentStore';
+import { useAgentStore, ReasoningEntry } from '../stores/agentStore';
 import { useSystemStore } from '../stores/systemStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -24,7 +24,7 @@ const AGENT_COLORS = {
 
 export const Agents: React.FC = () => {
   // const { user } = useAuthStore();
-  const { agents, reasoningLogs, socket, fetchAgents, fetchReasoningLogs } = useAgentStore();
+  const { agents, reasoningLogs, socket, fetchAgents, fetchReasoningLogs, fetchScorecards } = useAgentStore();
   const { engineConfig, fetchEngineConfig, updateEngineConfig } = useSystemStore();
   
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
@@ -41,16 +41,16 @@ export const Agents: React.FC = () => {
     fetchEngineConfig();
     
     if (socket) {
-      socket.on('agentUpdate', handleAgentUpdate);
-      socket.on('reasoningUpdate', handleReasoningUpdate);
       socket.on('agentOutput', handleAgentOutput);
+      socket.on('agent:reasoning', handleReasoningUpdate);
+      socket.on('agent:scorecard', handleAgentUpdate);
     }
 
     return () => {
       if (socket) {
-        socket.off('agentUpdate', handleAgentUpdate);
-        socket.off('reasoningUpdate', handleReasoningUpdate);
         socket.off('agentOutput', handleAgentOutput);
+        socket.off('agent:reasoning', handleReasoningUpdate);
+        socket.off('agent:scorecard', handleAgentUpdate);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,14 +93,15 @@ export const Agents: React.FC = () => {
     }
   };
 
-  const handleAgentUpdate = (agent: Agent) => {
-    // This would be handled by the agent store
-    console.log('Agent update:', agent);
+  const handleAgentUpdate = () => {
+    // Scorecard update — refresh agents and scorecards from store
+    fetchAgents();
+    fetchScorecards();
   };
 
   const handleReasoningUpdate = (entry: ReasoningEntry) => {
-    // This would be handled by the agent store
-    console.log('Reasoning update:', entry);
+    // New reasoning log — add to local list
+    setAgentOutputs(prev => [entry, ...prev.slice(0, 99)]);
   };
 
   const handleAgentOutput = (output: ReasoningEntry) => {

@@ -50,7 +50,7 @@ all_local:
     provider_type: "ollama_local"
     model_name: "qwen3-vl:8b"
     temperature: 0.1
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 90
     supports_vision: true
     fallback_provider_type: "ollama_local"
@@ -117,7 +117,7 @@ mixed_providers:
     provider_type: "openai"  # GPT-4 Vision para mejor análisis de gráficos
     model_name: "gpt-4-vision-preview"
     temperature: 0.1
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 60
     supports_vision: true
     # api_key: se lee desde OPENAI_API_KEY env var
@@ -176,7 +176,7 @@ mlx_optimized:
     provider_type: "ollama_local"  # MLX vision aún en desarrollo
     model_name: "qwen2.5vl:7b-q4_K_M"
     temperature: 0.1
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 90
     supports_vision: true
     api_base: "http://localhost:11434"
@@ -233,7 +233,7 @@ groq_free:
     provider_type: "groq"
     model_name: "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq multimodal (preview)
     temperature: 0.1
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 30
     supports_vision: true
     fallback_provider_type: "ollama_local"
@@ -304,7 +304,7 @@ all_cloud:
     provider_type: "openai"
     model_name: "gpt-4-vision-preview"
     temperature: 0.1
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 60
     supports_vision: true
   
@@ -377,7 +377,7 @@ ollama_1min_optimized:
     provider_type: "ollama_cloud"
     model_name: "deepseek-v3.2:cloud"
     temperature: 0.05
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 7
     supports_vision: false
     api_base: "http://localhost:11434"
@@ -486,7 +486,7 @@ bench_hf:
     provider_type: "huggingface_inference"
     model_name: "mistralai/Mistral-7B-Instruct-v0.2"
     temperature: 0.4
-    max_tokens: 1200
+    max_tokens: 2048
     timeout: 120
     supports_vision: false
     extra_config:

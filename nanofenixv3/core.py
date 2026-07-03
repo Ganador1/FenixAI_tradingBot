@@ -622,6 +622,11 @@ class NanoFenixV3:
                 "fast_weight": float((policy or {}).get("fast_weight", 0.5) or 0.5),
                 "slow_weight": float((policy or {}).get("slow_weight", 0.5) or 0.5),
                 "drift_score": float((policy or {}).get("drift_score", 0.0) or 0.0),
+                "regime_meta_prob": float((policy or {}).get("regime_meta_prob", 0.5) or 0.5),
+                "regime_meta_samples": float(
+                    (policy or {}).get("regime_meta_samples", 0.0) or 0.0
+                ),
+                "drift_retrain_count": int((policy or {}).get("drift_retrain_count", 0) or 0),
                 "allow_execute": bool((policy or {}).get("allow_execute", False)),
                 "allow_add_to_position": bool((policy or {}).get("allow_add_to_position", False)),
                 "size_multiplier_hint": float(

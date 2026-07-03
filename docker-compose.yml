@@ -1,7 +1,9 @@
 # ==============================================================================
 # FenixAI Trading Bot - Docker Compose
 # ==============================================================================
-# Usage: docker-compose up -d
+# Usage:
+#   docker compose up -d
+#   docker compose --profile monitoring up -d
 # ==============================================================================
 
 services:
@@ -12,26 +14,33 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12.13}
     container_name: fenix-api
+    init: true
     restart: unless-stopped
     ports:
-      - "8001:8000"
+      - "127.0.0.1:${FENIX_API_PORT:-8001}:8000"
     environment:
       # Database
-      - DATABASE_URL=sqlite+aiosqlite:///./data/fenix.db
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./data/fenix.db}
       # Secrets from .env file
-      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
-      - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
-      - JWT_SECRET=${JWT_SECRET:-development-secret-change-in-production}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       # Ollama connection (for local LLM)
-      - OLLAMA_HOST=http://host.docker.internal:11434
-      - CREATE_DEMO_USERS=${CREATE_DEMO_USERS:-false}
-      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-}
-      - DEFAULT_DEMO_PASSWORD=${DEFAULT_DEMO_PASSWORD:-}
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      CREATE_DEMO_USERS: ${CREATE_DEMO_USERS:-false}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+      DEFAULT_DEMO_PASSWORD: ${DEFAULT_DEMO_PASSWORD:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-fenix_redis_change_me}@redis:6379/0
+      FENIX_REDIS_CHANNEL: ${FENIX_REDIS_CHANNEL:-fenix_socketio}
       # Prometheus
-      - PROMETHEUS_ENABLED=true
+      PROMETHEUS_ENABLED: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -40,21 +49,28 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
+      start_period: 30s
       retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - fenix-network
     depends_on:
-      - prometheus
+      redis:
+        condition: service_healthy
 
   # =============================================================================
   # Prometheus - Metrics Collection
   # =============================================================================
   prometheus:
-    image: prom/prometheus:v2.49.0
+    image: prom/prometheus:v3.13.0
     container_name: fenix-prometheus
+    profiles: ["monitoring"]
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -65,21 +81,25 @@ services:
       - '--web.enable-lifecycle'
     networks:
       - fenix-network
+    depends_on:
+      fenix-api:
+        condition: service_healthy
 
   # =============================================================================
   # Grafana - Visualization
   # =============================================================================
   grafana:
-    image: grafana/grafana:10.3.0
+    image: grafana/grafana:13.1.0
     container_name: fenix-grafana
+    profiles: ["monitoring"]
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-fenix2024}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:3001
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-fenix_admin_change_me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3001}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
@@ -93,14 +113,22 @@ services:
   # Redis - Cache & Session Store (Optional)
   # =============================================================================
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: fenix-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-fenix_redis_change_me}
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - fenix-network
 
@@ -109,6 +137,7 @@ services:
 # =============================================================================
 networks:
   fenix-network:
+    name: fenix-network
     driver: bridge
 
 # =============================================================================

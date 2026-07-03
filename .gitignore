@@ -120,18 +120,33 @@ reasoning_bank/
 *.pickle
 
 # ============================================================================
+# Charts & Training Data (heavy files, not for git)
+# ============================================================================
+cache/charts/
+cache/charts/archive/
+data/training_dataset/
+
+# ============================================================================
 # Environment & Secrets
 # ============================================================================
 .env
 .env.local
 .env.*.local
-.env.example
 *.key
 *.pem
 *.crt
 secrets.json
 config/secrets*.yaml
-security/
+# Solo el directorio security/ de la RAÍZ (dumps locales); src/security/ es
+# código fuente y debe versionarse (el patrón sin anclar ocultaba
+# src/security/prompt_sanitizer.py).
+/security/
+
+# Herramientas locales de la sesión (no son parte del proyecto)
+.claude/
+nohup.out
+_tmp_status.py
+debug_visual_raw.log
 
 # ============================================================================
 # OS Generated Files
@@ -287,9 +302,12 @@ minifenix/analyze_performance.py
 minifenix/multi_symbol_trader.py
 
 # Session / agent metadata (Claude Code, AGENTS.md and related notes)
-memory/
+# Solo memory/ de la RAÍZ (notas de sesión); src/memory/ es código fuente.
+/memory/
 plans/
-tools/
+# Solo tools/ de la RAÍZ; src/tools/ es código fuente (el patrón sin anclar
+# bloqueaba nuevos archivos del paquete de herramientas).
+/tools/
 .claude/worktrees/
 
 # Local notes and superseded research drafts left in the repo root or docs/

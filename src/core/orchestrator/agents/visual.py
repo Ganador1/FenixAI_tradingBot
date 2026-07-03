@@ -35,6 +35,38 @@ from src.system.tracing import get_tracer
 logger = logging.getLogger(__name__)
 
 
+_VISIBLE_CHART_SUMMARY_KEYS = (
+    "price",
+    "ema_9",
+    "ema_21",
+    "ema_50",
+    "bollinger",
+    "vwap",
+    "supertrend",
+    "pivots",
+)
+
+
+def _format_visual_indicator_values(summary: Any) -> str:
+    """Formats numeric chart values that correspond to visible chart overlays."""
+    if not isinstance(summary, dict) or not summary:
+        return "Not available"
+
+    filtered = {key: summary[key] for key in _VISIBLE_CHART_SUMMARY_KEYS if key in summary}
+    if not filtered:
+        return "Not available"
+
+    return json.dumps(filtered, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _get_visual_candle_count(state: FenixAgentState, default: int) -> int:
+    try:
+        value = int(state.get("chart_candles_count") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def create_visual_agent_node(
     llm: Any,
     reasoning_bank: Any = None,
@@ -78,8 +110,13 @@ def create_visual_agent_node(
                 "visual_analyst",
                 symbol=symbol,
                 timeframe=timeframe,
-                candle_count=50,
-                visible_indicators="EMA 9/21, Bollinger Bands, SuperTrend",
+                candle_count=_get_visual_candle_count(state, 50),
+                visible_indicators=(
+                    "EMA 9/21/50, Bollinger Bands, SuperTrend, " "VWAP, Pivot Levels (S/R), Volume"
+                ),
+                indicator_values=_format_visual_indicator_values(
+                    state.get("chart_indicators_summary")
+                ),
                 current_price=str(state.get("current_price", "N/A")),
                 price_range="N/A",
             )

@@ -97,7 +97,7 @@ class AgentProviderConfig(BaseModel):
         if provider_type == 'ollama_local':
             return 'http://localhost:11434'
         elif provider_type == 'ollama_cloud':
-            return os.getenv('OLLAMA_CLOUD_URL', 'https://api.ollama.ai')
+            return os.getenv('OLLAMA_CLOUD_URL', 'https://api.ollama.com')
         elif provider_type == 'huggingface_inference':
             return 'https://api-inference.huggingface.co'
         

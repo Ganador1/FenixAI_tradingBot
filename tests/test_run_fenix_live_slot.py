@@ -435,6 +435,16 @@ def test_resolve_visual_model_name_keeps_qwen3_vl():
     assert resolved == "qwen3-vl:235b-cloud"
 
 
+def test_resolve_visual_model_name_uses_verified_gemma_cloud_default(monkeypatch):
+    monkeypatch.delenv("FENIX_SAFE_VISION_MODEL", raising=False)
+
+    from scripts.run_fenix_live_slot import _resolve_visual_model_name
+
+    resolved = _resolve_visual_model_name("minimax-m2.7:cloud", None)
+
+    assert resolved == "gemma4:31b:cloud"
+
+
 def test_run_slot_passes_llm_config_to_engine(tmp_path, monkeypatch):
     from scripts import run_fenix_live_slot as mod
 
