@@ -90,7 +90,7 @@ TOKEN_ENV_KEYS = {
     "visual": "FENIX_VISUAL_MAX_TOKENS",
     "risk_manager": "FENIX_RISK_MANAGER_MAX_TOKENS",
 }
-SAFE_DEFAULT_VISION_MODEL = os.getenv("FENIX_SAFE_VISION_MODEL", "gemma4:31b-cloud")
+SAFE_DEFAULT_VISION_MODEL = os.getenv("FENIX_SAFE_VISION_MODEL", "gemma4:31b:cloud")
 SHORT_TF_AGENT_TIMEOUT_DEFAULTS = {
     "FENIX_TECHNICAL_TIMEOUT_SHORT_SEC": "45.0",
     "FENIX_QABBA_TIMEOUT_SHORT_SEC": "30.0",
@@ -1235,13 +1235,11 @@ def main() -> None:
         raise SystemExit(130)
 
     print(
-        "Slot finished: status=%s decisions=%s risk_blocked=%s judge_blocked=%s"
-        % (
-            summary.get("status"),
-            summary.get("events", {}).get("decision_counts"),
-            summary.get("events", {}).get("risk_blocked"),
-            summary.get("events", {}).get("judge_blocked"),
-        )
+        "Slot finished: "
+        f"status={summary.get('status')} "
+        f"decisions={summary.get('events', {}).get('decision_counts')} "
+        f"risk_blocked={summary.get('events', {}).get('risk_blocked')} "
+        f"judge_blocked={summary.get('events', {}).get('judge_blocked')}"
     )
 
     if summary.get("status") == "failed":

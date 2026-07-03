@@ -1,20 +1,34 @@
 #!/usr/bin/env python3
-"""Benchmark Ollama against a vLLM OpenAI-compatible endpoint.
+"""Benchmark Ollama vs vLLM/MLX-LM for FenixAI LLM inference.
 
-This script is intentionally endpoint-based. It can run today against local Ollama
-and can benchmark vLLM when a server is available at --vllm-base-url.
+This script is endpoint-based. It benchmarks the same FenixAI dashboard-summary
+prompt against multiple local LLM serving engines:
+
+- **Ollama** — llama.cpp backend (GGUF), endpoint ``/api/chat``
+- **vLLM** — vLLM OpenAI-compatible server, endpoint ``/v1/chat/completions``
+- **MLX-LM** — Apple MLX/Metal backend (safetensors), endpoint ``/v1/chat/completions``
+
+MLX-LM is the compute backend that vLLM-Metal uses on Apple Silicon, so it
+provides a fair Metal-vs-llama.cpp comparison on macOS.
+
+Usage::
+
+    python scripts/benchmark_vllm_ollama.py --providers ollama,mlx \\
+        --ollama-model qwen2.5:3b --mlx-model Qwen/Qwen2.5-3B-Instruct \\
+        --repeat 5 --output logs/benchmark_results.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +49,42 @@ class RequestResult:
     output_chars: int
     output_tokens: int | None = None
     error: str | None = None
+
+
+@dataclass
+class ResourceSnapshot:
+    """Best-effort resource usage snapshot during a benchmark run."""
+    peak_rss_mb: float = 0.0
+    cpu_percent: float = 0.0
+    available: bool = False
+
+
+def _try_import_psutil() -> Any | None:
+    try:
+        import psutil
+        return psutil
+    except ImportError:
+        return None
+
+
+def _snapshot_resources(pid: int | None = None) -> ResourceSnapshot:
+    """Capture peak RSS and CPU for the serving process (best-effort)."""
+    psutil = _try_import_psutil()
+    if psutil is None:
+        return ResourceSnapshot()
+    try:
+        if pid is not None:
+            proc = psutil.Process(pid)
+        else:
+            proc = psutil.Process()
+        mem = proc.memory_info()
+        return ResourceSnapshot(
+            peak_rss_mb=mem.rss / 1024 / 1024,
+            cpu_percent=proc.cpu_percent(interval=0.1),
+            available=True,
+        )
+    except Exception:
+        return ResourceSnapshot()
 
 
 JsonGetter = Callable[[str, float], dict[str, Any]]
@@ -252,7 +302,7 @@ def _select_vllm_model(models_payload: dict[str, Any], requested: str | None) ->
 
 def _parse_providers(raw: str) -> list[str]:
     providers = [item.strip().lower() for item in raw.replace(",", " ").split() if item.strip()]
-    valid = {"ollama", "vllm"}
+    valid = {"ollama", "vllm", "mlx"}
     invalid = sorted(set(providers) - valid)
     if invalid:
         raise SystemExit(f"Unsupported provider(s): {', '.join(invalid)}")
@@ -266,8 +316,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--providers", default="ollama,vllm", help="Providers: ollama,vllm")
     parser.add_argument("--ollama-base-url", default="http://localhost:11434")
     parser.add_argument("--vllm-base-url", default="http://localhost:8000/v1")
+    parser.add_argument("--mlx-base-url", default="http://localhost:8000/v1")
     parser.add_argument("--ollama-model", default=None)
     parser.add_argument("--vllm-model", default=None)
+    parser.add_argument("--mlx-model", default=None)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=60.0)
@@ -311,17 +363,18 @@ def main(
                 continue
             base_url = args.ollama_base_url
         else:
-            model = args.vllm_model
+            # Both vllm and mlx expose OpenAI-compatible /v1 endpoints
+            base_url = args.vllm_base_url if provider == "vllm" else args.mlx_base_url
+            model = args.vllm_model if provider == "vllm" else args.mlx_model
             try:
-                models_payload = get_json(_join_url(args.vllm_base_url, "/models"), min(args.timeout, 5.0))
+                models_payload = get_json(_join_url(base_url, "/models"), min(args.timeout, 5.0))
                 model = _select_vllm_model(models_payload, model)
                 if not model:
-                    summaries.append(unavailable_summary(provider, "", "no vLLM models returned"))
+                    summaries.append(unavailable_summary(provider, "", "no models returned"))
                     continue
             except Exception as exc:
                 summaries.append(unavailable_summary(provider, model or "", str(exc)))
                 continue
-            base_url = args.vllm_base_url
 
         results = benchmark_provider(
             provider=provider,

@@ -89,8 +89,42 @@ def _find_nanofenix_companion_pids(symbol: str) -> list[int]:
     return pids
 
 
+def _load_cli_defaults() -> dict:
+    """Load CLI defaults from config/fenix.yaml (CLI flags always win).
+
+    Falls back to built-in defaults when the YAML is missing or invalid so
+    run_fenix.py keeps working in minimal environments.
+    """
+    defaults = {
+        "symbol": "BTCUSDT",
+        "timeframe": "15m",
+        "interval": 60,
+        "model": "qwen2.5:7b",
+        "max_risk": 2.0,
+    }
+    try:
+        from config.settings import get_config
+
+        cfg = get_config()
+        defaults.update(
+            symbol=cfg.trading.symbol,
+            timeframe=cfg.trading.timeframe,
+            interval=cfg.trading.analysis_interval_seconds,
+            model=cfg.llm.default_model,
+            max_risk=cfg.trading.max_risk_per_trade * 100.0,
+        )
+    except Exception as e:  # pragma: no cover - defensive fallback
+        logger.warning("Could not load config/fenix.yaml (%s); using built-in defaults", e)
+    return defaults
+
+
 def parse_args():
-    """Parses command line arguments."""
+    """Parses command line arguments.
+
+    Defaults come from config/fenix.yaml when available; explicit CLI flags
+    always take precedence.
+    """
+    cfg_defaults = _load_cli_defaults()
     parser = argparse.ArgumentParser(
         description="Fenix AI Trading Bot - LangGraph Multi-Agent System (v2.5)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -124,18 +158,21 @@ Examples:
     )
     parser.add_argument(
         "--symbol",
-        default="BTCUSDT",
-        help="Trading pair (default: BTCUSDT)",
+        default=cfg_defaults["symbol"],
+        help=f"Trading pair (default: {cfg_defaults['symbol']}, from config/fenix.yaml)",
     )
     parser.add_argument(
         "--timeframe",
-        default="15m",
-        help="Analysis timeframe (default: 15m)",
+        default=cfg_defaults["timeframe"],
+        help=f"Analysis timeframe (default: {cfg_defaults['timeframe']}, from config/fenix.yaml)",
     )
     parser.add_argument(
         "--model",
-        default="qwen2.5:7b",
-        help="Ollama model to use when --team-models is not provided (default: qwen2.5:7b)",
+        default=cfg_defaults["model"],
+        help=(
+            "Ollama model to use when --team-models is not provided "
+            f"(default: {cfg_defaults['model']}, from config/fenix.yaml)"
+        ),
     )
     parser.add_argument(
         "--team-models",
@@ -150,8 +187,8 @@ Examples:
     parser.add_argument(
         "--interval",
         type=int,
-        default=60,
-        help="Interval between analysis in seconds (default: 60)",
+        default=cfg_defaults["interval"],
+        help=f"Interval between analysis in seconds (default: {cfg_defaults['interval']}, from config/fenix.yaml)",
     )
     parser.add_argument(
         "--no-visual",
@@ -166,8 +203,8 @@ Examples:
     parser.add_argument(
         "--max-risk",
         type=float,
-        default=2.0,
-        help="Max risk per trade in %% (default: 2.0)",
+        default=cfg_defaults["max_risk"],
+        help=f"Max risk per trade in %% (default: {cfg_defaults['max_risk']:.1f}, from config/fenix.yaml)",
     )
     parser.add_argument(
         "--dry-run",
@@ -468,6 +505,39 @@ async def main():
             enable_sentiment_agent=not args.no_sentiment,
             allow_live_trading=args.allow_live,
         )
+
+        # ── Redis Bridge: emit engine events to the API server frontend ──
+        # When REDIS_URL is set and the API server is running with the same
+        # Redis channel, the live process forwards all agent events to the
+        # connected web clients without needing a separate engine in the API.
+        redis_bridge = None
+        try:
+            from src.api.redis_bridge import get_redis_bridge
+
+            redis_bridge = get_redis_bridge()
+            if redis_bridge:
+                async def _redis_event_handler(event_type: str, data: dict):
+                    """Forward engine events to the API server via Redis."""
+                    try:
+                        event_map = {
+                            "agent_output": "agentOutput",
+                            "final_decision": "trade:signal",
+                            "news_update": "news:update",
+                            "reasoning:new": "agent:reasoning",
+                            "trade_executed": "trade:executed",
+                            "trade:simulated": "trade:executed",
+                        }
+                        ws_event = event_map.get(event_type, event_type)
+                        await redis_bridge.emit(ws_event, data)
+                    except Exception:
+                        pass
+
+                engine.on_agent_event = _redis_event_handler
+                logger.info("✅ Redis bridge active — engine events forwarded to API server")
+            else:
+                logger.info("Redis bridge not configured (set REDIS_URL to enable)")
+        except Exception as e:
+            logger.warning(f"Redis bridge setup failed: {e}")
 
         # Signal handling
         stop_event = asyncio.Event()
