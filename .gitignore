@@ -304,7 +304,9 @@ minifenix/multi_symbol_trader.py
 # Session / agent metadata (Claude Code, AGENTS.md and related notes)
 memory/
 plans/
-tools/
+# Solo tools/ de la RAÍZ; src/tools/ es código fuente (el patrón sin anclar
+# bloqueaba nuevos archivos del paquete de herramientas).
+/tools/
 .claude/worktrees/
 
 # Local notes and superseded research drafts left in the repo root or docs/
