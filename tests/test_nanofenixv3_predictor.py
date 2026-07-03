@@ -378,3 +378,127 @@ def test_short_companion_readiness_can_be_true_when_overall_is_dragged_by_long_h
     assert "low_direction_accuracy" in overall["reasons"]
     assert short_only["ready"] is True
     assert short_only["direction_accuracy"] > overall["direction_accuracy"]
+
+
+def test_page_hinkley_detects_sustained_error_increase():
+    drift = predictor_module.PageHinkleyDrift(delta=0.05, threshold=12.0, min_samples=60)
+
+    # Fase estable: error ~3 bps con ruido leve — no debe disparar.
+    rng = np.random.default_rng(7)
+    for _ in range(300):
+        assert drift.update(3.0 + rng.normal(0, 0.3)) is False
+
+    # Drift real: el error se triplica de forma persistente.
+    fired = False
+    for _ in range(300):
+        if drift.update(9.0 + rng.normal(0, 0.5)):
+            fired = True
+            break
+    assert fired
+    assert drift.drift_count == 1
+
+
+def test_page_hinkley_quiet_on_stable_errors():
+    drift = predictor_module.PageHinkleyDrift(delta=0.05, threshold=12.0, min_samples=60)
+    rng = np.random.default_rng(11)
+    fired = any(drift.update(4.0 + rng.normal(0, 0.6)) for _ in range(2000))
+    assert fired is False
+
+
+def test_regime_meta_tracker_learns_per_regime_probabilities():
+    tracker = predictor_module.RegimeMetaTracker(decay=1.0)
+    for _ in range(30):
+        tracker.update("TRENDING", True)
+        tracker.update("RANGING", False)  # RANGING normaliza a CHOP
+
+    trending_prob, trending_samples = tracker.probability("TRENDING")
+    chop_prob, chop_samples = tracker.probability("CHOP")
+    assert trending_prob > 0.9
+    assert chop_prob < 0.1
+    assert trending_samples >= 30
+    assert chop_samples >= 30
+
+
+def test_regime_meta_blend_lowers_meta_probability_in_losing_regime():
+    predictor = _make_dual_predictor(short_bps=3.0, long_bps=3.0)
+    for _ in range(40):
+        predictor._regime_meta.update("VOLATILE", False)
+
+    blended, regime_prob, samples = predictor._blended_meta_probability(0.7, "VOLATILE")
+    assert samples >= predictor_module.REGIME_META_MIN_SAMPLES
+    assert regime_prob < 0.1
+    assert blended < 0.7
+
+
+def test_drift_pending_forces_early_retrain_flag():
+    predictor = _make_dual_predictor(short_bps=2.0, long_bps=2.0)
+    # Buffer suficiente para permitir retrain forzado.
+    for i in range(predictor_module.MIN_SAMPLES + predictor_module.HORIZON_LONG + 10):
+        predictor.store(_features(), 100.0 + i * 0.01)
+    predictor._short._bars_since_retrain = 0
+    predictor._long._bars_since_retrain = 0
+    assert predictor.should_retrain() is False
+
+    predictor._drift_retrain_pending = True
+    assert predictor.should_retrain() is True
+
+
+def test_save_load_roundtrip_preserves_drift_and_regime_meta(tmp_path):
+    predictor = _make_dual_predictor(short_bps=2.0, long_bps=2.0)
+    predictor._drift_retrain_count = 3
+    predictor._drift_detector.drift_count = 3
+    for _ in range(25):
+        predictor._regime_meta.update("TRENDING", True)
+
+    path = tmp_path / "model.pkl"
+    predictor.save_model(str(path))
+
+    restored = DualHorizonPredictor(model_path=str(path))
+    assert restored.drift_retrain_count == 3
+    prob, samples = restored._regime_meta.probability("TRENDING")
+    assert prob > 0.9
+    # Con decay 0.995, 25 updates dejan ~23 muestras efectivas.
+    assert samples >= 20
+
+
+def test_load_legacy_model_without_new_keys(tmp_path):
+    import pickle
+
+    legacy = {
+        "short_model": _ConstantModel(2.0),
+        "long_model": _ConstantModel(2.0),
+        "short_val_acc": 0.55,
+        "long_val_acc": 0.58,
+    }
+    path = tmp_path / "legacy.pkl"
+    with open(path, "wb") as f:
+        pickle.dump(legacy, f)
+
+    restored = DualHorizonPredictor(model_path=str(path))
+    assert restored.trained
+    assert restored.drift_retrain_count == 0
+    prob, samples = restored._regime_meta.probability("TRENDING")
+    assert prob == pytest.approx(0.5)
+    assert samples == 0.0
+
+
+def test_page_hinkley_cooldown_suppresses_post_retrain_echo():
+    drift = predictor_module.PageHinkleyDrift(
+        delta=0.05, threshold=12.0, min_samples=60, cooldown_evals=240
+    )
+    rng = np.random.default_rng(3)
+    for _ in range(300):
+        drift.update(3.0 + rng.normal(0, 0.3))
+
+    # Primer drift real.
+    fired = False
+    for _ in range(400):
+        if drift.update(9.0 + rng.normal(0, 0.5)):
+            fired = True
+            break
+    assert fired and drift.drift_count == 1
+
+    # Eco post-retrain: aunque sigan llegando errores altos del modelo viejo,
+    # el cooldown evita un segundo disparo inmediato.
+    refired = any(drift.update(9.0 + rng.normal(0, 0.5)) for _ in range(240))
+    assert refired is False
