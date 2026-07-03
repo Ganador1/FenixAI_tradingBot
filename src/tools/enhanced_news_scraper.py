@@ -200,8 +200,9 @@ class EnhancedNewsScraper:
         'cryptoslate': 'https://cryptoslate.com/feed/',
         'blockworks': 'https://blockworks.co/feed/',
         'beincrypto': 'https://beincrypto.com/feed/',
-        'coinmarketcap': 'https://coinmarketcap.com/headlines/rss/',
-        'theblock': 'https://www.theblock.co/rss.xml',
+        # coinmarketcap (404) y theblock (403) eliminados 2026-07-01; reemplazos:
+        'newsbtc': 'https://www.newsbtc.com/feed/',
+        'cryptopotato': 'https://cryptopotato.com/feed/',
         'bitcoinmagazine': 'https://bitcoinmagazine.com/.rss/full/',
         # Alternative/backup sources
         'cryptonews': 'https://cryptonews.com/news/feed/',
@@ -317,14 +318,12 @@ class EnhancedNewsScraper:
             response = self.http.get(url, timeout=self.request_timeout)
             response.raise_for_status()
             payload = response.content or getattr(response, "text", "")
-            feed = feedparser.parse(
-                payload,
-                request_headers=self.http.session.headers,
-                response_headers=getattr(response, "headers", None),
-            )
-            
-            if feed.get('bozo', False):
-                # Feed has errors
+            # No pasar response_headers: requests ya descomprimió el cuerpo y
+            # reenviar Content-Encoding hace que feedparser marque bozo en falso.
+            feed = feedparser.parse(payload)
+
+            if feed.get('bozo', False) and not feed.entries:
+                # Solo es un error real si no se pudo extraer ninguna entrada.
                 logger.warning(f"{source_name}: Feed parsing error")
             
             articles = []

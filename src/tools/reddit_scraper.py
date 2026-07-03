@@ -7,16 +7,29 @@ class BaseTool(BaseModel):
     description: str = ""
 
 import logging
+import os
+import time
 from typing import List, Dict, Optional
+
+import feedparser
+
 from src.config.mlx_models import get_agent_model
 
 logger = logging.getLogger(__name__)
+
+# Caché módulo-level: Reddit limita ~1 req/s por IP en RSS y el engine da un
+# presupuesto de 10s por fuente (FENIX_SENTIMENT_FETCH_TIMEOUT_SEC), así que
+# se reusan títulos recientes entre ciclos de análisis.
+_TITLE_CACHE: Dict[str, tuple[float, List[str]]] = {}
+# Último intento (éxito o no) por subreddit, para rotar de forma justa aunque
+# haya 429s repetidos.
+_LAST_ATTEMPT: Dict[str, float] = {}
 
 class RedditScraper(BaseTool):
     name: str = "RedditPostTitleScraper" # More descriptive name
     description: str = (
         "Extracts titles of the most recent posts from specified subreddits "
-        "using Reddit's public JSON API. Handles common request errors."
+        "using Reddit's public RSS feeds. Handles common request errors."
     )
 
     def __init__(self, **kwargs):
@@ -39,53 +52,94 @@ class RedditScraper(BaseTool):
             If a subreddit scrape fails, its list will be empty.
         """
         if subreddits is None:
-            subreddits = [
-                "CryptoCurrency", "bitcoin", "ethereum", "ethtrader",
-                "CryptoMarkets", "altcoin", "solana", "binance" # Diversified list
-            ]
+            # Lista corta de alta señal: con el rate limit de Reddit (~1 req/s en
+            # RSS) y el presupuesto de 10s del engine no caben 8 subreddits.
+            subreddits = ["CryptoCurrency", "bitcoin", "ethereum", "CryptoMarkets"]
         
-        # Standard browser user-agent to avoid potential blocks
+        # Reddit bloquea los endpoints JSON públicos (403 con HTML) desde ~2026;
+        # el feed RSS/Atom sigue abierto, así que se usa ese con feedparser.
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "FenixAI-sentiment/1.0 (crypto news aggregator)"
         }
         all_titles_by_subreddit: Dict[str, List[str]] = {}
-        request_timeout = 10 # seconds
+        request_timeout = 8 # seconds
+        try:
+            cache_ttl = float(os.getenv("FENIX_REDDIT_CACHE_TTL_SEC", "600"))
+        except ValueError:
+            cache_ttl = 600.0
+        try:
+            spacing = float(os.getenv("FENIX_REDDIT_REQUEST_SPACING_SEC", "2.5"))
+        except ValueError:
+            spacing = 2.5
+        try:
+            max_fetch = int(os.getenv("FENIX_REDDIT_MAX_FETCH_PER_CYCLE", "2"))
+        except ValueError:
+            max_fetch = 2
 
-        for sub in subreddits:
-            subreddit_name_cleaned = sub.strip().replace('r/', '') # Clean name
-            url = f"https://www.reddit.com/r/{subreddit_name_cleaned}/new.json?limit={limit_per_subreddit}"
+        def _cached_titles(sub_name: str, max_age: float) -> Optional[List[str]]:
+            entry = _TITLE_CACHE.get(sub_name)
+            if entry and (time.time() - entry[0]) < max_age:
+                return entry[1][:limit_per_subreddit]
+            return None
+
+        # Rotación: se fetchean como mucho `max_fetch` subreddits por llamada
+        # (los de caché más vieja primero); el resto sale de caché. Así cada
+        # llamada cabe en el presupuesto de 10s del engine y en ~2 ciclos
+        # todas las subs quedan calientes.
+        cleaned = [s.strip().replace('r/', '') for s in subreddits]
+        pending = [s for s in cleaned if _cached_titles(s, cache_ttl) is None]
+        pending.sort(key=lambda s: _LAST_ATTEMPT.get(s, 0.0))
+        to_fetch = set(pending[: max(0, max_fetch)])
+
+        made_request = False
+        for subreddit_name_cleaned in cleaned:
+            fresh = _cached_titles(subreddit_name_cleaned, cache_ttl)
+            if fresh is not None:
+                all_titles_by_subreddit[subreddit_name_cleaned] = fresh
+                continue
+            if subreddit_name_cleaned not in to_fetch:
+                all_titles_by_subreddit[subreddit_name_cleaned] = (
+                    _cached_titles(subreddit_name_cleaned, float("inf")) or []
+                )
+                continue
+
+            # Espaciar requests para no disparar el rate limit (429) de Reddit.
+            if made_request and spacing > 0:
+                time.sleep(spacing)
+
+            url = f"https://www.reddit.com/r/{subreddit_name_cleaned}/new/.rss"
             logger.info(f"[RedditScraper] Scraping /r/{subreddit_name_cleaned} for {limit_per_subreddit} new post titles.")
-            
+
             try:
+                made_request = True
+                _LAST_ATTEMPT[subreddit_name_cleaned] = time.time()
                 response = requests.get(url, headers=headers, timeout=request_timeout)
                 response.raise_for_status()  # Raise HTTPError for bad responses (4XX or 5XX)
-                
-                data = response.json()
-                posts = data.get("data", {}).get("children", [])
-                
-                titles = []
-                for post in posts:
-                    if "data" in post and "title" in post["data"]:
-                        titles.append(str(post["data"]["title"])) # Ensure string
-                
+
+                feed = feedparser.parse(response.content)
+                titles = [
+                    str(entry.get("title", "")).strip()
+                    for entry in feed.entries[:limit_per_subreddit]
+                    if entry.get("title")
+                ]
+
                 all_titles_by_subreddit[subreddit_name_cleaned] = titles
+                if titles:
+                    _TITLE_CACHE[subreddit_name_cleaned] = (time.time(), titles)
                 logger.debug(f"[RedditScraper] Found {len(titles)} titles for /r/{subreddit_name_cleaned}.")
 
             except requests.exceptions.Timeout:
                 logger.warning(f"[RedditScraper] Timeout connecting to Reddit for /r/{subreddit_name_cleaned}.")
-                all_titles_by_subreddit[subreddit_name_cleaned] = []
+                all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
             except requests.exceptions.HTTPError as http_err:
-                logger.warning(f"[RedditScraper] HTTP error {http_err.response.status_code} for /r/{subreddit_name_cleaned}: {http_err.response.text[:100]}")
-                all_titles_by_subreddit[subreddit_name_cleaned] = []
+                logger.warning(f"[RedditScraper] HTTP error {http_err.response.status_code} for /r/{subreddit_name_cleaned}")
+                all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
             except requests.exceptions.RequestException as req_err:
                 logger.warning(f"[RedditScraper] Request error for /r/{subreddit_name_cleaned}: {req_err}")
-                all_titles_by_subreddit[subreddit_name_cleaned] = []
-            except ValueError as json_err: # Includes json.JSONDecodeError
-                logger.warning(f"[RedditScraper] Error decoding JSON from Reddit for /r/{subreddit_name_cleaned}: {json_err}")
-                all_titles_by_subreddit[subreddit_name_cleaned] = []
+                all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
             except Exception as e:
                 logger.error(f"[RedditScraper] Unexpected error scraping /r/{subreddit_name_cleaned}: {e}", exc_info=True)
-                all_titles_by_subreddit[subreddit_name_cleaned] = []
+                all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
         
         total_titles_scraped = sum(len(t) for t in all_titles_by_subreddit.values())
         logger.info(f"[RedditScraper] Reddit scraping complete. Total titles fetched: {total_titles_scraped}")

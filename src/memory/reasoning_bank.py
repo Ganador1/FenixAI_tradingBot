@@ -222,6 +222,7 @@ class ReasoningBank:
                 normalized_result.get("final_decision")
                 or normalized_result.get("signal")
                 or normalized_result.get("decision")
+                or normalized_result.get("overall_sentiment")  # sentiment agent
                 or "UNKNOWN"
             )
         confidence_value = normalized_result.get("confidence")
