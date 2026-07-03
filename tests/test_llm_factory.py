@@ -4,6 +4,7 @@ import types
 from src.core.orchestrator.llm_factory import LLMFactory
 from src.config.llm_provider_config import AgentProviderConfig, LLMProvidersConfig
 from src.prompts.agent_prompts import get_system_prompt, format_prompt
+from src.core.orchestrator.llm_factory import _MLXChatAdapter
 
 
 class _FakeChatOllama:
@@ -140,3 +141,26 @@ def test_risk_manager_prompt_drops_btc_anchored_example_levels():
     assert "86000.00" not in system_prompt
     assert "Reference Entry Price: 2263.10" in messages[1]["content"]
     assert "Do not copy example values from prior prompts or other assets" in messages[1]["content"]
+
+
+def test_visual_prompt_formats_literal_json_example():
+    messages = format_prompt(
+        "visual_analyst",
+        symbol="ETHUSDC",
+        timeframe="15m",
+        candle_count=50,
+        visible_indicators="EMA 9/21, Bollinger Bands, SuperTrend",
+        current_price="2500.00",
+        price_range="2450.00-2550.00",
+    )
+
+    assert messages is not None
+    assert messages[1]["content"].startswith("Analyze the chart for ETHUSDC on 15m timeframe.")
+    assert '{"action":"BUY|SELL|HOLD"' in messages[1]["content"]
+
+
+def test_mlx_vision_adapter_honors_ollama_host_when_base_url_absent(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+
+    assert _MLXChatAdapter._resolve_ollama_base_url() == "http://host.docker.internal:11434"

@@ -177,7 +177,15 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
         },
     },
     "visual_analyst": {
-        "required_fields": ["action", "confidence", "trend_direction"],
+        "required_fields": ["action", "confidence"],
+        "optional_fields": [
+            "trend",
+            "pattern",
+            "analysis",
+            "trend_direction",
+            "pattern_identified",
+            "visual_analysis",
+        ],
         "valid_actions": ["BUY", "SELL", "HOLD"],
         "valid_trends": ["bullish", "bearish", "neutral"],
         "confidence_range": (0.0, 1.0),
@@ -185,8 +193,13 @@ AGENT_VALIDATION_RULES: dict[str, dict[str, Any]] = {
         "field_types": {
             "action": str,
             "confidence": (int, float),
+            "trend": str,
+            "pattern": str,
+            "analysis": str,
+            # Backward-compatible aliases
             "trend_direction": str,
             "pattern_identified": str,
+            "visual_analysis": str,
         },
     },
     "qabba_analyst": {
@@ -375,13 +388,25 @@ def validate_agent_response(agent_type: str, response: dict[str, Any]) -> list[s
                 f"Must be one of: {valid_flows}"
             )
 
-    if agent_type == "visual_analyst" and "trend_direction" in response:
-        valid_trends = rules.get("valid_trends", [])
-        if response["trend_direction"] not in valid_trends:
-            errors.append(
-                f"Invalid 'trend_direction': '{response['trend_direction']}'. "
-                f"Must be one of: {valid_trends}"
-            )
+    if agent_type == "visual_analyst":
+        # Support both new field name "trend" and legacy "trend_direction"
+        trend_val = response.get("trend") or response.get("trend_direction")
+        if trend_val:
+            valid_trends = rules.get("valid_trends", [])
+            if trend_val not in valid_trends:
+                errors.append(f"Invalid trend: '{trend_val}'. Must be one of: {valid_trends}")
+        # Normalize: ensure both fields exist for downstream code
+        if "trend" in response and "trend_direction" not in response:
+            response["trend_direction"] = response["trend"]
+        if "pattern" in response and "pattern_identified" not in response:
+            response["pattern_identified"] = response["pattern"]
+        if "analysis" in response and "visual_analysis" not in response:
+            response["visual_analysis"] = response["analysis"]
+        # Map 'reason' to 'visual_analysis' if the LLM used the old field name
+        if "reason" in response and "visual_analysis" not in response:
+            response["visual_analysis"] = response["reason"]
+        if "reason" in response and "analysis" not in response:
+            response["analysis"] = response["reason"]
 
     return errors
 
@@ -960,6 +985,7 @@ class FenixAgentState(TypedDict, total=False):
 
     # Generated Chart
     chart_image_b64: str | None
+    chart_candles_count: int
     chart_indicators_summary: dict[str, Any]
 
     # News data for sentiment agent
@@ -1119,18 +1145,26 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
 
         try:
             # Build news summary from state news_data
+            # SECURITY: Sanitize external content to prevent prompt injection
+            from src.security.prompt_sanitizer import sanitize_news_items, sanitize_external_content
+
             news_list = state.get("news_data", [])
             if news_list:
+                safe_news = sanitize_news_items(news_list[:5])
                 news_items = [
                     f"- [{n.get('source', 'N/A')}] {n.get('title', 'Untitled')}: {n.get('summary', '')[:100]}..."
-                    for n in news_list[:5]
+                    for n in safe_news
                 ]
                 news_summary = "\n".join(news_items)
             else:
                 news_summary = "No recent news available"
 
-            social_data_json = json.dumps(
-                state.get("social_data", {}), ensure_ascii=False, indent=2
+            # Sanitize social data before passing to LLM
+            raw_social = state.get("social_data", {})
+            social_data_json = json.dumps(raw_social, ensure_ascii=False, indent=2)
+            # Wrap the entire social data block as untrusted content
+            social_data_json = sanitize_external_content(
+                social_data_json, source="social_media", max_length=3000
             )
             fg_value = str(state.get("fear_greed_value", "N/A"))
 
@@ -1225,6 +1259,38 @@ def create_sentiment_agent_node(llm: Any, reasoning_bank: Any = None):
     return traced_sentiment_node
 
 
+_VISIBLE_CHART_SUMMARY_KEYS = (
+    "price",
+    "ema_9",
+    "ema_21",
+    "ema_50",
+    "bollinger",
+    "vwap",
+    "supertrend",
+    "pivots",
+)
+
+
+def _format_visual_indicator_values(summary: Any) -> str:
+    """Formats numeric chart values that correspond to visible chart overlays."""
+    if not isinstance(summary, dict) or not summary:
+        return "Not available"
+
+    filtered = {key: summary[key] for key in _VISIBLE_CHART_SUMMARY_KEYS if key in summary}
+    if not filtered:
+        return "Not available"
+
+    return json.dumps(filtered, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _get_visual_candle_count(state: FenixAgentState, default: int) -> int:
+    try:
+        value = int(state.get("chart_candles_count") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
     """Creates the visual agent node with retry and validation system."""
 
@@ -1258,8 +1324,13 @@ def create_visual_agent_node(llm: Any, reasoning_bank: Any = None):
                 "visual_analyst",
                 symbol=state.get("symbol", "BTCUSDT"),
                 timeframe=state.get("timeframe", "15m"),
-                candle_count=50,
-                visible_indicators="EMA 9/21, Bollinger Bands, SuperTrend",
+                candle_count=_get_visual_candle_count(state, 60),
+                visible_indicators=(
+                    "EMA 9/21/50, Bollinger Bands, SuperTrend, " "VWAP, Pivot Levels (S/R), Volume"
+                ),
+                indicator_values=_format_visual_indicator_values(
+                    state.get("chart_indicators_summary")
+                ),
                 current_price=str(state.get("current_price", "N/A")),
                 price_range="N/A",
             )
@@ -1865,10 +1936,11 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             if errors:
                 report["_validation_errors"] = errors
 
-            if dynamic_risk_levels:
-                report["dynamic_risk_levels"] = dynamic_risk_levels.to_dict()
-                order_details = dict(report.get("order_details") or {})
-                if not _has_usable_order_details(order_details, proposed_action, entry_price):
+            # Always ensure usable order_details — many heavy models (glm-5.2,
+            # deepseek-v4-pro, kimi) return approved_size=0 or missing fields.
+            order_details = dict(report.get("order_details") or {})
+            if not _has_usable_order_details(order_details, proposed_action, entry_price):
+                if dynamic_risk_levels:
                     logger.warning(
                         "risk_manager returned unusable order_details for %s %s at %.8f; "
                         "using deterministic ATR levels",
@@ -1880,6 +1952,41 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
                         dynamic_risk_levels, entry_price
                     )
                     report["_order_details_fallback"] = True
+                else:
+                    # Last-resort synthetic levels from entry price if no ATR data
+                    if entry_price > 0 and proposed_action in ("BUY", "SELL"):
+                        sl_pct = 0.02
+                        tp_pct = 0.04
+                        if proposed_action == "BUY":
+                            sl = entry_price * (1 - sl_pct)
+                            tp = entry_price * (1 + tp_pct)
+                        else:
+                            sl = entry_price * (1 + sl_pct)
+                            tp = entry_price * (1 - tp_pct)
+                        fallback_balance = float(
+                            state.get("account_balance_usdt")
+                            or os.getenv("FENIX_BALANCE_FALLBACK_USDT", "100")
+                            or 100
+                        )
+                        approved = fallback_balance * 0.02
+                        report["order_details"] = {
+                            "approved_size": approved,
+                            "stop_loss": sl,
+                            "take_profit": tp,
+                            "max_loss_usd": approved * sl_pct,
+                        }
+                        report["_order_details_fallback"] = True
+                        report["_order_details_synthetic"] = True
+                        logger.warning(
+                            "risk_manager returned unusable order_details and no ATR levels; "
+                            "using synthetic 2%% SL / 4%% TP for %s %s @ %.8f",
+                            state.get("symbol", "UNKNOWN"),
+                            proposed_action,
+                            entry_price,
+                        )
+
+            if dynamic_risk_levels:
+                report["dynamic_risk_levels"] = dynamic_risk_levels.to_dict()
 
             # Store in ReasoningBank
             if reasoning_bank and REASONING_BANK_AVAILABLE:
@@ -2040,6 +2147,8 @@ class FenixTradingGraph:
         orderbook_depth: dict[str, float] | None = None,
         mtf_context: dict[str, Any] | None = None,
         chart_image_b64: str | None = None,
+        chart_candles_count: int | None = None,
+        chart_indicators_summary: dict[str, Any] | None = None,
         news_data: list[dict[str, Any]] | None = None,
         social_data: dict[str, Any] | None = None,
         fear_greed_value: str | None = None,
@@ -2061,6 +2170,8 @@ class FenixTradingGraph:
             orderbook_depth: Order book depth
             mtf_context: Multi-timeframe context
             chart_image_b64: Chart image in base64
+            chart_candles_count: Number of candles rendered in the chart
+            chart_indicators_summary: Numeric values for visible chart indicators
             thread_id: Thread ID for persistence
             social_data: Dictionary with Twitter/Reddit posts or other social data
             fear_greed_value: Fear & Greed Index value (string)
@@ -2081,6 +2192,8 @@ class FenixTradingGraph:
             "orderbook_depth": orderbook_depth or {},
             "mtf_context": mtf_context or {},
             "chart_image_b64": chart_image_b64,
+            "chart_candles_count": chart_candles_count or 0,
+            "chart_indicators_summary": chart_indicators_summary or {},
             "news_data": news_data or [],
             "social_data": social_data or {},
             "fear_greed_value": fear_greed_value or "N/A",
