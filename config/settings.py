@@ -54,6 +54,13 @@ class AgentSettings:
     consensus_threshold: float = 0.65
     min_confidence_to_trade: str = "MEDIUM"  # LOW, MEDIUM, HIGH
 
+    # Sentiment (v2.1)
+    sentiment_timeout_short: int = 8
+    sentiment_cache_ttl: int = 900
+
+    # Trailing stop (v2.1)
+    trailing_stop_escalated: bool = True
+
 
 @dataclass
 class LLMSettings:
@@ -153,26 +160,43 @@ class FenixConfig:
     
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FenixConfig":
-        """Carga configuración desde diccionario."""
+        """Carga configuración desde diccionario.
+
+        Las claves desconocidas se ignoran (con warning) para que añadir
+        campos nuevos a fenix.yaml no rompa la carga con TypeError.
+        """
+        import dataclasses
+
+        def _build(section_cls: type, section_data: dict[str, Any], section_name: str) -> Any:
+            valid = {f.name for f in dataclasses.fields(section_cls)}
+            unknown = set(section_data) - valid
+            if unknown:
+                logger.warning(
+                    "Ignorando claves desconocidas en sección '%s': %s",
+                    section_name,
+                    sorted(unknown),
+                )
+            return section_cls(**{k: v for k, v in section_data.items() if k in valid})
+
         config = cls()
-        
+
         if "trading" in data:
-            config.trading = TradingSettings(**data["trading"])
+            config.trading = _build(TradingSettings, data["trading"], "trading")
         if "agents" in data:
-            config.agents = AgentSettings(**data["agents"])
+            config.agents = _build(AgentSettings, data["agents"], "agents")
         if "llm" in data:
-            config.llm = LLMSettings(**data["llm"])
+            config.llm = _build(LLMSettings, data["llm"], "llm")
         if "binance" in data:
-            config.binance = BinanceSettings(**data["binance"])
+            config.binance = _build(BinanceSettings, data["binance"], "binance")
         if "logging" in data:
-            config.logging = LoggingSettings(**data["logging"])
+            config.logging = _build(LoggingSettings, data["logging"], "logging")
         if "monitoring" in data:
-            config.monitoring = MonitoringSettings(**data["monitoring"])
+            config.monitoring = _build(MonitoringSettings, data["monitoring"], "monitoring")
         if "resilience" in data:
-            config.resilience = ResilienceSettings(**data["resilience"])
+            config.resilience = _build(ResilienceSettings, data["resilience"], "resilience")
         if "system" in data:
-            config.system = SystemSettings(**data["system"])
-        
+            config.system = _build(SystemSettings, data["system"], "system")
+
         return config
     
     @classmethod

@@ -113,11 +113,17 @@ def should_load_legacy() -> bool:
 
     # Evitar importar settings si no es necesario (reduce circular imports)
     try:
-        from src.config.settings import get_config
+        # El módulo real es config/settings.py en la raíz del repo
+        # (src.config.settings no existe).
+        from config.settings import get_config
 
         cfg = get_config()
-        return getattr(cfg, "system", None) and getattr(cfg.system, "enable_legacy_systems", False)
-    except Exception:
+        return bool(
+            getattr(cfg, "system", None)
+            and getattr(cfg.system, "enable_legacy_systems", False)
+        )
+    except Exception as e:
+        logger.debug("should_load_legacy: no se pudo cargar config: %s", e)
         return False
 
 
