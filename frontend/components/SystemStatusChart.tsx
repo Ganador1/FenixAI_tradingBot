@@ -19,19 +19,19 @@ export function SystemStatusChart() {
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div className="text-center">
-          <div className="text-2xl font-bold text-blue-600">62%</div>
+          <div className="text-2xl font-bold text-blue-600">{metrics ? `${metrics.cpu.toFixed(0)}%` : '—'}</div>
           <div className="text-sm text-gray-600">CPU Usage</div>
         </div>
         <div className="text-center">
-          <div className="text-2xl font-bold text-green-600">72%</div>
+          <div className="text-2xl font-bold text-green-600">{metrics ? `${metrics.memory.toFixed(0)}%` : '—'}</div>
           <div className="text-sm text-gray-600">Memory</div>
         </div>
         <div className="text-center">
-          <div className="text-2xl font-bold text-purple-600">45%</div>
+          <div className="text-2xl font-bold text-purple-600">{metrics ? `${metrics.disk.toFixed(0)}%` : '—'}</div>
           <div className="text-sm text-gray-600">Disk</div>
         </div>
         <div className="text-center">
-          <div className="text-2xl font-bold text-orange-600">40%</div>
+          <div className="text-2xl font-bold text-orange-600">{metrics ? `${(metrics.network / (1024 * 1024)).toFixed(0)}MB` : '—'}</div>
           <div className="text-sm text-gray-600">Network</div>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
+import { getSocket, releaseSocket } from '../lib/socket';
 
 export interface Agent {
   id: string;
@@ -64,6 +65,14 @@ export interface AgentState {
   clearError: () => void;
 }
 
+// Handlers de este store sobre el socket compartido (ver lib/socket.ts).
+let socketHandlers: {
+  onConnect: () => void;
+  onReasoning: (data: ReasoningEntry) => void;
+  onAgentOutput: (data: ReasoningEntry) => void;
+  onScorecard: (data: Scorecard) => void;
+} | null = null;
+
 export const useAgentStore = create<AgentState>()((set, get) => ({
   agents: [],
   reasoningLogs: [],
@@ -76,41 +85,49 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     const { socket } = get();
     if (socket) return;
 
-    const newSocket = io(window.location.origin, {
-      path: '/socket.io',
-      transports: ['websocket', 'polling']
-    });
+    // Socket compartido con systemStore (ver lib/socket.ts).
+    const newSocket = getSocket();
 
-    newSocket.on('connect', () => {
+    const onConnect = () => {
       console.log('Connected to agent service');
       newSocket.emit('subscribe:agents');
-    });
-
-    newSocket.on('agent:reasoning', (data: ReasoningEntry) => {
-      set(state => ({ 
+    };
+    const onReasoning = (data: ReasoningEntry) => {
+      set(state => ({
         reasoningLogs: [data, ...state.reasoningLogs.slice(0, 99)] // Keep last 100 entries
       }));
-    });
-
-    newSocket.on('agentOutput', (data: ReasoningEntry) => {
+    };
+    const onAgentOutput = (data: ReasoningEntry) => {
       set(state => ({
         reasoningLogs: [data, ...state.reasoningLogs.slice(0, 99)]
       }));
-    });
-
-    newSocket.on('agent:scorecard', (data: Scorecard) => {
-      set(state => ({ 
+    };
+    const onScorecard = (data: Scorecard) => {
+      set(state => ({
         scorecards: [data, ...state.scorecards.slice(0, 49)] // Keep last 50 scorecards
       }));
-    });
+    };
 
+    // Si ya está conectado (systemStore lo abrió primero) suscribimos ya.
+    if (newSocket.connected) onConnect();
+    newSocket.on('connect', onConnect);
+    newSocket.on('agent:reasoning', onReasoning);
+    newSocket.on('agentOutput', onAgentOutput);
+    newSocket.on('agent:scorecard', onScorecard);
+
+    socketHandlers = { onConnect, onReasoning, onAgentOutput, onScorecard };
     set({ socket: newSocket });
   },
 
   disconnectSocket: () => {
     const { socket } = get();
-    if (socket) {
-      socket.disconnect();
+    if (socket && socketHandlers) {
+      socket.off('connect', socketHandlers.onConnect);
+      socket.off('agent:reasoning', socketHandlers.onReasoning);
+      socket.off('agentOutput', socketHandlers.onAgentOutput);
+      socket.off('agent:scorecard', socketHandlers.onScorecard);
+      socketHandlers = null;
+      releaseSocket();
       set({ socket: null });
     }
   },

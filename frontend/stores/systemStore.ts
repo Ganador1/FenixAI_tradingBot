@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
+import { getSocket, releaseSocket } from '../lib/socket';
 
 export interface SystemMetrics {
   cpu: number;
@@ -55,6 +56,15 @@ export interface SystemState {
   clearError: () => void;
 }
 
+// Handlers registrados por este store sobre el socket compartido; se guardan
+// a nivel de módulo para poder retirarlos exactamente al desconectar.
+let socketHandlers: {
+  onConnect: () => void;
+  onMetrics: (data: { summary: SystemMetrics } | SystemMetrics) => void;
+  onAlert: (alert: SystemAlert) => void;
+  onConnection: (payload: ConnectionStatus[] | { connections: ConnectionStatus[] }) => void;
+} | null = null;
+
 export const useSystemStore = create<SystemState>()((set, get) => ({
   metrics: null,
   alerts: [],
@@ -68,39 +78,51 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     const { socket } = get();
     if (socket) return;
 
-    const newSocket = io(window.location.origin, {
-      path: '/socket.io',
-      transports: ['websocket', 'polling']
-    });
+    // Socket compartido (ver lib/socket.ts). Guardamos referencias con nombre
+    // a cada handler para poder retirar SOLO los de este store al desconectar
+    // (un `off('connect')` a secas borraría también los de agentStore).
+    const newSocket = getSocket();
 
-    newSocket.on('connect', () => {
+    const onConnect = () => {
       console.log('Connected to server');
       newSocket.emit('subscribe:system');
-    });
-
-    newSocket.on('system:metrics', (data: { summary: SystemMetrics } | SystemMetrics) => {
+    };
+    const onMetrics = (data: { summary: SystemMetrics } | SystemMetrics) => {
       const summary = (data as { summary: SystemMetrics }).summary || (data as SystemMetrics);
       set({ metrics: summary });
-    });
-
-    newSocket.on('system:alert', (alert: SystemAlert) => {
-      set(state => ({ 
+    };
+    const onAlert = (alert: SystemAlert) => {
+      set(state => ({
         alerts: [alert, ...state.alerts.slice(0, 49)] // Keep last 50 alerts
       }));
-    });
-
-    newSocket.on('system:connection', (payload: ConnectionStatus[] | { connections: ConnectionStatus[] }) => {
+    };
+    const onConnection = (payload: ConnectionStatus[] | { connections: ConnectionStatus[] }) => {
       const connections = (payload as { connections: ConnectionStatus[] }).connections || (payload as ConnectionStatus[]) || [];
       set({ connections });
-    });
+    };
 
+    // Si ya está conectado (otro consumidor lo abrió primero) suscribimos ya.
+    if (newSocket.connected) onConnect();
+    newSocket.on('connect', onConnect);
+    newSocket.on('system:metrics', onMetrics);
+    newSocket.on('system:alert', onAlert);
+    newSocket.on('system:connection', onConnection);
+
+    socketHandlers = { onConnect, onMetrics, onAlert, onConnection };
     set({ socket: newSocket });
   },
 
   disconnectSocket: () => {
     const { socket } = get();
-    if (socket) {
-      socket.disconnect();
+    if (socket && socketHandlers) {
+      // Solo retira los handlers de este store; la conexión se cierra cuando
+      // el último consumidor la libera (reference counting en lib/socket.ts).
+      socket.off('connect', socketHandlers.onConnect);
+      socket.off('system:metrics', socketHandlers.onMetrics);
+      socket.off('system:alert', socketHandlers.onAlert);
+      socket.off('system:connection', socketHandlers.onConnection);
+      socketHandlers = null;
+      releaseSocket();
       set({ socket: null });
     }
   },

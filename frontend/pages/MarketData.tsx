@@ -231,15 +231,17 @@ export const MarketData: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Volatility Index</CardTitle>
-            <p className="text-sm text-gray-500">Market volatility measure</p>
+            <CardTitle>24h Change</CardTitle>
+            <p className="text-sm text-gray-500">{marketSnapshot?.symbol || '—'} price change</p>
           </CardHeader>
           <CardContent>
             <div className="text-center py-8">
-              <div className="text-4xl font-bold text-yellow-600 mb-2">24.5</div>
-              <div className="text-sm text-gray-600">Moderate Volatility</div>
-              <div className="mt-4 bg-yellow-100 rounded-full h-2">
-                <div className="bg-yellow-500 h-2 rounded-full w-3/5"></div>
+              <div className={`text-4xl font-bold mb-2 ${(marketSnapshot?.change_24h ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {(marketSnapshot?.change_24h ?? 0).toFixed(2)}%
+              </div>
+              <div className="text-sm text-gray-600">{(marketSnapshot?.change_24h ?? 0) >= 0 ? 'Bullish' : 'Bearish'}</div>
+              <div className={`mt-4 rounded-full h-2 ${(marketSnapshot?.change_24h ?? 0) >= 0 ? 'bg-green-100' : 'bg-red-100'}`}>
+                <div className={`h-2 rounded-full ${Math.abs(marketSnapshot?.change_24h ?? 0) > 5 ? 'w-full' : 'w-1/2'}`} style={{ backgroundColor: (marketSnapshot?.change_24h ?? 0) >= 0 ? '#10b981' : '#ef4444' }}></div>
               </div>
             </div>
           </CardContent>
@@ -247,38 +249,28 @@ export const MarketData: React.FC = () => {
 
         <Card>
           <CardHeader>
-            <CardTitle>Market Cap</CardTitle>
-            <p className="text-sm text-gray-500">Total market capitalization</p>
+            <CardTitle>Current Price</CardTitle>
+            <p className="text-sm text-gray-500">{marketSnapshot?.symbol || '—'} latest price</p>
           </CardHeader>
           <CardContent>
             <div className="text-center py-8">
-              <div className="text-4xl font-bold text-blue-600 mb-2">$1.2T</div>
-              <div className="text-sm text-gray-600">+5.2% (24h)</div>
-              <div className="mt-4 text-xs text-gray-500">
-                Bitcoin: $845B (70.4%)
-                <br />
-                Ethereum: $318B (26.5%)
-                <br />
-                Others: $37B (3.1%)
-              </div>
+              <div className="text-4xl font-bold text-blue-600 mb-2">{marketSnapshot ? formatPrice(marketSnapshot.price) : 'N/A'}</div>
+              <div className="text-sm text-gray-600">{marketSnapshot?.symbol}</div>
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Trading Volume</CardTitle>
-            <p className="text-sm text-gray-500">24h trading volume</p>
+            <CardTitle>24h Volume</CardTitle>
+            <p className="text-sm text-gray-500">Trading volume (24h)</p>
           </CardHeader>
           <CardContent>
             <div className="text-center py-8">
-              <div className="text-4xl font-bold text-green-600 mb-2">$89.2B</div>
-              <div className="text-sm text-gray-600">+12.8% (24h)</div>
-              <div className="mt-4 text-xs text-gray-500">
-                Spot: $67.3B (75.4%)
-                <br />
-                Derivatives: $21.9B (24.6%)
+              <div className="text-4xl font-bold text-green-600 mb-2">
+                {marketSnapshot ? `$${(marketSnapshot.quote_volume_24h / 1e9).toFixed(2)}B` : 'N/A'}
               </div>
+              <div className="text-sm text-gray-600">{marketSnapshot ? `${marketSnapshot.volume_24h.toLocaleString()} contracts` : '—'}</div>
             </div>
           </CardContent>
         </Card>
@@ -288,66 +280,39 @@ export const MarketData: React.FC = () => {
       <Card>
         <CardHeader>
           <CardTitle>Market News & Analysis</CardTitle>
-          <p className="text-sm text-gray-500">Latest market insights</p>
+          <p className="text-sm text-gray-500">Latest market insights from sentiment agent</p>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <h4 className="font-semibold text-blue-900 mb-1">
-                    Bitcoin ETF Approval Impact
-                  </h4>
-                  <p className="text-sm text-blue-700 mb-2">
-                    Bitcoin price surges following positive ETF news and institutional adoption.
-                  </p>
-                  <div className="flex items-center space-x-4 text-xs text-blue-600">
-                    <span>2 hours ago</span>
-                    <span>Sentiment: Positive</span>
-                    <span>Impact: High</span>
+            {marketSnapshot ? (
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-blue-900 mb-1">
+                      {marketSnapshot.symbol} Market Update
+                    </h4>
+                    <p className="text-sm text-blue-700 mb-2">
+                      Current price: {formatPrice(marketSnapshot.price)} ({(marketSnapshot.change_24h >= 0 ? '+' : '')}{marketSnapshot.change_24h.toFixed(2)}% 24h change).
+                      Volume: ${(marketSnapshot.quote_volume_24h / 1e6).toFixed(1)}M
+                    </p>
+                    <div className="flex items-center space-x-4 text-xs text-blue-600">
+                      <span>Real-time data from Binance</span>
+                      <span>Sentiment: {sentiment.length > 0 ? `${sentiment[0].value} bullish / ${sentiment[1]?.value || 0} bearish / ${sentiment[2]?.value || 0} neutral` : 'Loading...'}</span>
+                    </div>
+                  </div>
+                  <div className={`font-semibold ${marketSnapshot.change_24h >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {marketSnapshot.change_24h >= 0 ? '+' : ''}{marketSnapshot.change_24h.toFixed(2)}%
                   </div>
                 </div>
-                <div className="text-blue-600 font-semibold">+5.2%</div>
               </div>
-            </div>
-
-            <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <h4 className="font-semibold text-green-900 mb-1">
-                    Ethereum Network Upgrade
-                  </h4>
-                  <p className="text-sm text-green-700 mb-2">
-                    Ethereum 2.0 staking rewards increase as network activity grows.
-                  </p>
-                  <div className="flex items-center space-x-4 text-xs text-green-600">
-                    <span>4 hours ago</span>
-                    <span>Sentiment: Positive</span>
-                    <span>Impact: Medium</span>
-                  </div>
-                </div>
-                <div className="text-green-600 font-semibold">+3.1%</div>
+            ) : (
+              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 text-center">
+                <p className="text-sm text-gray-500">Waiting for market data...</p>
               </div>
-            </div>
-
-            <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-200">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <h4 className="font-semibold text-yellow-900 mb-1">
-                    Regulatory Developments
-                  </h4>
-                  <p className="text-sm text-yellow-700 mb-2">
-                    New regulatory framework proposed for cryptocurrency trading platforms.
-                  </p>
-                  <div className="flex items-center space-x-4 text-xs text-yellow-700">
-                    <span>6 hours ago</span>
-                    <span>Sentiment: Neutral</span>
-                    <span>Impact: Low</span>
-                  </div>
-                </div>
-                <div className="text-yellow-600 font-semibold">-1.2%</div>
-              </div>
-            </div>
+            )}
+            <p className="text-xs text-gray-400 text-center">
+              Live news updates are delivered via WebSocket from the sentiment agent during trading cycles.
+            </p>
           </div>
         </CardContent>
       </Card>

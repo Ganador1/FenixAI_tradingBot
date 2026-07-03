@@ -54,14 +54,14 @@ export const ReasoningBank: React.FC = () => {
     fetchReasoningBankData();
     
     if (socket) {
-      socket.on('reasoningUpdate', handleReasoningUpdate);
-      socket.on('consensusUpdate', handleConsensusUpdate);
+      socket.on('agent:reasoning', handleReasoningUpdate);
+      socket.on('trade:signal', handleConsensusUpdate);
     }
 
     return () => {
       if (socket) {
-        socket.off('reasoningUpdate', handleReasoningUpdate);
-        socket.off('consensusUpdate', handleConsensusUpdate);
+        socket.off('agent:reasoning', handleReasoningUpdate);
+        socket.off('trade:signal', handleConsensusUpdate);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,9 +94,9 @@ export const ReasoningBank: React.FC = () => {
     }
   };
 
-  const handleReasoningUpdate = (entry: ReasoningEntry) => {
-    // This would be handled by the agent store
-    console.log('Reasoning update:', entry);
+  const handleReasoningUpdate = () => {
+    // New reasoning entry from WebSocket — refresh data
+    fetchReasoningBankData();
   };
 
   const handleConsensusUpdate = (consensusData: AgentConsensus[]) => {

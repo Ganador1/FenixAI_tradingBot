@@ -218,6 +218,9 @@ export const SystemMonitor: React.FC = () => {
     }
   };
 
+  // Latest detailed metrics from history (has cpu.cores, memory.total, etc.)
+  const latestMetrics = metricsHistory.length > 0 ? metricsHistory[metricsHistory.length - 1] : null;
+
   const prepareCPUChartData = () => {
     return metricsHistory.map(metric => ({
       timestamp: new Date(metric.timestamp).toLocaleTimeString(),
@@ -623,31 +626,29 @@ export const SystemMonitor: React.FC = () => {
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span className="text-sm font-medium text-gray-600">Process Version:</span>
-                <span className="text-sm">System v1.0.0</span>
+                <span className="text-sm">{latestMetrics?.process?.version || 'N/A'}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-sm font-medium text-gray-600">Node.js Version:</span>
-                <span className="text-sm">v18.0.0</span>
+                <span className="text-sm font-medium text-gray-600">Python Version:</span>
+                <span className="text-sm">{latestMetrics?.process?.node_version || 'N/A'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm font-medium text-gray-600">CPU Cores:</span>
-                <span className="text-sm">4 Cores</span>
+                <span className="text-sm">{latestMetrics?.cpu?.cores || 'N/A'} Cores</span>
               </div>
             </div>
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span className="text-sm font-medium text-gray-600">Total Memory:</span>
-                <span className="text-sm">8 GB</span>
+                <span className="text-sm">{latestMetrics ? (latestMetrics.memory.total / (1024 ** 3)).toFixed(1) + ' GB' : 'N/A'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm font-medium text-gray-600">Total Disk:</span>
-                <span className="text-sm">100 GB</span>
+                <span className="text-sm">{latestMetrics ? (latestMetrics.disk.total / (1024 ** 3)).toFixed(1) + ' GB' : 'N/A'}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-sm font-medium text-gray-600">Network I/O:</span>
-                <span className="text-sm">
-                  {currentMetrics.network.toFixed(1)}%
-                </span>
+                <span className="text-sm font-medium text-gray-600">Uptime:</span>
+                <span className="text-sm">{latestMetrics ? formatUptime(latestMetrics.process.uptime) : 'N/A'}</span>
               </div>
             </div>
           </div>

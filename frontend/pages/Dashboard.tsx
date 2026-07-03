@@ -35,7 +35,7 @@ interface MarketPrice {
 }
 
 export function Dashboard() {
-  const { metrics, alerts } = useSystemStore();
+  const { metrics, alerts, engineConfig, fetchSystemStatus, fetchEngineConfig } = useSystemStore();
   const { agents, scorecards, fetchAgents, fetchScorecards } = useAgentStore();
 
   // Real data states
@@ -54,6 +54,8 @@ export function Dashboard() {
     fetchDashboardData();
     fetchAgents();
     fetchScorecards();
+    fetchSystemStatus();
+    fetchEngineConfig();
 
     // Anime.js entry animation
     animate('.animate-card', {
@@ -66,7 +68,10 @@ export function Dashboard() {
     });
 
     // Refresh every 30 seconds
-    const interval = setInterval(fetchDashboardData, 30000);
+    const interval = setInterval(() => {
+      fetchDashboardData();
+      fetchSystemStatus();
+    }, 30000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -75,24 +80,34 @@ export function Dashboard() {
     try {
       setIsLoading(true);
 
-      // Fetch positions to calculate portfolio value
-      const [positionsRes, marketRes] = await Promise.all([
+      // Fetch positions AND real balance from Binance
+      const [positionsRes, marketRes, balanceRes] = await Promise.all([
         fetch('/api/trading/positions'),
-        fetch('/api/trading/market')
+        fetch('/api/trading/market'),
+        fetch('/api/trading/balance')
       ]);
+
+      // Get real account balance from Binance
+      let realBalance = 0;
+      if (balanceRes.ok) {
+        const balanceData = await balanceRes.json();
+        realBalance = balanceData.total_usdt || 0;
+      }
 
       if (positionsRes.ok) {
         const posData = await positionsRes.json();
         const positions = posData.positions || [];
 
-        // Calculate portfolio metrics from positions
-        const totalValue = positions.reduce((sum: number, pos: Record<string, unknown>) => {
+        // Calculate portfolio metrics from real balance + positions
+        const positionsValue = positions.reduce((sum: number, pos: Record<string, unknown>) => {
           return sum + ((pos.quantity as number) * (pos.current_price as number));
-        }, 10000); // Base balance of 10000
+        }, 0);
 
         const unrealizedPnl = positions.reduce((sum: number, pos: Record<string, unknown>) => {
           return sum + ((pos.unrealized_pnl as number) || 0);
         }, 0);
+
+        const totalValue = realBalance + positionsValue;
 
         setPortfolio({
           totalValue,
@@ -150,6 +165,37 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Trading Mode Banner */}
+      {engineConfig && (
+        <div className={`rounded-2xl p-4 border shadow-sm flex items-center justify-between ${
+          engineConfig.paper_trading
+            ? 'bg-amber-50 border-amber-200'
+            : 'bg-red-50 border-red-300'
+        }`}>
+          <div className="flex items-center space-x-3">
+            <div className={`px-3 py-1 rounded-full text-sm font-bold uppercase tracking-wider ${
+              engineConfig.paper_trading
+                ? 'bg-amber-200 text-amber-800'
+                : 'bg-red-200 text-red-800'
+            }`}>
+              {engineConfig.paper_trading ? '⚠️ Paper Trading' : '🔴 LIVE TRADING'}
+            </div>
+            <div className="text-sm text-gray-600">
+              <span className="font-semibold">{engineConfig.symbol}</span>
+              <span className="mx-2 text-gray-400">·</span>
+              <span>{engineConfig.timeframe}</span>
+              <span className="mx-2 text-gray-400">·</span>
+              <span>{engineConfig.paper_trading ? 'Testnet' : 'Binance Real'}</span>
+            </div>
+          </div>
+          {!engineConfig.paper_trading && (
+            <div className="text-xs text-red-600 font-medium">
+              ⚡ Real money at risk
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Market Price Banner */}
       {marketPrice && (

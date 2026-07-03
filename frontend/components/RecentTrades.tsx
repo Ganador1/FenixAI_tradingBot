@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown } from 'lucide-react';
+import { getSocket, releaseSocket } from '../lib/socket';
 
 interface Trade {
   id: string;
@@ -37,6 +38,43 @@ export function RecentTrades() {
     };
 
     fetchTrades();
+
+    // Subscribe to live trade events via WebSocket
+    const socket = getSocket();
+
+    const handleTradeExecuted = (payload: Record<string, unknown>) => {
+      const side = String(payload.side || '').toUpperCase();
+      const trade: Trade = {
+        id: (payload.id as string) || crypto.randomUUID(),
+        symbol: (payload.symbol as string) || '',
+        side: side === 'SELL' ? 'SELL' : 'BUY',
+        quantity: (payload.quantity as number) || 0,
+        price: (payload.price as number) || 0,
+        total: ((payload.quantity as number) || 0) * ((payload.price as number) || 0),
+        timestamp: (payload.executed_at as string) || new Date().toISOString(),
+        executed_at: (payload.executed_at as string) || new Date().toISOString(),
+        status: 'COMPLETED',
+      };
+      setTrades(prev => [trade, ...prev].slice(0, 10));
+    };
+
+    const handleConnect = () => {
+      socket.emit('subscribe:trades');
+    };
+
+    socket.on('trade:executed', handleTradeExecuted);
+    socket.on('connect', handleConnect);
+    if (socket.connected) handleConnect();
+
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(fetchTrades, 30000);
+
+    return () => {
+      socket.off('trade:executed', handleTradeExecuted);
+      socket.off('connect', handleConnect);
+      releaseSocket();
+      clearInterval(interval);
+    };
   }, []);
   const formatTime = (timestamp: string) => {
     return new Date(timestamp).toLocaleTimeString('en-US', {
