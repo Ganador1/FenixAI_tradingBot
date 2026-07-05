@@ -516,23 +516,16 @@ async def main():
 
             redis_bridge = get_redis_bridge()
             if redis_bridge:
-                async def _redis_event_handler(event_type: str, data: dict):
-                    """Forward engine events to the API server via Redis."""
-                    try:
-                        event_map = {
-                            "agent_output": "agentOutput",
-                            "final_decision": "trade:signal",
-                            "news_update": "news:update",
-                            "reasoning:new": "agent:reasoning",
-                            "trade_executed": "trade:executed",
-                            "trade:simulated": "trade:executed",
-                        }
-                        ws_event = event_map.get(event_type, event_type)
-                        await redis_bridge.emit(ws_event, data)
-                    except Exception:
-                        pass
+                # Shared handler: transforms raw engine events into the exact
+                # Socket.IO payloads the frontend expects AND persists agent
+                # outputs to the shared SQLite DB so the dashboard's REST
+                # endpoints (Agents, Reasoning Bank, history) show this live
+                # session even after a page reload.
+                from src.api.engine_events import create_engine_event_handler
 
-                engine.on_agent_event = _redis_event_handler
+                engine.on_agent_event = create_engine_event_handler(
+                    redis_bridge.emit, persist=True
+                )
                 logger.info("✅ Redis bridge active — engine events forwarded to API server")
             else:
                 logger.info("Redis bridge not configured (set REDIS_URL to enable)")

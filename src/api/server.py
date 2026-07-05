@@ -221,97 +221,11 @@ else:
     )
 
 
-async def handle_engine_event(event_type: str, data: dict):
-    """Handle events emitted by the trading engine."""
-    try:
-        if event_type == "agent_output":
-            payload = {
-                "id": str(uuid.uuid4()),
-                "agent_name": data.get("agent_name"),
-                "timestamp": data.get("timestamp"),
-                "reasoning": data.get("data", {}).get("reasoning", "")
-                or data.get("data", {}).get("visual_analysis", "")
-                or data.get("data", {}).get("analysis", "")
-                or "No reasoning",
-                "decision": data.get("data", {}).get("signal")
-                or data.get("data", {}).get("action")
-                or "HOLD",
-                "confidence": data.get("data", {}).get("confidence", 0.0),
-                "input_summary": "Live Analysis",
-            }
-            # Include social and Fear&Greed data for sentiment agent
-            if data.get("social_data"):
-                payload["social_data"] = data.get("social_data")
-            if data.get("fear_greed_value"):
-                payload["fear_greed_value"] = data.get("fear_greed_value")
-            await sio.emit("agentOutput", payload)
+# Shared engine-event handler (same transformation + DB persistence used by
+# the live CLI process through the Redis bridge). See src/api/engine_events.py.
+from src.api.engine_events import create_engine_event_handler
 
-            # Persist to DB so the Agents page and Reasoning Bank can show it
-            try:
-                from src.config.database import SessionLocal as _SessionLocal
-
-                async with _SessionLocal() as db_session:
-                    db_output = AgentOutput(
-                        id=payload["id"],
-                        agent_id=data.get("agent_name", "unknown").replace(" ", "_"),
-                        agent_name=data.get("agent_name", "unknown"),
-                        timestamp=datetime.utcnow(),
-                        reasoning=payload["reasoning"],
-                        decision=payload["decision"],
-                        confidence=payload["confidence"],
-                        input_summary=payload["input_summary"],
-                    )
-                    db_session.add(db_output)
-                    await db_session.commit()
-            except Exception as db_err:
-                logger.debug(f"Could not persist agent output to DB: {db_err}")
-
-        elif event_type == "final_decision":
-            payload = {
-                "decision": data.get("decision"),
-                "confidence": data.get("confidence"),
-                "reasoning": data.get("reasoning"),
-                "timestamp": data.get("timestamp"),
-            }
-            await sio.emit("trade:signal", payload)
-        elif event_type == "news_update":
-            payload = {"news": data.get("news_data", []), "timestamp": data.get("timestamp")}
-            await sio.emit("news:update", payload)
-            # Backward-compatible aliases
-            await sio.emit("newsUpdate", payload)
-        elif event_type == "reasoning:new":
-            payload = {
-                "agent_name": data.get("agent_name"),
-                "prompt_digest": data.get("prompt_digest"),
-                "timestamp": data.get("timestamp"),
-            }
-            await sio.emit("reasoning:new", payload)
-            # Backwards-compatible event names for frontend
-            await sio.emit("agent:reasoning", payload)
-            await sio.emit("reasoningUpdate", payload)
-        elif event_type in ("filter:blocked", "filter:adjusted"):
-            # Filtros de entrada (MTF veto, directional score, confianza
-            # mínima…). Sin esto el dashboard no puede explicar por qué una
-            # decisión BUY/SELL no llegó a convertirse en orden.
-            await sio.emit(event_type, data or {})
-        elif event_type == "risk:blocked":
-            await sio.emit("risk:blocked", data or {})
-        elif event_type == "nanofenix:policy":
-            await sio.emit("nanofenix:policy", data or {})
-        elif event_type in ("trade_executed", "trade:simulated"):
-            payload = {"simulated": event_type == "trade:simulated", **(data or {})}
-            await sio.emit("trade:executed", payload)
-            # Alias camelCase que la página Trading ya escuchaba.
-            await sio.emit("tradeExecuted", payload)
-        elif event_type.startswith("position:"):
-            payload = {"kind": event_type, **(data or {})}
-            await sio.emit("position:update", payload)
-            await sio.emit("positionUpdate", payload)
-        elif event_type.startswith("analysis_cycle"):
-            await sio.emit("engine:cycle", {"kind": event_type, **(data or {})})
-
-    except Exception as e:
-        logger.error(f"Error handling engine event: {e}")
+handle_engine_event = create_engine_event_handler(sio.emit, persist=True)
 
 
 @asynccontextmanager
@@ -354,8 +268,23 @@ async def lifespan(app: FastAPI):
     )
     engine.on_agent_event = handle_engine_event
 
-    # Start engine in background task
-    _engine_task = asyncio.create_task(engine.start())
+    # Observer mode: when the live engine runs in a separate process
+    # (run_fenix.py --mode live + Redis bridge), the API should NOT run its
+    # own analysis loop — it would duplicate LLM inference and pollute the
+    # dashboard with a second (paper) session. Set FENIX_API_OBSERVER=1 to
+    # keep the API as a pure data/metrics server; the engine object is still
+    # created for status/market endpoints and can be started on demand via
+    # POST /api/engine/start.
+    api_observer = os.getenv("FENIX_API_OBSERVER", "").lower() in ("1", "true", "yes", "on")
+    if api_observer:
+        logger.info(
+            "🔭 FENIX_API_OBSERVER=1 — API will not start its own engine "
+            "(expecting a live process to publish events via Redis)"
+        )
+        _engine_task = None
+    else:
+        # Start engine in background task
+        _engine_task = asyncio.create_task(engine.start())
 
     # Start AutoEvaluator
     try:
@@ -741,11 +670,21 @@ def _serialize_agent_output_model(output: AgentOutput) -> dict:
     }
 
 
+def _canonical_agent_id(raw_id: str | None) -> str:
+    """Map stored agent identifiers ("Visual_Agent", "Technical Analyst") to
+    the canonical frontend ids ("visual", "technical", ...)."""
+    normalized = str(raw_id or "").lower()
+    for key in ("technical", "visual", "sentiment", "qabba", "decision", "risk"):
+        if key in normalized:
+            return key
+    return normalized or "unknown"
+
+
 def _build_scorecards(outputs: list[AgentOutput]) -> list[dict]:
     """Aggregate recent agent outputs into lightweight scorecards."""
     grouped: dict[str, list[AgentOutput]] = {}
     for output in outputs:
-        grouped.setdefault(output.agent_id, []).append(output)
+        grouped.setdefault(_canonical_agent_id(output.agent_id), []).append(output)
 
     scorecards: list[dict] = []
     for agent_id, items in grouped.items():
@@ -1201,7 +1140,10 @@ async def cancel_order(order_id: str = Path(...), db: AsyncSession = Depends(get
 @app.get("/api/trading/balance")
 async def get_account_balance():
     """Get real account balance from Binance Futures."""
-    testnet = engine.paper_trading if engine else True
+    # Bug fix: paper_trading != testnet. Paper mode with production keys must
+    # query the production API (read-only); using the testnet here caused
+    # 401 -2015 errors when only production keys are configured.
+    testnet = engine.use_testnet if engine else True
 
     async def _inner(client: BinanceClient):
         # Get all asset balances
@@ -1238,7 +1180,7 @@ async def get_account_balance():
 @app.get("/api/trading/positions")
 async def get_positions(db: AsyncSession = Depends(get_db)):
     """Get real open positions from Binance Futures."""
-    testnet = engine.paper_trading if engine else True
+    testnet = engine.use_testnet if engine else True
 
     async def _inner(client: BinanceClient):
         positions = await client.get_positions()
@@ -1285,7 +1227,7 @@ async def get_trade_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Get trade history — real Binance trades + DB trades merged."""
-    testnet = engine.paper_trading if engine else True
+    testnet = engine.use_testnet if engine else True
     target_symbol = (symbol or (engine.symbol if engine else None))
 
     # Try to fetch real trades from Binance

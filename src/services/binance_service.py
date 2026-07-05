@@ -4,6 +4,7 @@ Replaces global binance_client and symbol filter management
 """
 
 import logging
+import os
 import threading
 import time
 from typing import Any
@@ -157,10 +158,25 @@ class BinanceService:
         return self._symbol_configs.get(symbol)
 
     def get_balance_usdt(self) -> float:
-        """Get USDT balance (Futures)"""
+        """Get stablecoin balance (Futures).
+
+        By default sums USDT+USDC (single-account behaviour). When running
+        multiple Fenix instances on the same account with capital split by
+        quote asset (e.g. USDC for ETHUSDC, USDT for SOLUSDT), set
+        FENIX_BALANCE_ASSETS (e.g. "USDT" or "USDC") so each instance sizes
+        positions only from ITS bucket instead of the combined total.
+        """
         if not self._client:
             logger.warning("Binance client not initialized when requesting balance")
             return 0.0
+
+        assets_env = os.getenv("FENIX_BALANCE_ASSETS", "").strip().upper()
+        allowed_assets = (
+            {a.strip() for a in assets_env.split(",") if a.strip()}
+            if assets_env
+            else {"USDT", "USDC"}
+        )
+        restricted = bool(assets_env)
 
         try:
             account = self._call_with_retries(self._client.futures_account, retries=1)
@@ -172,14 +188,16 @@ class BinanceService:
 
                 stable_total = 0.0
                 for asset in account.get("assets", []) or []:
-                    if asset.get("asset") not in {"USDT", "USDC"}:
+                    if asset.get("asset") not in allowed_assets:
                         continue
                     margin_balance = float(asset.get("marginBalance", 0.0) or 0.0)
                     wallet_balance = float(asset.get("walletBalance", 0.0) or 0.0)
                     available = float(asset.get("availableBalance", 0.0) or 0.0)
                     stable_total += max(margin_balance, wallet_balance, available)
 
-                best = max(total_margin, stable_total)
+                # When restricted to specific assets, never fall back to the
+                # account-wide margin total (it would leak the other bucket).
+                best = stable_total if restricted else max(total_margin, stable_total)
                 if best > 0:
                     return best
         except Exception as e:
@@ -189,7 +207,7 @@ class BinanceService:
             balances = self._call_with_retries(self._client.futures_account_balance, retries=1)
             stable_total = 0.0
             for balance in balances:
-                if balance.get("asset") in {"USDT", "USDC"}:
+                if balance.get("asset") in allowed_assets:
                     wallet = float(balance.get("balance", 0.0) or 0.0)
                     available = float(balance.get("availableBalance", 0.0) or 0.0)
                     stable_total += max(wallet, available)

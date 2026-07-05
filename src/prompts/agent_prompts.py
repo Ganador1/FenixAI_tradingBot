@@ -349,6 +349,19 @@ SIGNAL DECISION RULES:
 - OBI and CVD conflict → HOLD_QABBA (no clear direction)
 - OBI 0.8-1.2 → HOLD_QABBA (balanced)
 
+CAPITULATION / CLIMAX OVERRIDE (takes precedence over the rules above):
+- When OBI is EXTREME (< 0.2 or > 5.0) AND CVD is extreme in the same direction
+  AND the technical context shows an exhausted market (RSI < 30 for selling
+  extremes, RSI > 70 for buying extremes), this is very likely a CAPITULATION
+  CLIMAX or a liquidity sweep (stop hunt) — NOT continuation.
+- Volume/selling climaxes at extremes are REVERSAL signals: the aggressive flow
+  is being absorbed and is about to exhaust. Do NOT extrapolate continuation.
+- In these conditions output HOLD_QABBA (or a signal AGAINST the extreme flow
+  if you see clear absorption), set absorption_detected accordingly, and state
+  "possible capitulation climax" in your reasoning.
+- NEVER issue a high-confidence signal chasing an extreme move that already
+  swept obvious stop levels — that is chasing the sweep.
+
 REQUIRED JSON FORMAT:
 {
     "signal": "BUY_QABBA",

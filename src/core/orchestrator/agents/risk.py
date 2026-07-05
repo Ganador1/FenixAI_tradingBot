@@ -627,18 +627,23 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             except Exception:
                 pass
 
-            # Store in ReasoningBank
+            # Store in ReasoningBank (throttled: risk runs every cycle and
+            # unique prices defeat digest dedup → only verdict transitions or
+            # periodic snapshots are worth keeping).
             if reasoning_bank and REASONING_BANK_AVAILABLE:
-                prompt_summary = f"Risk eval: {proposed_action} @ {state.get('current_price')}"
-                store_to_reasoning_bank(
-                    reasoning_bank=reasoning_bank,
-                    agent_name="risk_manager",
-                    prompt=prompt_summary,
-                    result=report,
-                    raw_response=raw_response,
-                    llm=llm,
-                    elapsed_ms=elapsed * 1000,
-                )
+                from src.core.orchestrator.bank_helper import should_store_risk_entry
+
+                if should_store_risk_entry(proposed_action, report.get("verdict")):
+                    prompt_summary = f"Risk eval: {proposed_action} @ {state.get('current_price')}"
+                    store_to_reasoning_bank(
+                        reasoning_bank=reasoning_bank,
+                        agent_name="risk_manager",
+                        prompt=prompt_summary,
+                        result=report,
+                        raw_response=raw_response,
+                        llm=llm,
+                        elapsed_ms=elapsed * 1000,
+                    )
 
             # Merge dynamic risk levels into report
             if dynamic_risk_levels:

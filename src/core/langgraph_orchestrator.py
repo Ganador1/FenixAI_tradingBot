@@ -994,6 +994,13 @@ class FenixAgentState(TypedDict, total=False):
     social_data: dict[str, Any]
     fear_greed_value: str | None
 
+    # Account context for the risk manager. CRITICAL: LangGraph only carries
+    # keys declared in this TypedDict through the graph — this field was
+    # missing, so the balance passed by the engine was silently dropped and
+    # every risk prompt showed "USDT Balance: N/A" (2026-07-04: the LLM then
+    # assumed $1000 and approved minimum-notional trades that were skipped).
+    account_balance_usdt: float | None
+
     # Agent Results (each writes to its own field)
     technical_report: dict[str, Any]
     sentiment_report: dict[str, Any]
@@ -1988,18 +1995,21 @@ def create_risk_agent_node(llm: Any, reasoning_bank: Any = None):
             if dynamic_risk_levels:
                 report["dynamic_risk_levels"] = dynamic_risk_levels.to_dict()
 
-            # Store in ReasoningBank
+            # Store in ReasoningBank (throttled — see bank_helper)
             if reasoning_bank and REASONING_BANK_AVAILABLE:
-                prompt_summary = f"Risk eval: {proposed_action} @ {state.get('current_price')}"
-                store_agent_decision(
-                    reasoning_bank=reasoning_bank,
-                    agent_name="risk_manager",
-                    prompt=prompt_summary,
-                    result=report,
-                    raw_response=raw_response,
-                    backend="langgraph",
-                    latency_ms=elapsed * 1000,
-                )
+                from src.core.orchestrator.bank_helper import should_store_risk_entry
+
+                if should_store_risk_entry(proposed_action, report.get("verdict")):
+                    prompt_summary = f"Risk eval: {proposed_action} @ {state.get('current_price')}"
+                    store_agent_decision(
+                        reasoning_bank=reasoning_bank,
+                        agent_name="risk_manager",
+                        prompt=prompt_summary,
+                        result=report,
+                        raw_response=raw_response,
+                        backend="langgraph",
+                        latency_ms=elapsed * 1000,
+                    )
 
             return {
                 "risk_assessment": report,

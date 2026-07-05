@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 class RiskFeedbackLoopConfig(BaseModel):
@@ -58,10 +66,16 @@ class RiskFeedbackLoopConfig(BaseModel):
     )
 
     caution_cooldown_seconds: int = Field(
-        default=300, ge=0, description="Cooldown duration after a soft trigger."
+        # 1800s = 2 bars of 15m. A 300s cooldown was useless on 15m timeframes
+        # (2026-07-05 losing streak). Override with FENIX_CAUTION_COOLDOWN_SECONDS.
+        default_factory=lambda: _env_int("FENIX_CAUTION_COOLDOWN_SECONDS", 1800),
+        ge=0,
+        description="Cooldown duration after a soft trigger.",
     )
     severe_cooldown_seconds: int = Field(
-        default=900, ge=0, description="Cooldown duration after a hard trigger."
+        default_factory=lambda: _env_int("FENIX_SEVERE_COOLDOWN_SECONDS", 3600),
+        ge=0,
+        description="Cooldown duration after a hard trigger.",
     )
 
     cooldown_risk_bias: float = Field(

@@ -9,6 +9,7 @@ con metadatos ricos y se puede recuperar por palabras clave o por agente.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections import deque
 from dataclasses import dataclass, asdict, field
@@ -283,6 +284,31 @@ class ReasoningBank:
             stats["total"] = stats.get("total", 0) + 1
             stats["last_recorded"] = entry.created_at
             self._save_stats()
+
+            # Auto-compaction: the JSONL is append-only, so agents that write
+            # often (e.g. risk_manager) used to grow unbounded (8+ MB). When
+            # the on-disk file exceeds ~4x the in-memory retention, rewrite it
+            # with just the retained entries.
+            total_recorded = int(stats.get("total", 0))
+            if total_recorded % 200 == 0:
+                try:
+                    with agent_file.open("r", encoding="utf-8") as fh:
+                        line_count = sum(1 for _ in fh)
+                    if line_count > self.max_entries_per_agent * 4:
+                        if len(agent_cache) < min(line_count, self.max_entries_per_agent):
+                            # Cache may be cold; hydrate before rewriting.
+                            self._cache.pop(agent_name, None)
+                            self.get_recent(agent_name, self.max_entries_per_agent)
+                            agent_cache = self._cache.get(agent_name) or agent_cache
+                        if self._rewrite_agent_file(agent_name, agent_cache):
+                            logger.info(
+                                "ReasoningBank: compacted %s.jsonl (%d -> %d entries)",
+                                agent_name,
+                                line_count,
+                                len(agent_cache),
+                            )
+                except OSError as exc:
+                    logger.debug("ReasoningBank: compaction skipped for %s: %s", agent_name, exc)
 
         return entry
 
@@ -740,5 +766,14 @@ def get_reasoning_bank() -> ReasoningBank:
             if _reasoning_bank is None:
                 # Disable embeddings to prevent memory issues with SentenceTransformer
                 # Jaccard similarity is used as fallback (fast, no RAM overhead)
-                _reasoning_bank = ReasoningBank(use_embeddings=False)
+                # FENIX_REASONING_BANK_DIR permite aislar el bank por instancia
+                # (dos bots simultáneos con símbolos distintos NO deben compartir
+                # memoria: el AutoEvaluator de cada proceso etiquetaría las
+                # entradas del otro contra el precio equivocado).
+                storage_dir = os.getenv(
+                    "FENIX_REASONING_BANK_DIR", "logs/reasoning_bank"
+                )
+                _reasoning_bank = ReasoningBank(
+                    storage_dir=storage_dir, use_embeddings=False
+                )
     return _reasoning_bank

@@ -425,7 +425,8 @@ class OrderExecutor:
             entry_price = float(filled_order.get("avgPrice", 0))
             executed_qty = float(filled_order.get("executedQty", 0))
 
-            logger.info(f"✅ MARKET order FILLED: {side} {executed_qty} @ {entry_price}")
+            order_kind = "LIMIT" if use_limit and limit_price else "MARKET"
+            logger.info(f"✅ {order_kind} order FILLED: {side} {executed_qty} @ {entry_price}")
 
             # Place SL/TP when provided.
             sl_order_id = None

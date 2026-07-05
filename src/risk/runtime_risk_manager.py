@@ -350,6 +350,32 @@ class RuntimeRiskManager:
             success=success,
         )
 
+    def flatten_symbol(self, symbol: str) -> None:
+        """Drop ALL remaining exposure/active trades for a symbol.
+
+        Called after a position is fully closed on the exchange. Guarantees
+        no phantom exposure survives (e.g. pyramid adds create multiple
+        TradeRecords but the exchange close is a single event; residual
+        records would otherwise block future entries with a false
+        'Total exposure would exceed limit').
+        """
+        symbol = str(symbol or "").upper()
+        if not symbol:
+            return
+        stale_ids = [
+            trade_id
+            for trade_id, trade in self._active_trades.items()
+            if trade.symbol.upper() == symbol
+        ]
+        for trade_id in stale_ids:
+            self._active_trades.pop(trade_id, None)
+        if self._open_positions.pop(symbol, None) is not None or stale_ids:
+            logger.info(
+                "RiskManager: flattened %s (removed %d stale trade records)",
+                symbol,
+                len(stale_ids),
+            )
+
     def get_total_exposure(self) -> dict[str, Any]:
         total_exposure = sum(
             float(position.get("notional", 0.0)) for position in self._open_positions.values()

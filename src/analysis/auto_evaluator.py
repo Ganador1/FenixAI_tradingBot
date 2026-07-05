@@ -54,6 +54,17 @@ class AutoEvaluator:
             self.cost_pct = float(os.getenv("FENIX_EVAL_ROUNDTRIP_COST_PCT", "0.12"))
         except ValueError:
             self.cost_pct = 0.12
+        # Neutral band for HOLD/NEUTRAL calls: a "no trade" call is correct
+        # when the market did not move enough to matter. Using the raw cost
+        # threshold (e.g. 0.05%) made HOLD success nearly impossible and
+        # poisoned sentiment stats with 0% win rates.
+        try:
+            hold_band_env = os.getenv("FENIX_EVAL_HOLD_BAND_PCT")
+            self.hold_band_pct = (
+                float(hold_band_env) if hold_band_env else max(self.cost_pct, 0.15)
+            )
+        except ValueError:
+            self.hold_band_pct = max(self.cost_pct, 0.15)
         self.bank = get_reasoning_bank()
         self.client = BinanceClient(
             testnet=False
@@ -89,6 +100,24 @@ class AutoEvaluator:
             await self.client.close()
         except Exception:
             pass
+
+    @staticmethod
+    def _normalize_direction(action: str | None) -> str:
+        """Map any agent vocabulary to BUY/SELL/HOLD.
+
+        Sentiment agents emit POSITIVE/NEGATIVE/NEUTRAL (or BULLISH/BEARISH),
+        QABBA emits BUY_QABBA/SELL_QABBA, etc. Before this normalization those
+        labels fell through every branch and were hard-labeled success=False,
+        which is why sentiment showed a fake 0% win rate.
+        """
+        normalized = str(action or "").upper()
+        if any(k in normalized for k in ("BUY", "LONG", "POSITIVE", "BULLISH")):
+            return "BUY"
+        if any(k in normalized for k in ("SELL", "SHORT", "NEGATIVE", "BEARISH")):
+            return "SELL"
+        if any(k in normalized for k in ("HOLD", "NEUTRAL", "WAIT", "FLAT")):
+            return "HOLD"
+        return "UNKNOWN"
 
     @staticmethod
     def _resolve_sentiment_action(entry: ReasoningEntry) -> str:
@@ -192,26 +221,30 @@ class AutoEvaluator:
             f"[cost threshold {self.cost_pct:.2f}%]"
         )
 
-        action = entry.action.upper()
+        action = self._normalize_direction(entry.action)
 
-        # Sentiment entries store action=UNKNOWN; derive direction from the
+        # Sentiment entries may store action=UNKNOWN; derive direction from the
         # overall_sentiment field inside the raw reasoning JSON instead.
         if action == "UNKNOWN":
-            action = self._resolve_sentiment_action(entry)
+            action = self._normalize_direction(self._resolve_sentiment_action(entry))
             if action == "UNKNOWN":
                 return  # Not directionally evaluable; leave unlabeled.
 
-        if "BUY" in action or "LONG" in action:
+        if action == "BUY":
             success = price_change_pct > self.cost_pct
             reward = price_change_pct - self.cost_pct
-        elif "SELL" in action or "SHORT" in action:
+        elif action == "SELL":
             success = price_change_pct < -self.cost_pct
             reward = -price_change_pct - self.cost_pct
-        elif "HOLD" in action:
-            # HOLD avoided paying costs; it is "correct" when no profitable
-            # move was available in either direction (|move| below costs).
-            success = abs(price_change_pct) <= self.cost_pct
+        else:  # HOLD / NEUTRAL
+            # A no-trade call is "correct" when the move stayed inside the
+            # neutral band (no profitable opportunity was missed).
+            success = abs(price_change_pct) <= self.hold_band_pct
             reward = 0.0
+            notes = (
+                f"Price moved {price_change_pct:.2f}% ({start_price} -> {end_price}) "
+                f"[neutral band {self.hold_band_pct:.2f}%]"
+            )
 
         # Update ReasoningBank
         self.bank.update_entry_outcome(

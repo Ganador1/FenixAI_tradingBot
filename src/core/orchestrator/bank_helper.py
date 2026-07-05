@@ -7,6 +7,8 @@ ReasoningBank memory system.
 """
 
 import logging
+import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -20,6 +22,37 @@ try:
 except ImportError:
     REASONING_BANK_AVAILABLE = False
     get_reasoning_bank = None
+
+
+# ---------------------------------------------------------------------------
+# risk_manager storage throttle
+#
+# The risk agent runs 1-2 times per analysis cycle and used to store an entry
+# EVERY time (prompt includes the exact price → unique digest → no dedup).
+# Result: ~10k unlabeled entries flooding the bank (8+ MB) that the
+# AutoEvaluator never labels (risk verdicts are not directional predictions).
+# Policy: store only when the (action, verdict) changes, or after a minimum
+# interval, so verdict TRANSITIONS (the informative events) are preserved.
+# ---------------------------------------------------------------------------
+_RISK_STORE_STATE: dict[str, Any] = {"key": None, "ts": 0.0}
+
+
+def should_store_risk_entry(action: str | None, verdict: str | None) -> bool:
+    """Return True when a risk_manager entry is worth persisting."""
+    try:
+        min_interval = float(os.getenv("FENIX_RISK_BANK_MIN_INTERVAL_SEC", "900"))
+    except ValueError:
+        min_interval = 900.0
+    if min_interval <= 0:
+        return True
+
+    key = f"{str(action or '').upper()}|{str(verdict or '').upper()}"
+    now = time.monotonic()
+    if key != _RISK_STORE_STATE["key"] or (now - _RISK_STORE_STATE["ts"]) >= min_interval:
+        _RISK_STORE_STATE["key"] = key
+        _RISK_STORE_STATE["ts"] = now
+        return True
+    return False
 
 
 def get_agent_context_from_bank(

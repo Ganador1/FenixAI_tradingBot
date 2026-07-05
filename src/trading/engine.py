@@ -342,6 +342,10 @@ class TradingEngine:
         self._nanofenix_require_allow_execute = _env_flag(
             "FENIX_NANOFENIX_REQUIRE_ALLOW_EXECUTE", False
         )
+        # Post-stopout re-entry filter: after a losing close, block new entries
+        # in the direction of the move that hit the stop for N bars (0 disables).
+        self._post_stopout_block_bars = int(os.getenv("FENIX_POST_STOPOUT_BLOCK_BARS", "2"))
+        self._post_stopout_block: dict[str, Any] | None = None
         raw_hard_veto_reasons = os.getenv(
             "FENIX_NANOFENIX_HARD_VETO_REASONS",
             "",
@@ -1396,20 +1400,36 @@ class TradingEngine:
             except Exception as e:
                 logger.debug("MTF context unavailable: %s", e)
 
-            # Fetch real account balance from Binance for the risk manager
+            # Fetch real account balance from Binance for the risk manager.
+            # NOTE: self.binance_client does not exist as an engine attribute
+            # (legacy reference); the reliable source is the executor, which is
+            # the same client _execute_trade uses. Log at INFO when missing so
+            # a sizing-blind risk manager is never silent again (2026-07-04:
+            # every risk prompt showed "Balance: N/A" and the LLM approved $20
+            # minimum-notional trades that were skipped).
             real_balance = None
             try:
-                if not self.paper_trading and self.binance_client:
-                    bal = await self.binance_client.get_balance("USDT")
-                    if bal and bal > 0:
-                        # Also check USDC since ETHUSDC uses USDC as quote
-                        usdc_bal = await self.binance_client.get_balance("USDC")
-                        real_balance = bal + (usdc_bal or 0)
-                        logger.debug(
-                            f"Real balance for risk manager: USDT={bal} + USDC={usdc_bal} = {real_balance}"
-                        )
+                real_balance = await asyncio.to_thread(self.executor.get_balance)
+                if real_balance is not None:
+                    real_balance = float(real_balance)
+                    if real_balance <= 0:
+                        real_balance = None
             except Exception as e:
-                logger.debug("Could not fetch real balance for risk manager: %s", e)
+                logger.warning("Balance fetch for risk manager failed: %s", e)
+
+            graph_balance = (
+                real_balance
+                or self._get_cached_balance()
+                or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
+                or None
+            )
+            if graph_balance is None:
+                logger.warning(
+                    "⚠️ No balance available for risk manager this cycle — "
+                    "position sizing will be conservative/blind"
+                )
+            else:
+                logger.info("Balance for risk manager: %.2f USDT", graph_balance)
 
             # Execute LangGraph analysis (always, even without visual)
             result = await self._trading_graph.invoke(
@@ -1432,12 +1452,7 @@ class TradingEngine:
                 news_data=news_data or [],
                 social_data=social_data or {},
                 fear_greed_value=fear_greed_value or "N/A",
-                account_balance_usdt=(
-                    real_balance
-                    or self._get_cached_balance()
-                    or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
-                    or None
-                ),
+                account_balance_usdt=graph_balance,
                 # thread_id argument removed as persistence is disabled
                 # thread_id argument removed as persistence is disabled
                 # thread_id=f"{self.symbol}_{self.timeframe}",
@@ -2427,6 +2442,128 @@ class TradingEngine:
 
         return True, "consensus_same_side_add_allowed"
 
+    def _pyramid_size_factor(self, entry_count: int) -> float:
+        """Size multiplier (vs. initial size) for the Nth pyramid add.
+
+        ``entry_count`` is the CURRENT number of entries (1 = only the base
+        position). Factors come from FENIX_PYRAMID_SIZE_FACTORS, e.g.
+        "0.5,0.25" → 2nd entry at 50%, 3rd at 25% of the base size.
+        """
+        raw = os.getenv("FENIX_PYRAMID_SIZE_FACTORS", "0.5,0.25")
+        factors: list[float] = []
+        for part in raw.split(","):
+            value = _safe_float(part.strip())
+            if value is not None and 0.0 < value <= 1.0:
+                factors.append(float(value))
+        if not factors:
+            factors = [0.5, 0.25]
+        idx = max(0, entry_count - 1)
+        return factors[min(idx, len(factors) - 1)]
+
+    def _allow_pyramid_add(
+        self,
+        *,
+        decision: str,
+        decision_data: dict[str, Any],
+        tracked_position: Any,
+        companion_policy: dict[str, Any] | None,
+        current_price: float | None,
+    ) -> tuple[bool, str]:
+        """Generic same-side scale-in gate ("pyramid on re-consensus").
+
+        Allows adding to an OPEN, PROFITABLE position when the core agents
+        re-agree on the same direction. Anti-martingale by design: never adds
+        to a losing position, add sizes shrink, and after each add the
+        combined stop-loss is moved to breakeven so total risk never exceeds
+        the original trade's risk. All knobs are env-tunable and the whole
+        feature is OFF unless FENIX_PYRAMID_ENABLE=1.
+        """
+        if not _env_flag("FENIX_PYRAMID_ENABLE", False):
+            return False, "pyramid_disabled"
+        if decision not in ("BUY", "SELL"):
+            return False, "pyramid_not_directional"
+        if tracked_position is None:
+            return False, "pyramid_no_tracked_position"
+
+        position_side = str(getattr(tracked_position, "side", "") or "").upper()
+        if not self._is_same_side(position_side, decision):
+            return False, "pyramid_not_same_side"
+
+        # 1. Entry cap (default: base + 2 adds).
+        entry_count = int(getattr(tracked_position, "entry_count", 1) or 1)
+        max_entries = max(1, int(_env_float("FENIX_PYRAMID_MAX_ENTRIES", 3)))
+        if entry_count >= max_entries:
+            return False, "pyramid_entry_cap_reached"
+
+        # 2. Never add to a loser (anti-martingale).
+        avg_entry = _safe_float(getattr(tracked_position, "entry_price", None))
+        price = _safe_float(current_price)
+        if not avg_entry or not price or avg_entry <= 0 or price <= 0:
+            return False, "pyramid_missing_prices"
+        gain_pct = (
+            (price - avg_entry) / avg_entry
+            if position_side == "LONG"
+            else (avg_entry - price) / avg_entry
+        )
+        min_gain = _env_float("FENIX_PYRAMID_MIN_GAIN_PCT", 0.004)
+        if gain_pct < min_gain:
+            return False, f"pyramid_gain_below_min({gain_pct:.4f}<{min_gain:.4f})"
+
+        # 3. Cooldown since the LAST entry (base or previous add).
+        cooldown_bars = max(0, int(_env_float("FENIX_PYRAMID_COOLDOWN_BARS", 3)))
+        if cooldown_bars > 0:
+            last_entry_ts = getattr(tracked_position, "entry_signal_ts", None)
+            try:
+                last_entry_dt = datetime.fromisoformat(str(last_entry_ts))
+                if last_entry_dt.tzinfo is None:
+                    last_entry_dt = last_entry_dt.replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(timezone.utc) - last_entry_dt).total_seconds()
+                required = cooldown_bars * self._timeframe_to_seconds(self.timeframe)
+                if elapsed < required:
+                    return False, f"pyramid_cooldown({elapsed:.0f}s<{required:.0f}s)"
+            except (TypeError, ValueError):
+                return False, "pyramid_cooldown_unparseable_entry_ts"
+
+        # 4. Agents must re-agree with the position direction.
+        min_agent_conf = _env_float("FENIX_PYRAMID_MIN_AGENT_CONF", 0.60)
+        aligned = 0
+        total_agents = 0
+        for key_sig, key_conf in (
+            ("_execution_technical_signal", "_execution_technical_confidence"),
+            ("_execution_qabba_signal", "_execution_qabba_confidence"),
+            ("_execution_visual_signal", "_execution_visual_confidence"),
+        ):
+            signal = str(decision_data.get(key_sig) or "HOLD").upper().replace("_QABBA", "")
+            conf = _safe_float(decision_data.get(key_conf)) or 0.0
+            total_agents += 1
+            if signal == decision and conf >= min_agent_conf:
+                aligned += 1
+        require_all = _env_flag("FENIX_PYRAMID_REQUIRE_ALL_AGENTS", True)
+        min_aligned = total_agents if require_all else max(2, total_agents - 1)
+        if aligned < min_aligned:
+            return False, f"pyramid_agents_not_aligned({aligned}/{min_aligned})"
+
+        # 5. Directional score of the current cycle.
+        directional_score = abs(_safe_float(decision_data.get("_directional_score")) or 0.0)
+        min_score = _env_float("FENIX_PYRAMID_MIN_DIRECTIONAL_SCORE", 0.70)
+        if directional_score < min_score:
+            return False, f"pyramid_directional_score_low({directional_score:.2f}<{min_score:.2f})"
+
+        # 6. Regime guards: no adds in low-vol chop transitions.
+        market_condition = str(decision_data.get("_execution_market_condition") or "").upper()
+        chop_regime = str(decision_data.get("_execution_chop_regime") or "").upper()
+        if market_condition == "LOW_VOLATILITY" and chop_regime == "TRANSITION":
+            return False, "pyramid_blocked_low_vol_transition"
+
+        # 7. NanoFenix hard vetoes still apply.
+        if self._nanofenix_policy_hard_vetoes_entry(companion_policy):
+            return False, "pyramid_blocked_by_nanofenix_hard_veto"
+
+        return True, (
+            f"pyramid_add_allowed(entry={entry_count + 1}/{max_entries} "
+            f"gain={gain_pct:.4f} aligned={aligned}/{total_agents} score={directional_score:.2f})"
+        )
+
     def _get_flip_min_confidence(self) -> str:
         return os.getenv("FENIX_MIN_FLIP_CONFIDENCE", "MEDIUM").strip().upper()
 
@@ -2582,6 +2719,7 @@ class TradingEngine:
         realized_pnl_pct = float(close_result.get("pnl_pct", 0.0) or 0.0)
         realized_exit_price = _safe_float(close_result.get("exit_price"))
         realized_success = realized_pnl >= 0.0
+        self._register_post_stopout_block(close_result, tracked_position, realized_pnl)
         if self.risk_manager is not None:
             if trade_id and hasattr(self.risk_manager, "close_trade"):
                 try:
@@ -2606,6 +2744,14 @@ class TradingEngine:
                     )
                 except Exception:
                     pass
+            # The exchange position is now fully flat: purge any residual
+            # exposure for this symbol (pyramid adds register multiple trade
+            # records; a single close event must release all of them).
+            if hasattr(self.risk_manager, "flatten_symbol"):
+                try:
+                    self.risk_manager.flatten_symbol(self.symbol)
+                except Exception:
+                    logger.debug("flatten_symbol failed for %s", self.symbol, exc_info=True)
 
         try:
             await persist_position_close(
@@ -2643,6 +2789,56 @@ class TradingEngine:
                 },
             )
         self._fast_last_trade_ts = datetime.now(timezone.utc)
+
+    def _register_post_stopout_block(
+        self,
+        close_result: dict[str, Any],
+        tracked_position: Any | None,
+        realized_pnl: float,
+    ) -> None:
+        """After a losing close, block re-entry in the direction of the move that
+        stopped us out for N bars (liquidity-sweep / stop-hunt protection).
+
+        A losing LONG means the move was DOWN -> block new SELL entries.
+        A losing SHORT means the move was UP -> block new BUY entries.
+        """
+        bars = int(getattr(self, "_post_stopout_block_bars", 0) or 0)
+        if bars <= 0 or realized_pnl >= 0.0:
+            return
+        side = str(
+            close_result.get("side") or getattr(tracked_position, "side", "") or ""
+        ).upper()
+        if side in {"LONG", "BUY"}:
+            blocked = "SELL"
+        elif side in {"SHORT", "SELL"}:
+            blocked = "BUY"
+        else:
+            return
+        duration = bars * self._timeframe_to_seconds(self.timeframe)
+        until = datetime.now(timezone.utc) + timedelta(seconds=duration)
+        self._post_stopout_block = {"direction": blocked, "until": until}
+        logger.warning(
+            "🛡️ Post-stopout filter armed: blocking %s entries for %d bars (until %s)",
+            blocked,
+            bars,
+            until.isoformat(timespec="seconds"),
+        )
+
+    def _post_stopout_blocks_entry(self, decision: str) -> str | None:
+        """Return a human-readable reason if the post-stopout filter blocks `decision`."""
+        block = getattr(self, "_post_stopout_block", None)
+        if not block:
+            return None
+        until = block.get("until")
+        if until is None or datetime.now(timezone.utc) >= until:
+            self._post_stopout_block = None
+            return None
+        if str(decision).upper() == block.get("direction"):
+            return (
+                f"post_stopout_reentry_block:{block['direction']} blocked until "
+                f"{until.isoformat(timespec='seconds')}"
+            )
+        return None
 
     async def _refresh_exchange_protection_if_needed(self, position: Any) -> None:
         if not bool(getattr(position, "protection_refresh_pending", False)):
@@ -2683,6 +2879,97 @@ class TradingEngine:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             )
+
+    async def _apply_pyramid_protection(self, position: Any) -> None:
+        """Re-protect the combined position after a pyramid add.
+
+        Moves the stop-loss of the TOTAL (blended) position to breakeven plus
+        a fee buffer — never loosening an already-better stop — and replaces
+        the exchange-side protective orders so they cover the full quantity.
+        This is what keeps pyramiding anti-martingale: after each add the
+        worst-case outcome of the whole position is ~zero instead of a loss.
+        """
+        try:
+            position_side = str(getattr(position, "side", "LONG") or "LONG").upper()
+            blended_entry = _safe_float(getattr(position, "entry_price", None))
+            if not blended_entry or blended_entry <= 0:
+                return
+
+            if _env_flag("FENIX_PYRAMID_MOVE_SL_TO_BREAKEVEN", True):
+                fee_buffer = max(
+                    0.0, _env_float("FENIX_ESTIMATED_ROUND_TRIP_FEE_PCT", 0.0008)
+                ) + max(0.0, _env_float("FENIX_PYRAMID_SL_EXTRA_BUFFER_PCT", 0.0004))
+                current_sl = _safe_float(getattr(position, "stop_loss", None))
+                if position_side == "LONG":
+                    breakeven_sl = blended_entry * (1.0 + fee_buffer)
+                    new_sl = max(current_sl or 0.0, breakeven_sl)
+                else:
+                    breakeven_sl = blended_entry * (1.0 - fee_buffer)
+                    new_sl = min(current_sl or float("inf"), breakeven_sl)
+                position.stop_loss = new_sl
+                logger.info(
+                    "🔺 Pyramid protection: SL → %.4f (breakeven of blended entry %.4f, "
+                    "side=%s, qty=%.6f, entries=%d)",
+                    new_sl,
+                    blended_entry,
+                    position_side,
+                    float(getattr(position, "quantity", 0.0) or 0.0),
+                    int(getattr(position, "entry_count", 1) or 1),
+                )
+
+            # Force the exchange-side SL/TP to be replaced for the TOTAL qty.
+            position.protection_refresh_pending = True
+            await self._refresh_exchange_protection_if_needed(position)
+
+            if bool(getattr(position, "protection_refresh_pending", False)):
+                # Refresh via the order monitor failed (e.g. position not
+                # monitored). Deterministic fallback: cancel every open order
+                # for the symbol and place fresh SL/TP for the full quantity.
+                logger.warning(
+                    "Pyramid protection refresh failed via monitor for %s; "
+                    "using cancel+replace fallback",
+                    self.symbol,
+                )
+                entry_side = "BUY" if position_side == "LONG" else "SELL"
+                if hasattr(self.executor, "cancel_all_orders"):
+                    await self.executor.cancel_all_orders()
+                sl_id, tp_id = await self.executor._place_protective_orders(
+                    entry_side=entry_side,
+                    quantity=float(getattr(position, "quantity", 0.0) or 0.0),
+                    stop_loss=_safe_float(getattr(position, "stop_loss", None)),
+                    take_profit=_safe_float(getattr(position, "take_profit", None)),
+                    entry_price=blended_entry,
+                )
+                if sl_id is None and _safe_float(getattr(position, "stop_loss", None)):
+                    logger.critical(
+                        "🚨 Pyramid fallback could not place SL for %s — combined "
+                        "position may be unprotected, check the exchange!",
+                        self.symbol,
+                    )
+                else:
+                    position.mark_protection_synced(
+                        stop_loss=_safe_float(getattr(position, "stop_loss", None)),
+                        take_profit=_safe_float(getattr(position, "take_profit", None)),
+                        sl_order_id=sl_id,
+                        tp_order_id=tp_id,
+                    )
+
+            if (callback := self.on_agent_event) is not None:
+                await callback(
+                    "position:pyramid_protected",
+                    {
+                        "symbol": self.symbol,
+                        "side": position_side,
+                        "blended_entry": blended_entry,
+                        "stop_loss": _safe_float(getattr(position, "stop_loss", None)),
+                        "take_profit": _safe_float(getattr(position, "take_profit", None)),
+                        "quantity": float(getattr(position, "quantity", 0.0) or 0.0),
+                        "entry_count": int(getattr(position, "entry_count", 1) or 1),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+        except Exception as e:
+            logger.error("Pyramid protection update failed for %s: %s", self.symbol, e)
 
     async def _manage_open_position(self, new_signal: str | None = None) -> dict[str, Any] | None:
         tracked_position = self._get_tracked_position()
@@ -3379,6 +3666,13 @@ class TradingEngine:
         decision_data["_execution_qabba_confidence"] = (
             _safe_float(qabba_report.get("confidence")) or 0.0
         )
+        visual_report = result.get("visual_report") or {}
+        decision_data["_execution_visual_signal"] = str(
+            visual_report.get("action") or visual_report.get("signal") or "HOLD"
+        ).upper()
+        decision_data["_execution_visual_confidence"] = (
+            _safe_float(visual_report.get("confidence")) or 0.0
+        )
         decision_data["_execution_market_condition"] = str(
             indicators.get("market_condition") or ""
         ).upper()
@@ -3455,6 +3749,12 @@ class TradingEngine:
                         filter_name="MTF_VETO",
                     )
                     return
+
+        if decision in {"BUY", "SELL"}:
+            stopout_reason = self._post_stopout_blocks_entry(decision)
+            if stopout_reason:
+                await _hold(stopout_reason, filter_name="POST_STOPOUT")
+                return
 
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
@@ -4328,6 +4628,8 @@ class TradingEngine:
         )
         consensus_add_allowed = False
         consensus_add_reason = ""
+        pyramid_add_allowed = False
+        pyramid_add_reason = ""
         if same_side_position:
             consensus_add_allowed, consensus_add_reason = self._allow_consensus_same_side_add(
                 decision=decision,
@@ -4336,14 +4638,25 @@ class TradingEngine:
                 decision_data=decision_data,
                 tracked_position=tracked_position,
             )
+            pyramid_add_allowed, pyramid_add_reason = self._allow_pyramid_add(
+                decision=decision,
+                decision_data=decision_data,
+                tracked_position=tracked_position,
+                companion_policy=companion_policy,
+                current_price=entry_price,
+            )
         if (
             same_side_position
             and isinstance(companion_policy, dict)
             and not bool(companion_policy.get("allow_add_to_position", False))
             and not consensus_add_allowed
+            and not pyramid_add_allowed
         ):
             logger.info(
-                "Trade skipped: NanoFenix policy disallows same-side add for %s", self.symbol
+                "Trade skipped: NanoFenix policy disallows same-side add for %s "
+                "(pyramid: %s)",
+                self.symbol,
+                pyramid_add_reason,
             )
             if (callback := self.on_agent_event) is not None:
                 await callback(
@@ -4352,6 +4665,7 @@ class TradingEngine:
                         "reason": companion_policy.get("reason")
                         or "nanofenix_policy_disallows_same_side_add",
                         "consensus_override": consensus_add_reason,
+                        "pyramid_reason": pyramid_add_reason,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 )
@@ -4362,10 +4676,25 @@ class TradingEngine:
                 self.symbol,
                 consensus_add_reason,
             )
+        if same_side_position and pyramid_add_allowed:
+            logger.info(
+                "🔺 Pyramid add enabled for %s: %s", self.symbol, pyramid_add_reason
+            )
+            if (callback := self.on_agent_event) is not None:
+                await callback(
+                    "position:pyramid_add",
+                    {
+                        "symbol": self.symbol,
+                        "side": decision,
+                        "reason": pyramid_add_reason,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
         if (
             same_side_position
             and not _env_flag("FENIX_ALLOW_ADD_TO_POSITION", False)
             and not consensus_add_allowed
+            and not pyramid_add_allowed
         ):
             logger.info("Trade skipped: same-side position already open for %s", self.symbol)
             if (callback := self.on_agent_event) is not None:
@@ -4373,10 +4702,23 @@ class TradingEngine:
                     "position:skip_same_side",
                     {
                         "reason": "same-side position already open",
+                        "pyramid_reason": pyramid_add_reason,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             return
+
+        # Pyramid adds use a decreasing fraction of the base position size.
+        if same_side_position and pyramid_add_allowed and tracked_position is not None:
+            entry_count = int(getattr(tracked_position, "entry_count", 1) or 1)
+            size_factor = self._pyramid_size_factor(entry_count)
+            adjusted_size *= size_factor
+            logger.info(
+                "Pyramid add sizing: factor=%.2f → notional $%.2f (entry #%d)",
+                size_factor,
+                adjusted_size,
+                entry_count + 1,
+            )
 
         tracked_position = tracked_position or self._get_tracked_position()
         if (
@@ -4574,12 +4916,16 @@ class TradingEngine:
             )
             return
 
-        # Execute order
+        # Execute order. Pyramid adds do NOT place their own SL/TP: the
+        # existing protective orders stay active for the original quantity and
+        # are replaced right after the fill with combined-position protection
+        # (stop at blended breakeven).
+        is_pyramid_add = bool(same_side_position and pyramid_add_allowed)
         result = await self.executor.execute_market_order(
             side=decision,
             quantity=quantity,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
+            stop_loss=None if is_pyramid_add else stop_loss,
+            take_profit=None if is_pyramid_add else take_profit,
         )
 
         if result.success:
@@ -4599,8 +4945,8 @@ class TradingEngine:
                         ),
                         quantity=float(result.executed_qty) if result.executed_qty else quantity,
                         signal_timestamp=datetime.now(timezone.utc).isoformat(),
-                        stop_loss=stop_loss,
-                        take_profit=take_profit,
+                        stop_loss=None if is_pyramid_add else stop_loss,
+                        take_profit=None if is_pyramid_add else take_profit,
                         trade_id=str(result.order_id) if result.order_id else None,
                         reasoning_digest=decision_data.get("_reasoning_digest")
                         or decision_data.get("reasoning_prompt_digest"),
@@ -4611,6 +4957,9 @@ class TradingEngine:
                     )
                 except Exception as e:
                     logger.debug("Could not open tracked position: %s", e)
+
+            if is_pyramid_add and tracked_position is not None:
+                await self._apply_pyramid_protection(tracked_position)
 
             executed_qty = float(result.executed_qty) if result.executed_qty else quantity
             executed_price = float(result.entry_price) if result.entry_price else entry_price
@@ -4701,24 +5050,25 @@ class TradingEngine:
                         ),
                     )
                     if hasattr(self.risk_manager, "open_trade"):
+                        # open_trade() already registers the position's
+                        # exposure internally via update_open_position().
                         self.risk_manager.open_trade(trade_record)
                     else:
                         self.risk_manager.record_trade(trade_record)
+                        # Legacy managers without open_trade(): register
+                        # exposure explicitly.
+                        if hasattr(self.risk_manager, "update_open_position"):
+                            self.risk_manager.update_open_position(
+                                self.symbol,
+                                size=notional,
+                                notional=notional,
+                                side=decision.lower(),
+                            )
                     logger.info(
                         f"Trade registered in RiskManager: {self.risk_manager.current_status.describe()}"
                     )
                 except Exception as e:
                     logger.warning(f"Could not record trade in RiskManager: {e}")
-                if hasattr(self.risk_manager, "update_open_position"):
-                    try:
-                        self.risk_manager.update_open_position(
-                            self.symbol,
-                            size=notional,
-                            notional=notional,
-                            side=decision.lower(),
-                        )
-                    except Exception:
-                        pass
         else:
             logger.error(f"❌ Trade failed: {result.status} - {result.message}")
 
