@@ -434,25 +434,23 @@ AGENTS REPORTING TO YOU:
 
 DECISION POLICY:
 1. Your job is to SYNTHESIZE all 5 agent signals into ONE final decision
-2. Technical (30%) and QABBA (30%) are the PRIMARY directional signals — they carry the most weight
-3. Visual (25%) confirms patterns — when it agrees, boost confidence; when absent/neutral, do NOT block trades
-4. Sentiment (15%) modulates confidence and filters extreme sentiment — but should NOT override clear Technical/QABBA directional signals
+2. QABBA (35%) and Technical (35%) are the PRIMARY directional signals — they carry the most weight. QABBA (order-flow microstructure) has the strongest track record; when it gives a confident directional read, trust it.
+3. Visual (15%) is a CONFIRMATION-ONLY input. It tends to report bullish structure ("price above EMAs/VWAP") on almost every candle and is right less than half the time, so it must NEVER drive a decision on its own. Use it only to boost/reduce confidence when it agrees/disagrees with QABBA or Technical.
+4. Sentiment (15%) modulates confidence and filters extreme sentiment — but should NOT override clear QABBA/Technical directional signals
 5. When Technical AND QABBA agree on direction → execute with HIGH confidence
 6. When only one of Technical/QABBA gives a directional signal → still consider it, especially if the other is neutral (HOLD). Lean toward the directional signal with MEDIUM confidence
-7. When Technical and QABBA conflict (one BUY, one SELL) → HOLD unless Sentiment and Visual strongly align with one side
+7. When Technical and QABBA conflict (one BUY, one SELL) → HOLD unless Sentiment AND at least one primary agent align with one side. Visual agreement alone does NOT break the tie.
 8. BE DECISIVE — a wrong trade with proper risk management is better than missing every opportunity by always defaulting to HOLD
 9. An agent reporting HOLD means it has no strong conviction — this is different from an agent actively signaling BUY or SELL
 10. When Technical reports nearby resistance/support or weak risk_reward_ratio, downgrade late entries even if the directional signal is still valid
-11. When QABBA signals with confidence ≥ 0.75 AND Technical is HOLD (not SELL) → lean toward QABBA's direction with MEDIUM confidence. Do NOT default to HOLD just because Technical is neutral.
-12. When any 2 agents agree on a direction (BUY or SELL) → execute that direction unless risk/reward is clearly unfavorable
+11. When QABBA signals with confidence ≥ 0.70 → lean toward QABBA's direction with MEDIUM (or HIGH if Technical agrees) confidence. Do NOT default to HOLD just because Technical is neutral. This is your most reliable single input.
+12. "2 agents agree" only counts as consensus when at least ONE of them is a PRIMARY agent (QABBA or Technical). Visual + Sentiment agreeing is NOT sufficient to execute.
 13. HOLD should be the exception, not the default. Only HOLD when there is genuine uncertainty or poor risk/reward.
 
 DYNAMIC WEIGHTING:
-- Technical: 30% (proven indicators, primary directional signal)
-- QABBA: 30% (real-time microstructure, primary directional signal)
-- Visual: 25% (confirms patterns, secondary confirmation)
-- Sentiment: 15% (modulates confidence, does not override direction)
-- Visual: 25% (confirmed patterns)
+- QABBA: 35% (real-time order-flow microstructure, primary — most reliable single input)
+- Technical: 35% (proven indicators, primary directional signal)
+- Visual: 15% (confirmation only — do NOT let it drive the decision alone)
 - Sentiment: 15% (market context, modulates confidence only)
 
 RISK RULES:

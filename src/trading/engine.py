@@ -100,6 +100,28 @@ def _env_float(name: str, default: float) -> float:
     return value
 
 
+def _deterministic_notional(
+    llm_requested_notional: float | None,
+    base_notional: float,
+    mult_min: float,
+    mult_max: float,
+) -> tuple[float, float, float]:
+    """Derive the entry notional deterministically from ``base_notional`` while
+    treating the LLM's requested notional as a bounded ratio.
+
+    Returns ``(requested_notional, llm_ratio, clamped_ratio)``. The LLM value is
+    interpreted relative to ``base_notional`` (= balance × risk% × leverage) and
+    clamped to ``[mult_min, mult_max]`` so a single LLM call cannot 163× the
+    size or shrink it below the exchange minimum. When there is no LLM value or
+    no base notional the ratio defaults to 1.0.
+    """
+    llm_ratio = 1.0
+    if llm_requested_notional and base_notional > 0:
+        llm_ratio = llm_requested_notional / base_notional
+    clamped_ratio = min(max(llm_ratio, mult_min), mult_max)
+    return base_notional * clamped_ratio, llm_ratio, clamped_ratio
+
+
 def _confidence_label(value: Any) -> str:
     raw = str(value or "LOW").strip().upper()
     return raw if raw in {"LOW", "MEDIUM", "HIGH"} else "LOW"
@@ -396,6 +418,25 @@ class TradingEngine:
             "FENIX_NANOFENIX_TIMING_TRIGGER_ALLOW_COUNTERTREND", False
         )
         self._nanofenix_timing_regime: dict[str, Any] | None = None
+
+        # Counter-trend entry gate: when the NanoFenix companion reports a
+        # TRENDING regime with a directional bias, block NEW entries that fade
+        # that trend (SELL into an up-trend / BUY into a down-trend). This is the
+        # dominant failure of the 2026-07-05 streak — 7 of 8 losses were shorts
+        # fading "RSI overbought" while the trend was still up. Off by default so
+        # it only activates when the companion is enabled and configured.
+        self._trend_gate_enabled = _env_flag("FENIX_TREND_GATE_ENABLED", True)
+        self._trend_gate_regimes = {
+            r.strip().upper()
+            for r in os.getenv("FENIX_TREND_GATE_REGIMES", "TRENDING").split(",")
+            if r.strip()
+        }
+        self._trend_gate_max_signal_age_sec = _env_float(
+            "FENIX_TREND_GATE_MAX_SIGNAL_AGE_SEC", 90.0
+        )
+        # Last companion EMA slope (bps), cached for the price-confirmation
+        # fallback when engine EMAs are unavailable.
+        self._last_companion_ema_trend_bps: float | None = None
 
         # State
         self._running = False
@@ -1430,6 +1471,17 @@ class TradingEngine:
                 )
             else:
                 logger.info("Balance for risk manager: %.2f USDT", graph_balance)
+                # Feed the real exchange balance to the risk manager every cycle,
+                # not only inside _execute_trade. Otherwise an instance that never
+                # opens a NEW position (e.g. it only closes an inherited one) never
+                # calls update_balance, so its _current_balance/_peak_balance stay
+                # at 0 and drawdown is computed against a zero baseline. The risk
+                # manager's own re-anchor logic initialises cleanly from this.
+                if self.risk_manager and RISK_MANAGER_AVAILABLE:
+                    try:
+                        self.risk_manager.update_balance(float(graph_balance))
+                    except Exception as e:
+                        logger.debug("Could not seed risk manager balance: %s", e)
 
             # Execute LangGraph analysis (always, even without visual)
             result = await self._trading_graph.invoke(
@@ -2652,6 +2704,154 @@ class TradingEngine:
             position_side == "SHORT" and decision == "BUY"
         )
 
+    def _exit_signal_for_blocked_entry(self, entry_signal: str) -> str:
+        """Decide which signal to hand to position management when an ENTRY
+        filter blocked ``entry_signal``.
+
+        Entry filters (RESISTANCE, MTF_VETO, POST_STOPOUT, etc.) should stop us
+        from OPENING a new position, but must not trap us in a position that the
+        signal has flipped against. If ``entry_signal`` is opposite to an open
+        position, return it so the opposite-signal exit can still fire; otherwise
+        return "HOLD" (a no-op for exit purposes).
+
+        Set ``FENIX_BLOCK_EXIT_ON_ENTRY_FILTER=1`` to restore the old behaviour
+        where a blocked entry also suppressed the exit.
+        """
+        entry_signal = str(entry_signal or "").upper()
+        if entry_signal not in {"BUY", "SELL"}:
+            return "HOLD"
+        if _env_flag("FENIX_BLOCK_EXIT_ON_ENTRY_FILTER", False):
+            return "HOLD"
+        tracked = self._get_tracked_position()
+        if tracked is None:
+            return "HOLD"
+        tracked_side = str(getattr(tracked, "side", "") or "").upper()
+        if self._is_opposite_side(tracked_side, entry_signal):
+            return entry_signal
+        return "HOLD"
+
+    def _price_confirms_trend(self, trend: str, indicators: dict[str, Any] | None) -> bool:
+        """Cross-check the companion's ``trend`` label against real recent price
+        structure, so a stale/lagging label cannot veto on its own.
+
+        BULL is confirmed when short-term EMAs are stacked up (ema_9 >= ema_20)
+        and price is not below the mid EMA; BEAR the mirror. Falls back to the
+        companion's own ``ema_trend_bps`` sign when engine EMAs are unavailable.
+        Returns True only when the price agrees with the label.
+        """
+        trend = str(trend or "").upper()
+        ind = indicators or {}
+        ema_fast = _safe_float(ind.get("ema_9"))
+        ema_slow = _safe_float(ind.get("ema_20")) or _safe_float(ind.get("ema_21"))
+        price = _safe_float(ind.get("last_price")) or _safe_float(
+            getattr(self.market_data, "current_price", None)
+        )
+        min_sep_bps = _env_float("FENIX_TREND_GATE_MIN_EMA_SEP_BPS", 1.0)
+
+        if ema_fast is not None and ema_slow is not None and ema_slow > 0:
+            sep_bps = (ema_fast - ema_slow) / ema_slow * 1e4
+            if trend == "BULL":
+                ok = sep_bps >= min_sep_bps and (price is None or price >= ema_slow)
+                return bool(ok)
+            if trend == "BEAR":
+                ok = sep_bps <= -min_sep_bps and (price is None or price <= ema_slow)
+                return bool(ok)
+            return False
+
+        # Fallback: companion's own EMA slope in bps must agree with the label.
+        ema_bps = _safe_float((self._last_companion_ema_trend_bps or 0.0))
+        if trend == "BULL":
+            return ema_bps >= min_sep_bps
+        if trend == "BEAR":
+            return ema_bps <= -min_sep_bps
+        return False
+
+    def _agents_confirm_direction(self, decision: str, decision_data: dict[str, Any]) -> bool:
+        """True when the primary agents strongly agree with ``decision``.
+
+        Used to let a high-confluence entry override the NanoFenix hard-veto: the
+        2026-07-05 xray showed NanoFenix blocking correct SELLs in a sustained
+        trend (ETH −1.68%) that Technical + QABBA + Decision all called right. We
+        require BOTH primary agents (Technical, QABBA) to point the same way as
+        the final decision, with a minimum confidence, and the final decision to
+        be HIGH-conviction. Maps QABBA's BUY_QABBA/SELL_QABBA to BUY/SELL.
+        """
+        def _norm(sig: str) -> str:
+            sig = str(sig or "").upper()
+            if sig.startswith("BUY"):
+                return "BUY"
+            if sig.startswith("SELL"):
+                return "SELL"
+            return "HOLD"
+
+        min_conf = _env_float("FENIX_NANOFENIX_OVERRIDE_MIN_AGENT_CONF", 0.60)
+        tech = _norm(decision_data.get("_execution_technical_signal"))
+        tech_c = _safe_float(decision_data.get("_execution_technical_confidence")) or 0.0
+        qabba = _norm(decision_data.get("_execution_qabba_signal"))
+        qabba_c = _safe_float(decision_data.get("_execution_qabba_confidence")) or 0.0
+
+        tech_ok = tech == decision and tech_c >= min_conf
+        qabba_ok = qabba == decision and qabba_c >= min_conf
+        # Require both primaries aligned (strongest evidence the model missed it).
+        return bool(tech_ok and qabba_ok)
+
+    def _trend_gate_blocks_entry(
+        self, decision: str, indicators: dict[str, Any] | None = None
+    ) -> str | None:
+        """Return a block reason when ``decision`` fades a *confirmed* trend.
+
+        Reads the NanoFenix companion signal (regime + trend) and blocks NEW
+        entries that fade a TRENDING bias (SELL into BULL, BUY into BEAR) — but
+        ONLY when real recent price structure confirms that trend label. The
+        2026-07-05 xray showed the raw companion label lagged/inverted the price
+        (SOL 17-19h: label BEAR while price rose), so the unconfirmed gate blocked
+        6 winning BUYs. Requiring price confirmation removes that failure mode.
+        Set ``FENIX_TREND_GATE_REQUIRE_PRICE_CONFIRM=0`` to restore the old
+        label-only behaviour.
+        """
+        if not bool(getattr(self, "_trend_gate_enabled", False)):
+            return None
+        if decision not in {"BUY", "SELL"}:
+            return None
+        if not bool(getattr(self, "_nanofenix_companion_enabled", False)):
+            return None
+
+        signal, status = self._read_nanofenix_companion_signal()
+        if status != "ok" or not isinstance(signal, dict):
+            return None
+
+        age = _safe_float(signal.get("_signal_age_sec"))
+        if age is not None and age > float(
+            getattr(self, "_trend_gate_max_signal_age_sec", 90.0)
+        ):
+            return None
+
+        regime = str(signal.get("regime") or "").upper()
+        if regime not in getattr(self, "_trend_gate_regimes", {"TRENDING"}):
+            return None
+
+        trend = str(signal.get("trend") or "").upper()
+        # Cache the companion's EMA slope for the price-confirmation fallback.
+        self._last_companion_ema_trend_bps = _safe_float(signal.get("ema_trend_bps"))
+
+        faded = (decision == "SELL" and trend == "BULL") or (
+            decision == "BUY" and trend == "BEAR"
+        )
+        if not faded:
+            return None
+
+        require_confirm = _env_flag("FENIX_TREND_GATE_REQUIRE_PRICE_CONFIRM", True)
+        if require_confirm and not self._price_confirms_trend(trend, indicators):
+            logger.info(
+                "Trend gate stood down: companion says %s but price does not "
+                "confirm it (%s allowed)",
+                trend,
+                decision,
+            )
+            return None
+
+        return f"trend_gate:{decision} fades {regime}/{trend} (price-confirmed)"
+
     def _nanofenix_confirms_action(self, action: str, companion: dict[str, Any] | None) -> bool:
         if not isinstance(companion, dict):
             return False
@@ -3708,6 +3908,13 @@ class TradingEngine:
 
         self._log_signal(decision, confidence, reasoning, result)
 
+        # Preserve the directional signal that entered the filter pipeline so an
+        # entry-filter block does not also suppress an opposite-signal EXIT of an
+        # already-open position. Entry filters (RESISTANCE, MTF_VETO, POST_STOPOUT,
+        # etc.) are meant to stop OPENING a new position, not to trap us in a
+        # losing position when the signal has flipped against it.
+        entry_signal_for_exit = decision if decision in {"BUY", "SELL"} else "HOLD"
+
         async def _hold(reason: str | None = None, *, filter_name: str | None = None) -> None:
             nonlocal decision
             if filter_name:
@@ -3719,7 +3926,18 @@ class TradingEngine:
             if reason:
                 decision_data["hold_reason"] = reason
             self._consecutive_holds += 1
-            await self._manage_open_position(new_signal="HOLD")
+            # If an entry filter blocked a directional signal that is OPPOSITE to
+            # an open position, still let that signal close the position. Opening
+            # is blocked; exiting is not. Falls back to HOLD (no-op exit) when
+            # there is no open position or the signal is not opposite.
+            manage_signal = self._exit_signal_for_blocked_entry(entry_signal_for_exit)
+            if manage_signal != "HOLD":
+                logger.info(
+                    "🔁 Entry blocked (%s) but %s opposes open position -> allowing exit",
+                    reason or filter_name or "filter",
+                    manage_signal,
+                )
+            await self._manage_open_position(new_signal=manage_signal)
 
         # MTF veto in full-graph path: if the 1h (or configured HTF) bias
         # strongly opposes the decision, block the entry. This was previously
@@ -3756,6 +3974,12 @@ class TradingEngine:
                 await _hold(stopout_reason, filter_name="POST_STOPOUT")
                 return
 
+        if decision in {"BUY", "SELL"}:
+            trend_gate_reason = self._trend_gate_blocks_entry(decision, indicators)
+            if trend_gate_reason:
+                await _hold(trend_gate_reason, filter_name="TREND_GATE")
+                return
+
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
             if risk_report.get("parse_error") or verdict not in {
@@ -3773,11 +3997,46 @@ class TradingEngine:
             and isinstance(companion_policy, dict)
             and self._nanofenix_policy_hard_vetoes_entry(companion_policy)
         ):
-            await _hold(
-                f"nanofenix_hard_veto:{companion_policy.get('reason', 'blocked')}",
-                filter_name="NANOFENIX",
+            # Confluence override: if BOTH primary agents (Technical + QABBA) agree
+            # with a HIGH-conviction final decision, let it through despite the
+            # companion's veto. The 2026-07-05 xray showed the hard-veto blocking
+            # correct trend-following SELLs the other agents called right. Disable
+            # with FENIX_NANOFENIX_ALLOW_CONFLUENCE_OVERRIDE=0.
+            #
+            # BUT never override a veto whose reason is a hard directional/identity
+            # conflict: direction_mismatch means the model points the OPPOSITE way
+            # (exactly when it may be right and the LLMs wrong), and symbol/run_id
+            # mismatches mean the signal is not even for this instance.
+            veto_reason_text = str(companion_policy.get("reason") or "")
+            veto_reasons = {r.strip() for r in veto_reason_text.split(",") if r.strip()}
+            non_overridable = {
+                "direction_mismatch",
+                "symbol_mismatch",
+                "run_id_mismatch",
+                "signal_file_missing",
+                "signal_file_empty",
+                "signal_parse_error",
+            }
+            override = (
+                _env_flag("FENIX_NANOFENIX_ALLOW_CONFLUENCE_OVERRIDE", True)
+                and str(confidence).upper() == "HIGH"
+                and not (veto_reasons & non_overridable)
+                and self._agents_confirm_direction(decision, decision_data)
             )
-            return
+            if override:
+                logger.info(
+                    "🟢 NanoFenix hard-veto overridden by agent confluence "
+                    "(Technical+QABBA agree on %s, decision HIGH): %s",
+                    decision,
+                    companion_policy.get("reason", "blocked"),
+                )
+                decision_data["nanofenix_veto_overridden"] = True
+            else:
+                await _hold(
+                    f"nanofenix_hard_veto:{companion_policy.get('reason', 'blocked')}",
+                    filter_name="NANOFENIX",
+                )
+                return
 
         if decision in {"BUY", "SELL"}:
             trend_conflict = bool(indicators.get("trend_conflict"))
@@ -4459,13 +4718,37 @@ class TradingEngine:
             APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01,
         )
         fallback_notional = balance * max(0.0, risk_fraction) * leverage
-        requested_notional = (
+        llm_requested_notional = (
             _safe_float(decision_data.get("position_size"))
             or _safe_float(order_details.get("approved_size"))
             or _safe_float(risk_data.get("adjusted_position_size"))
             or _safe_float(risk_data.get("approved_size"))
-            or fallback_notional
         )
+        # Deterministic sizing (default ON): the base notional is derived from
+        # balance × risk% × leverage, NOT taken verbatim from the LLM. The LLM's
+        # requested_notional is treated as a RATIO relative to that base and
+        # clamped to [min, max]. This prevents the failure seen on 2026-07-05
+        # where the LLM asked for $10.73 on a winning setup (skipped as sub-min)
+        # and $1748.53 on a losing one (163× larger, right after 3 losses).
+        if _env_flag("FENIX_DETERMINISTIC_SIZING", True):
+            base_notional = fallback_notional if fallback_notional > 0 else 0.0
+            mult_min = max(0.0, _env_float("FENIX_LLM_SIZE_MULT_MIN", 0.5))
+            mult_max = max(mult_min, _env_float("FENIX_LLM_SIZE_MULT_MAX", 1.5))
+            requested_notional, llm_ratio, clamped_ratio = _deterministic_notional(
+                llm_requested_notional, base_notional, mult_min, mult_max
+            )
+            if llm_requested_notional and abs(clamped_ratio - llm_ratio) > 1e-9:
+                logger.info(
+                    "Deterministic sizing: LLM asked $%.2f (%.2f× base $%.2f), "
+                    "clamped to %.2f× -> $%.2f",
+                    llm_requested_notional,
+                    llm_ratio,
+                    base_notional,
+                    clamped_ratio,
+                    requested_notional,
+                )
+        else:
+            requested_notional = llm_requested_notional or fallback_notional
         size_multiplier = max(0.0, _safe_float(decision_data.get("size_multiplier")) or 1.0)
         companion_policy = (
             decision_data.get("nanofenix_policy") if isinstance(decision_data, dict) else None
