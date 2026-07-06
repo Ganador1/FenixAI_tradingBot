@@ -2704,7 +2704,56 @@ class TradingEngine:
             position_side == "SHORT" and decision == "BUY"
         )
 
-    def _exit_signal_for_blocked_entry(self, entry_signal: str) -> str:
+    def _directional_agents_agreeing(self, decision: str, decision_data: dict[str, Any]) -> int:
+        """Count how many of the 3 directional agents (Technical, QABBA, Visual)
+        agree with ``decision``. Maps BUY_QABBA/SELL_QABBA to BUY/SELL."""
+        decision = str(decision or "").upper()
+        count = 0
+        for key in (
+            "_execution_technical_signal",
+            "_execution_qabba_signal",
+            "_execution_visual_signal",
+        ):
+            sig = str(decision_data.get(key) or "").upper()
+            if sig.startswith("BUY"):
+                sig = "BUY"
+            elif sig.startswith("SELL"):
+                sig = "SELL"
+            if sig == decision:
+                count += 1
+        return count
+
+    def _opposite_exit_quality_ok(
+        self,
+        exit_signal: str,
+        confidence: str,
+        decision_data: dict[str, Any] | None,
+    ) -> bool:
+        """A signal whose ENTRY was blocked by a filter may still close an
+        opposite position — but only when it has real quality: HIGH final
+        confidence OR >=2 of the 3 directional agents backing it.
+
+        2026-07-06: a vetoed QABBA-only SELL (1/3 agents, MEDIUM) closed a
+        winning SOL LONG far below its TP. A signal deemed not tradeable and
+        near-unanimous against should not kill a winner either.
+        Disable with FENIX_OPPOSITE_EXIT_MIN_QUALITY=0.
+        """
+        if not _env_flag("FENIX_OPPOSITE_EXIT_MIN_QUALITY", True):
+            return True
+        if str(confidence or "").upper() == "HIGH":
+            return True
+        if not isinstance(decision_data, dict):
+            return True
+        min_agents = int(os.getenv("FENIX_OPPOSITE_EXIT_MIN_AGENTS", "2"))
+        return self._directional_agents_agreeing(exit_signal, decision_data) >= min_agents
+
+    def _exit_signal_for_blocked_entry(
+        self,
+        entry_signal: str,
+        *,
+        confidence: str = "",
+        decision_data: dict[str, Any] | None = None,
+    ) -> str:
         """Decide which signal to hand to position management when an ENTRY
         filter blocked ``entry_signal``.
 
@@ -2726,9 +2775,17 @@ class TradingEngine:
         if tracked is None:
             return "HOLD"
         tracked_side = str(getattr(tracked, "side", "") or "").upper()
-        if self._is_opposite_side(tracked_side, entry_signal):
-            return entry_signal
-        return "HOLD"
+        if not self._is_opposite_side(tracked_side, entry_signal):
+            return "HOLD"
+        if not self._opposite_exit_quality_ok(entry_signal, confidence, decision_data):
+            logger.info(
+                "🔒 Blocked-entry %s opposes open %s but lacks exit quality "
+                "(not HIGH and <2/3 agents agree) -> keeping position",
+                entry_signal,
+                tracked_side,
+            )
+            return "HOLD"
+        return entry_signal
 
     def _price_confirms_trend(self, trend: str, indicators: dict[str, Any] | None) -> bool:
         """Cross-check the companion's ``trend`` label against real recent price
@@ -3930,7 +3987,11 @@ class TradingEngine:
             # an open position, still let that signal close the position. Opening
             # is blocked; exiting is not. Falls back to HOLD (no-op exit) when
             # there is no open position or the signal is not opposite.
-            manage_signal = self._exit_signal_for_blocked_entry(entry_signal_for_exit)
+            manage_signal = self._exit_signal_for_blocked_entry(
+                entry_signal_for_exit,
+                confidence=confidence,
+                decision_data=decision_data,
+            )
             if manage_signal != "HOLD":
                 logger.info(
                     "🔁 Entry blocked (%s) but %s opposes open position -> allowing exit",
@@ -3979,6 +4040,23 @@ class TradingEngine:
             if trend_gate_reason:
                 await _hold(trend_gate_reason, filter_name="TREND_GATE")
                 return
+
+        # Minimum agent consensus: the Decision Agent has twice executed entries
+        # backed by only 1/3 directional agents against its own conflict policy
+        # (SOL 2026-07-05 09:30, ETH 2026-07-06 10:30 -> -7.60). Enforce at code
+        # level: require >=2 of Technical/QABBA/Visual to agree with the decision.
+        # Tune/disable with FENIX_MIN_AGENT_CONSENSUS (0 disables).
+        if decision in {"BUY", "SELL"}:
+            min_consensus = int(os.getenv("FENIX_MIN_AGENT_CONSENSUS", "2"))
+            if min_consensus > 0:
+                agreeing = self._directional_agents_agreeing(decision, decision_data)
+                if agreeing < min_consensus:
+                    await _hold(
+                        f"agent_consensus_too_low:{agreeing}/3 directional agents "
+                        f"agree with {decision} (min {min_consensus})",
+                        filter_name="AGENT_CONSENSUS",
+                    )
+                    return
 
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
