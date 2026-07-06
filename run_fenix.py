@@ -249,7 +249,7 @@ Examples:
     )
     parser.add_argument(
         "--nanofenix-hard-veto-reasons",
-        default="direction_mismatch,high_uncertainty,stale_signal,symbol_mismatch,run_id_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
+        default="direction_mismatch,no_directional_signal,high_uncertainty,stale_signal,symbol_mismatch,run_id_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
         help=(
             "Comma-separated NanoFenix veto reasons that hard-block a Fenix entry. "
             "Soft reasons (e.g. low_actionable_edge, companion_not_ready) are observed "
