@@ -233,8 +233,21 @@ class TestEndToEndAPIFlow:
     @pytest.fixture
     def api_client(self):
         """Cliente de prueba para API E2E."""
+        import asyncio
+
         from fastapi.testclient import TestClient
-        
+
+        # Ensure the (isolated, temp) test DB has its schema. The suite forces
+        # DATABASE_URL to a throwaway file (see conftest); previously this test
+        # only passed because it wrote into the PRODUCTION DB whose tables were
+        # already migrated — the exact isolation bug we are fixing.
+        # NB: import the models first so they register on Base.metadata, or
+        # create_all() produces an empty schema.
+        import src.models.db_models  # noqa: F401  (registers ORM tables)
+        from src.config.database import init_db
+
+        asyncio.new_event_loop().run_until_complete(init_db())
+
         with patch('src.api.server.TradingEngine'):
             with patch('src.api.server.engine', None):
                 # Sin JWT_SECRET los endpoints de control permiten clientes
