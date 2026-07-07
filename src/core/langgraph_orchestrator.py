@@ -896,8 +896,11 @@ def get_agent_context_from_bank(
             if entry.success is not None:
                 success_status = " ✓" if entry.success else " ✗"
 
+            reward = getattr(entry, "reward", None)
+            reward_txt = f" | PnL: {reward:+.2f}" if isinstance(reward, (int, float)) else ""
+
             context_parts.append(
-                f"- [{entry.action}{success_status}] Conf: {entry.confidence:.0%} | "
+                f"- [{entry.action}{success_status}] Conf: {entry.confidence:.0%}{reward_txt} | "
                 f"{entry.reasoning[:100]}..."
             )
 
