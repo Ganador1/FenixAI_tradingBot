@@ -2723,6 +2723,69 @@ class TradingEngine:
                 count += 1
         return count
 
+    def _flow_coherence_blocks_entry(self, decision: str) -> str | None:
+        """Deterministic order-flow coherence guard using the RAW OBI value.
+
+        Three real losses (2026-07-05/06/07) shared the same failure: an entry
+        against an EXTREME order-book imbalance that the QABBA LLM misread as
+        continuation. The raw number is more reliable than the LLM's opinion:
+        - SELL blocked when OBI >= FENIX_FLOW_GUARD_SHORT_OBI (default 5.0,
+          overwhelming bid dominance — shorting into a wall of buyers)
+        - BUY blocked when OBI <= FENIX_FLOW_GUARD_LONG_OBI (default 0.2,
+          overwhelming ask dominance — buying into a wall of sellers)
+        Disable with FENIX_FLOW_GUARD_ENABLE=0.
+        """
+        if decision not in {"BUY", "SELL"}:
+            return None
+        if not _env_flag("FENIX_FLOW_GUARD_ENABLE", True):
+            return None
+        try:
+            micro = self.market_data.get_microstructure_metrics()
+        except Exception:
+            return None
+        obi = _safe_float(getattr(micro, "obi", None))
+        if obi is None or obi <= 0:
+            return None
+        short_max = _env_float("FENIX_FLOW_GUARD_SHORT_OBI", 5.0)
+        long_min = _env_float("FENIX_FLOW_GUARD_LONG_OBI", 0.2)
+        if decision == "SELL" and obi >= short_max:
+            return f"flow_guard:OBI {obi:.2f} extreme bid dominance opposes SELL"
+        if decision == "BUY" and obi <= long_min:
+            return f"flow_guard:OBI {obi:.2f} extreme ask dominance opposes BUY"
+        return None
+
+    def _weighted_consensus(self, decision: str, decision_data: dict[str, Any]) -> float:
+        """Sum of scorecard multipliers of the directional agents agreeing with
+        ``decision``. Falls back to plain count (multiplier 1.0) when scorecards
+        are unavailable, so the gate degrades gracefully."""
+        try:
+            from src.analysis.agent_scorecards import get_agent_scorecards
+
+            scores = get_agent_scorecards().get_scores()
+        except Exception:
+            scores = {}
+
+        def _mult(key: str) -> float:
+            score = scores.get(key)
+            mult = _safe_float(getattr(score, "multiplier", None)) if score else None
+            return mult if mult is not None and mult > 0 else 1.0
+
+        decision = str(decision or "").upper()
+        weighted = 0.0
+        for key, score_key in (
+            ("_execution_technical_signal", "tech"),
+            ("_execution_qabba_signal", "qabba"),
+            ("_execution_visual_signal", "visual"),
+        ):
+            sig = str(decision_data.get(key) or "").upper()
+            if sig.startswith("BUY"):
+                sig = "BUY"
+            elif sig.startswith("SELL"):
+                sig = "SELL"
+            if sig == decision:
+                weighted += _mult(score_key)
+        return weighted
+
     def _opposite_exit_quality_ok(
         self,
         exit_signal: str,
@@ -3967,6 +4030,13 @@ class TradingEngine:
         )
         companion_policy = self._build_nanofenix_policy_payload(decision)
 
+        # Reference price at decision time, used by the pre-order drift guard in
+        # _execute_trade (the LLM pipeline takes 30-40s; entering at market after
+        # an adverse move gives away 0.1-0.2% per entry).
+        decision_data["_decision_reference_price"] = _safe_float(
+            getattr(self.market_data, "current_price", None)
+        )
+
         logger.info("=" * 50)
         logger.info("📋 FINAL DECISION: %s (%s)", decision, confidence)
         logger.info("📝 Reasoning: %s...", reasoning[:200])
@@ -4071,6 +4141,9 @@ class TradingEngine:
         # (SOL 2026-07-05 09:30, ETH 2026-07-06 10:30 -> -7.60). Enforce at code
         # level: require >=2 of Technical/QABBA/Visual to agree with the decision.
         # Tune/disable with FENIX_MIN_AGENT_CONSENSUS (0 disables).
+        # The count is additionally weighted by the live agent scorecards
+        # (ReasoningBank-derived multipliers): two historically weak agents
+        # agreeing count for less than two strong ones.
         if decision in {"BUY", "SELL"}:
             min_consensus = int(os.getenv("FENIX_MIN_AGENT_CONSENSUS", "2"))
             if min_consensus > 0:
@@ -4082,6 +4155,24 @@ class TradingEngine:
                         filter_name="AGENT_CONSENSUS",
                     )
                     return
+                min_weight = _env_float("FENIX_MIN_CONSENSUS_WEIGHT", 1.0)
+                if min_weight > 0:
+                    weighted = self._weighted_consensus(decision, decision_data)
+                    decision_data["_consensus_weight"] = round(weighted, 3)
+                    if weighted < min_weight:
+                        await _hold(
+                            f"agent_consensus_weight_too_low:{weighted:.2f} < "
+                            f"{min_weight:.2f} (scorecard-weighted, {agreeing} agents)",
+                            filter_name="AGENT_CONSENSUS",
+                        )
+                        return
+
+        # Deterministic order-flow coherence guard (raw OBI, not the LLM's read).
+        if decision in {"BUY", "SELL"}:
+            flow_reason = self._flow_coherence_blocks_entry(decision)
+            if flow_reason:
+                await _hold(flow_reason, filter_name="FLOW_GUARD")
+                return
 
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
@@ -4824,6 +4915,34 @@ class TradingEngine:
         decision_data: dict[str, Any],
     ) -> None:
         """Executes a trade based on decision with active RiskManager."""
+        # Pre-order drift guard: abort if price moved adversely beyond
+        # FENIX_MAX_ENTRY_DRIFT_BPS (default 15) since the decision snapshot.
+        ref_price = _safe_float(decision_data.get("_decision_reference_price"))
+        live_price = _safe_float(getattr(self.market_data, "current_price", None))
+        max_drift_bps = _env_float("FENIX_MAX_ENTRY_DRIFT_BPS", 15.0)
+        if ref_price and live_price and ref_price > 0 and max_drift_bps > 0:
+            drift_bps = (live_price - ref_price) / ref_price * 1e4
+            adverse = drift_bps if decision == "BUY" else -drift_bps
+            if adverse > max_drift_bps:
+                logger.warning(
+                    "⛔ Entry drift guard: %s aborted — price moved %.1f bps against "
+                    "since decision (ref %.4f -> live %.4f, max %.1f)",
+                    decision,
+                    adverse,
+                    ref_price,
+                    live_price,
+                    max_drift_bps,
+                )
+                await self._emit_filter_blocked(
+                    "ENTRY_DRIFT",
+                    {
+                        "reason": f"entry_drift:{adverse:.1f}bps adverse since decision",
+                        "reference_price": ref_price,
+                        "live_price": live_price,
+                    },
+                )
+                return
+
         logger.info(f"🎯 Executing {decision} trade...")
 
         self._consecutive_holds = 0
