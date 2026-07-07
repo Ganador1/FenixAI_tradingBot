@@ -4101,6 +4101,31 @@ class TradingEngine:
                 and not (veto_reasons & non_overridable)
                 and self._agents_confirm_direction(decision, decision_data)
             )
+            # Graduated abstention: when the veto fired ONLY because the companion
+            # has no opinion (no_directional_signal / companion_not_ready), a model
+            # that isn't voting should not out-vote a real agent consensus. The
+            # AGENT_CONSENSUS and TREND_GATE filters already ran earlier in this
+            # pipeline, but we re-check the agent count here so the abstention is
+            # self-contained even if FENIX_MIN_AGENT_CONSENSUS is disabled.
+            # 2026-07-06: this rule alone cost the +2.02% SOL 14:45 BUY that
+            # Technical+Visual+Decision all called right. Disable with
+            # FENIX_NANOFENIX_ABSTAIN_WHEN_NO_SIGNAL=0.
+            abstain = False
+            if not override and _env_flag("FENIX_NANOFENIX_ABSTAIN_WHEN_NO_SIGNAL", True):
+                min_agents = int(os.getenv("FENIX_NANOFENIX_ABSTAIN_MIN_AGENTS", "2"))
+                if self._nanofenix_veto_is_pure_abstention(companion_policy):
+                    agreeing = self._directional_agents_agreeing(decision, decision_data)
+                    if agreeing >= min_agents:
+                        abstain = True
+                        logger.info(
+                            "🟡 NanoFenix abstains (no directional opinion) — "
+                            "%d/3 agents back %s; entry allowed: %s",
+                            agreeing,
+                            decision,
+                            companion_policy.get("reason", "blocked"),
+                        )
+                        decision_data["nanofenix_abstained"] = True
+
             if override:
                 logger.info(
                     "🟢 NanoFenix hard-veto overridden by agent confluence "
@@ -4109,7 +4134,7 @@ class TradingEngine:
                     companion_policy.get("reason", "blocked"),
                 )
                 decision_data["nanofenix_veto_overridden"] = True
-            else:
+            elif not abstain:
                 await _hold(
                     f"nanofenix_hard_veto:{companion_policy.get('reason', 'blocked')}",
                     filter_name="NANOFENIX",
@@ -4688,14 +4713,43 @@ class TradingEngine:
         if not configured_reasons:
             return True
 
+        reasons = self._nanofenix_policy_reasons(companion_policy)
+        return bool(reasons & configured_reasons)
+
+    @staticmethod
+    def _nanofenix_policy_reasons(companion_policy: dict[str, Any]) -> set[str]:
         raw_reasons = companion_policy.get("reasons")
         if isinstance(raw_reasons, list):
-            reasons = {str(reason).strip() for reason in raw_reasons if str(reason).strip()}
-        else:
-            reason_text = str(companion_policy.get("reason") or "")
-            reasons = {reason.strip() for reason in reason_text.split(",") if reason.strip()}
+            return {str(reason).strip() for reason in raw_reasons if str(reason).strip()}
+        reason_text = str(companion_policy.get("reason") or "")
+        return {reason.strip() for reason in reason_text.split(",") if reason.strip()}
 
-        return bool(reasons & configured_reasons)
+    # Veto reasons that mean the companion simply has NO opinion right now
+    # (model idle / warming up), as opposed to actively disagreeing
+    # (direction_mismatch), actively warning (high_uncertainty), or being
+    # operationally broken (stale/missing/mismatched signal).
+    _NANOFENIX_ABSTAIN_REASONS = frozenset({"no_directional_signal", "companion_not_ready"})
+
+    def _nanofenix_veto_is_pure_abstention(self, companion_policy: dict[str, Any] | None) -> bool:
+        """True when the companion's hard-veto fired ONLY because it has no
+        directional opinion (no_directional_signal / companion_not_ready).
+
+        2026-07-06 xray: SOL 14:45 BUY had Technical+Visual+Decision aligned and
+        would have hit TP (+2.02%), but the veto fired solely on
+        ``no_directional_signal``. A model with no opinion should ABSTAIN when the
+        agent consensus is real — it should not out-vote it. Any triggering reason
+        outside the abstain set (disagreement, warning, operational failure)
+        keeps the veto absolute.
+        """
+        if not isinstance(companion_policy, dict):
+            return False
+        configured_reasons = set(getattr(self, "_nanofenix_hard_veto_reasons", set()) or set())
+        if not configured_reasons:
+            return False
+        triggering = self._nanofenix_policy_reasons(companion_policy) & configured_reasons
+        if not triggering:
+            return False
+        return triggering <= self._NANOFENIX_ABSTAIN_REASONS
 
     def _apply_nanofenix_marginal_short_size_cap(
         self,
