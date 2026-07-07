@@ -41,6 +41,13 @@ def _force_test_database_url() -> None:
 # Apply at import time so it wins even before any module-level engine is built.
 _force_test_database_url()
 
+# The AGENT_CONSENSUS gate (FENIX_MIN_AGENT_CONSENSUS, default 2 in production)
+# blocks any _process_decision test whose fixture data doesn't supply >=2/3
+# agreeing directional agents — which is most legacy filter/risk-gate tests that
+# predate the gate. Disable it by default for the suite; tests that exercise the
+# gate itself re-enable it explicitly with monkeypatch.setenv.
+os.environ.setdefault("FENIX_MIN_AGENT_CONSENSUS", "0")
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_test_database():
