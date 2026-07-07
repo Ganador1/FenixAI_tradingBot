@@ -3344,6 +3344,31 @@ class TradingEngine:
                         "Exchange already flat for %s (protective order filled); recording exit",
                         self.symbol,
                     )
+                    # Reconcile with the REAL protective-order fills before
+                    # recording. Without this, the exit was booked at the candle
+                    # close price (up to 15m after the actual stop fill),
+                    # inflating losses/gains in the DB, poisoning ReasoningBank
+                    # rewards and delaying the post-stopout filter (2026-07-07:
+                    # ETH SHORT booked -4.38 at close 1787.29 when the SL filled
+                    # at ~1782.95 for ~-3.1 real).
+                    if hasattr(self, "_synchronize_live_exit"):
+                        try:
+                            synced = await self._synchronize_live_exit(
+                                close_result=close_result,
+                                tracked_position=tracked_position,
+                            )
+                            if not synced:
+                                logger.warning(
+                                    "Could not reconcile protective-order fills for %s; "
+                                    "recording exit at estimated price %s",
+                                    self.symbol,
+                                    close_result.get("exit_price"),
+                                )
+                        except Exception:
+                            logger.exception(
+                                "Protective-order fill reconciliation failed for %s",
+                                self.symbol,
+                            )
                     await self._close_position_record(
                         close_result, tracked_position=tracked_position
                     )
