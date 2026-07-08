@@ -56,6 +56,35 @@ class FearGreedTool(BaseTool):
             
         return None # Return None on any error
 
+    def get_value_with_trend(self) -> Optional[str]:
+        """Fetch today's and yesterday's F&G and return a trend-aware string.
+
+        "27" is ambiguous; "27 (yesterday 41, change -14)" reveals a macro
+        shock. Falls back to the plain value when history is unavailable.
+        """
+        url = "https://api.alternative.me/fng/?limit=2&format=json"
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data: Dict[str, Any] = response.json()
+            entries = data.get("data") or []
+            if not entries or "value" not in entries[0]:
+                return None
+            today = int(entries[0]["value"])
+            if len(entries) > 1 and "value" in entries[1]:
+                yesterday = int(entries[1]["value"])
+                delta = today - yesterday
+                note = ""
+                if delta <= -10:
+                    note = " — sharp drop, possible macro shock"
+                elif delta >= 10:
+                    note = " — sharp rise"
+                return f"{today} (yesterday {yesterday}, change {delta:+d}{note})"
+            return str(today)
+        except Exception as e:
+            logger.warning(f"Fear & Greed trend fetch failed, falling back: {e}")
+            return self._run(1)
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     tool = FearGreedTool()
