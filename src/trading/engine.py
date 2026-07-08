@@ -2745,6 +2745,33 @@ class TradingEngine:
                 count += 1
         return count
 
+    async def _macro_riskoff_event(self) -> dict[str, Any] | None:
+        """Return a FRESH severe macro/geopolitical alert, if any.
+
+        Event-study literature on crypto: geopolitical shocks produce negative
+        returns with ELEVATED VOLATILITY concentrated in the first hours, with
+        initial overreaction and partial reversal. The robust response is a
+        self-expiring defensive window (no new longs, reduced size), NOT
+        chasing the panic with shorts. Window: FENIX_MACRO_RISKOFF_MAX_AGE_H
+        (default 6h). Disable with FENIX_MACRO_RISKOFF_ENABLE=0.
+        """
+        if not _env_flag("FENIX_MACRO_RISKOFF_ENABLE", True):
+            return None
+        max_age = _env_float("FENIX_MACRO_RISKOFF_MAX_AGE_H", 6.0)
+        try:
+            from src.tools.macro_news import get_macro_alerts
+
+            alerts = await asyncio.to_thread(get_macro_alerts, 5)
+        except Exception:
+            return None
+        for alert in alerts or []:
+            if str(alert.get("severity")) != "severe":
+                continue
+            age = _safe_float(alert.get("age_hours"))
+            if age is None or age <= max_age:
+                return alert
+        return None
+
     def _flow_coherence_blocks_entry(self, decision: str) -> str | None:
         """Deterministic order-flow coherence guard using the RAW OBI value.
 
@@ -4195,6 +4222,32 @@ class TradingEngine:
             if flow_reason:
                 await _hold(flow_reason, filter_name="FLOW_GUARD")
                 return
+
+        # Macro risk-off window: a fresh severe geopolitical/macro event blocks
+        # NEW longs and halves sizing on shorts. It does NOT force a SELL —
+        # news spikes overreact and partially revert (never chase the panic).
+        if decision in {"BUY", "SELL"}:
+            macro_event = await self._macro_riskoff_event()
+            if macro_event is not None:
+                title = str(macro_event.get("title") or "")[:90]
+                decision_data["macro_risk_event"] = title
+                if decision == "BUY":
+                    await _hold(
+                        f"macro_riskoff:fresh severe macro event blocks new BUY — {title}",
+                        filter_name="MACRO_RISKOFF",
+                    )
+                    return
+                size_cap = _env_float("FENIX_MACRO_RISKOFF_SIZE_CAP", 0.6)
+                if size_cap > 0:
+                    current_mult = max(
+                        0.0, _safe_float(decision_data.get("size_multiplier")) or 1.0
+                    )
+                    if size_cap < current_mult:
+                        decision_data["size_multiplier"] = size_cap
+                        await self._emit_filter_adjusted(
+                            "MACRO_RISKOFF",
+                            {"size_multiplier": size_cap, "event": title},
+                        )
 
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
