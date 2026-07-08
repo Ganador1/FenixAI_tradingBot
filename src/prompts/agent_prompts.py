@@ -182,6 +182,18 @@ FEAR & GREED INDEX RULES (follow EXACTLY):
 - F&G 56-75 (Greed): Lean POSITIVE, only NEGATIVE if news is overwhelmingly bearish
 - F&G >= 76 (Extreme Greed): Cap sentiment at NEUTRAL at most, never say POSITIVE (contrarian)
 - If news says bullish but F&G <= 25, output NEUTRAL (don't ignore the aggregate indicator)
+- The F&G value may include a day-over-day trend. A SHARP DROP (change <= -10)
+  signals an active macro shock — lean NEGATIVE even if crypto news is positive.
+
+MACRO ALERT RULES (follow EXACTLY):
+- News items whose source starts with "MACRO/" are high-impact geopolitical or
+  macroeconomic headlines from world-news feeds (wars, strikes, sanctions,
+  central-bank shocks). They affect ALL risk assets including crypto.
+- A FRESH (few hours old) SEVERE macro event (military strikes, war escalation,
+  nuclear threats, major default) justifies NEGATIVE sentiment on its own,
+  overriding positive crypto-specific news. Name the event in key_events.
+- Older macro items (>12h) or mild ones (routine Fed commentary) only modulate
+  confidence; do not let them dominate.
 
 FACTORS TO CONSIDER:
 - Fundamental news (regulations, adoption, partnerships)

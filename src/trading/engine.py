@@ -1230,6 +1230,24 @@ class TradingEngine:
                     fallback=[],
                 )
                 logger.info(f"📰 Fetched {len(news_data)} news articles")
+                # Fresh high-impact macro/geopolitical headlines (crypto feeds
+                # are blind to them; 2026-07-07 the sentiment agent never saw
+                # the US-Iran strikes). Prepended so they survive the top-5 cut.
+                try:
+                    from src.tools.macro_news import get_macro_alerts
+
+                    macro_alerts = await self._run_blocking_sentiment_call(
+                        "macro_news",
+                        lambda: get_macro_alerts(max_items=3),
+                        fallback=[],
+                    )
+                    if macro_alerts:
+                        news_data = list(macro_alerts) + list(news_data)
+                        logger.info(
+                            "🌍 Injected %d macro alerts into news feed", len(macro_alerts)
+                        )
+                except Exception:
+                    logger.debug("Macro news fetch failed", exc_info=True)
                 # Send news update event to frontend
                 if (callback := self.on_agent_event) is not None:
                     await callback(
@@ -1263,9 +1281,13 @@ class TradingEngine:
                 fg = await self._run_blocking_sentiment_call(
                     "fear_greed",
                     lambda: (
-                        self.fear_greed_tool._run(1)
-                        if hasattr(self.fear_greed_tool, "_run")
-                        else None
+                        self.fear_greed_tool.get_value_with_trend()
+                        if hasattr(self.fear_greed_tool, "get_value_with_trend")
+                        else (
+                            self.fear_greed_tool._run(1)
+                            if hasattr(self.fear_greed_tool, "_run")
+                            else None
+                        )
                     ),
                     fallback=None,
                 )
