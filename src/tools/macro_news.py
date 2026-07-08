@@ -10,6 +10,7 @@ diluting the crypto context.
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 import time
@@ -90,7 +91,9 @@ def _entry_age_hours(entry: Any) -> float | None:
     if not parsed:
         return None
     try:
-        published = datetime.fromtimestamp(time.mktime(parsed), tz=timezone.utc)
+        # feedparser gives struct_time in UTC; time.mktime would interpret it
+        # as LOCAL time (-4h error observed 2026-07-07: negative ages).
+        published = datetime.fromtimestamp(calendar.timegm(parsed), tz=timezone.utc)
     except (OverflowError, ValueError):
         return None
     return (datetime.now(timezone.utc) - published).total_seconds() / 3600.0
