@@ -581,7 +581,10 @@ async def test_execute_trade_blocks_when_stale_local_position_survives_reconcili
 
 
 @pytest.mark.asyncio
-async def test_execute_trade_applies_nanofenix_size_multiplier_hint():
+async def test_execute_trade_applies_nanofenix_size_multiplier_hint(monkeypatch):
+    # Isolate the nanofenix hint mechanism from deterministic sizing so the
+    # LLM's absolute position_size is used as the base for the hint multiplier.
+    monkeypatch.setenv("FENIX_DETERMINISTIC_SIZING", "0")
     engine = _build_minimal_engine(timeframe="15m")
 
     executor = MagicMock()
@@ -617,7 +620,9 @@ async def test_execute_trade_applies_nanofenix_size_multiplier_hint():
 
 
 @pytest.mark.asyncio
-async def test_execute_trade_caps_marginal_short_size_from_nanofenix_policy():
+async def test_execute_trade_caps_marginal_short_size_from_nanofenix_policy(monkeypatch):
+    # Isolate the marginal-short cap from deterministic sizing (see sibling test).
+    monkeypatch.setenv("FENIX_DETERMINISTIC_SIZING", "0")
     engine = _build_minimal_engine(timeframe="15m")
     engine._nanofenix_marginal_short_size_cap = 0.35
     engine._nanofenix_marginal_short_max_edge_bps = 0.5
@@ -1039,7 +1044,10 @@ def test_compute_nanofenix_fast_trigger_blocks_countertrend_without_override():
 
 
 @pytest.mark.asyncio
-async def test_process_decision_hard_vetoes_entry_when_nanofenix_disallows():
+async def test_process_decision_hard_vetoes_entry_when_nanofenix_disallows(monkeypatch):
+    # This test exercises the pure hard-veto; disable the confluence override so
+    # the aligned Technical+QABBA below don't rescue it (that path has its own test).
+    monkeypatch.setenv("FENIX_NANOFENIX_ALLOW_CONFLUENCE_OVERRIDE", "0")
     engine = _build_minimal_engine(timeframe="15m")
     engine._execute_trade = AsyncMock()
     engine._manage_open_position = AsyncMock()
@@ -1072,6 +1080,300 @@ async def test_process_decision_hard_vetoes_entry_when_nanofenix_disallows():
     engine._manage_open_position.assert_awaited_once_with(new_signal="HOLD")
     assert result["final_trade_decision"]["effective_decision"] == "HOLD"
     assert result["final_trade_decision"]["hold_reason"].startswith("nanofenix_hard_veto")
+    assert engine._filter_block_counts.get("NANOFENIX", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_confluence_overrides_soft_nanofenix_veto():
+    """Both primaries agree + HIGH decision + soft veto reason -> trade executes.
+
+    2026-07-06 xray: NanoFenix blocked correct trend-following SELLs that
+    Technical+QABBA called right. Confluence now overrides SOFT veto reasons.
+    """
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_require_allow_execute = True
+    engine._build_nanofenix_policy_payload = MagicMock(
+        return_value={
+            "allow_execute": False,
+            "reason": "low_actionable_edge,low_pred_bps,high_uncertainty",
+            "reasons": ["low_actionable_edge", "low_pred_bps", "high_uncertainty"],
+            "action": "SELL",
+        }
+    )
+    result = {
+        "final_trade_decision": {
+            "final_decision": "SELL",
+            "confidence_in_decision": "HIGH",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "SELL", "confidence": 0.8},
+        "qabba_report": {"signal": "SELL", "confidence": 0.8},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_awaited_once()
+    assert result["final_trade_decision"].get("nanofenix_veto_overridden") is True
+    assert engine._filter_block_counts.get("NANOFENIX", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_consensus_gate_blocks_one_third(monkeypatch):
+    """Integration coverage of the AGENT_CONSENSUS gate (cb08a0af): a decision
+    backed by only 1/3 directional agents is held. The suite disables the gate
+    globally (conftest), so enable it explicitly here."""
+    monkeypatch.setenv("FENIX_MIN_AGENT_CONSENSUS", "2")
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+
+    result = {
+        "final_trade_decision": {
+            "final_decision": "SELL",
+            "confidence_in_decision": "MEDIUM",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "BUY", "confidence": 0.7},
+        "qabba_report": {"signal": "SELL", "confidence": 0.8},
+        "visual_report": {"action": "BUY", "confidence": 0.8},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_not_awaited()
+    assert engine._filter_block_counts.get("AGENT_CONSENSUS", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_consensus_gate_allows_two_thirds(monkeypatch):
+    monkeypatch.setenv("FENIX_MIN_AGENT_CONSENSUS", "2")
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+
+    result = {
+        "final_trade_decision": {
+            "final_decision": "SELL",
+            "confidence_in_decision": "MEDIUM",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "SELL", "confidence": 0.7},
+        "qabba_report": {"signal": "SELL", "confidence": 0.8},
+        "visual_report": {"action": "BUY", "confidence": 0.8},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_awaited_once()
+    assert engine._filter_block_counts.get("AGENT_CONSENSUS", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_nanofenix_abstains_on_no_signal_with_consensus():
+    """SOL 2026-07-06 14:45 replica: Technical BUY + Visual BUY (2/3), decision
+    BUY MEDIUM, companion veto fired only on no_directional_signal (+soft lows)
+    -> companion abstains, trade executes (+2.02% was missed live)."""
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_require_allow_execute = True
+    engine._nanofenix_hard_veto_reasons = {
+        "direction_mismatch",
+        "no_directional_signal",
+        "high_uncertainty",
+        "stale_signal",
+    }
+    engine._build_nanofenix_policy_payload = MagicMock(
+        return_value={
+            "allow_execute": False,
+            "reason": (
+                "companion_not_ready,low_actionable_edge,low_calibration_health,"
+                "low_confidence,low_direction_accuracy,low_pred_bps,no_directional_signal"
+            ),
+            "reasons": [
+                "companion_not_ready",
+                "low_actionable_edge",
+                "low_calibration_health",
+                "low_confidence",
+                "low_direction_accuracy",
+                "low_pred_bps",
+                "no_directional_signal",
+            ],
+            "action": "HOLD",
+        }
+    )
+    result = {
+        "final_trade_decision": {
+            "final_decision": "BUY",
+            "confidence_in_decision": "MEDIUM",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "BUY", "confidence": 0.65},
+        "qabba_report": {"signal": "HOLD", "confidence": 0.30},
+        "visual_report": {"action": "BUY", "confidence": 0.80},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_awaited_once()
+    assert result["final_trade_decision"].get("nanofenix_abstained") is True
+    assert engine._filter_block_counts.get("NANOFENIX", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_nanofenix_abstention_requires_two_agents(monkeypatch):
+    """With the consensus gate disabled, the abstention path itself still
+    requires >=2/3 agents — a lone Technical BUY does not unlock it."""
+    monkeypatch.setenv("FENIX_MIN_AGENT_CONSENSUS", "0")
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_require_allow_execute = True
+    engine._nanofenix_hard_veto_reasons = {"no_directional_signal"}
+    engine._build_nanofenix_policy_payload = MagicMock(
+        return_value={
+            "allow_execute": False,
+            "reason": "no_directional_signal",
+            "reasons": ["no_directional_signal"],
+            "action": "HOLD",
+        }
+    )
+    result = {
+        "final_trade_decision": {
+            "final_decision": "BUY",
+            "confidence_in_decision": "MEDIUM",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "BUY", "confidence": 0.70},
+        "qabba_report": {"signal": "HOLD", "confidence": 0.30},
+        "visual_report": {"action": "HOLD", "confidence": 0.30},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_not_awaited()
+    assert engine._filter_block_counts.get("NANOFENIX", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_nanofenix_abstention_flag_off_keeps_veto(monkeypatch):
+    monkeypatch.setenv("FENIX_NANOFENIX_ABSTAIN_WHEN_NO_SIGNAL", "0")
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_require_allow_execute = True
+    engine._nanofenix_hard_veto_reasons = {"no_directional_signal"}
+    engine._build_nanofenix_policy_payload = MagicMock(
+        return_value={
+            "allow_execute": False,
+            "reason": "no_directional_signal",
+            "reasons": ["no_directional_signal"],
+            "action": "HOLD",
+        }
+    )
+    result = {
+        "final_trade_decision": {
+            "final_decision": "BUY",
+            "confidence_in_decision": "MEDIUM",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "BUY", "confidence": 0.65},
+        "qabba_report": {"signal": "HOLD", "confidence": 0.30},
+        "visual_report": {"action": "BUY", "confidence": 0.80},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_not_awaited()
+    assert engine._filter_block_counts.get("NANOFENIX", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_nanofenix_no_abstention_when_direction_mismatch():
+    """direction_mismatch among triggering reasons keeps the veto absolute even
+    with 2/3 consensus behind the decision."""
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_require_allow_execute = True
+    engine._nanofenix_hard_veto_reasons = {"direction_mismatch", "no_directional_signal"}
+    engine._build_nanofenix_policy_payload = MagicMock(
+        return_value={
+            "allow_execute": False,
+            "reason": "direction_mismatch,no_directional_signal",
+            "reasons": ["direction_mismatch", "no_directional_signal"],
+            "action": "SELL",
+        }
+    )
+    result = {
+        "final_trade_decision": {
+            "final_decision": "BUY",
+            "confidence_in_decision": "MEDIUM",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "BUY", "confidence": 0.70},
+        "qabba_report": {"signal": "HOLD", "confidence": 0.30},
+        "visual_report": {"action": "BUY", "confidence": 0.80},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_not_awaited()
+    assert engine._filter_block_counts.get("NANOFENIX", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_confluence_does_not_override_direction_mismatch():
+    """A direction_mismatch veto is never overridden, even with agent confluence."""
+    engine = _build_minimal_engine(timeframe="15m")
+    engine._execute_trade = AsyncMock()
+    engine._manage_open_position = AsyncMock()
+    engine._nanofenix_companion_enabled = True
+    engine._nanofenix_require_allow_execute = True
+    engine._build_nanofenix_policy_payload = MagicMock(
+        return_value={
+            "allow_execute": False,
+            "reason": "direction_mismatch,low_actionable_edge",
+            "reasons": ["direction_mismatch", "low_actionable_edge"],
+            "action": "BUY",
+        }
+    )
+    result = {
+        "final_trade_decision": {
+            "final_decision": "SELL",
+            "confidence_in_decision": "HIGH",
+            "combined_reasoning": "test",
+        },
+        "risk_assessment": {},
+        "technical_report": {"signal": "SELL", "confidence": 0.8},
+        "qabba_report": {"signal": "SELL", "confidence": 0.8},
+        "indicators": {},
+    }
+
+    await engine._process_decision(result)
+
+    engine._execute_trade.assert_not_awaited()
     assert engine._filter_block_counts.get("NANOFENIX", 0) == 1
 
 

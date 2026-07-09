@@ -145,8 +145,61 @@ class RuntimeRiskManager:
                         self._daily_start_balance = None
                     if self._current_balance <= 0 and self._peak_balance > 0:
                         self._current_balance = self._peak_balance
+                    self._restore_active_status(last_line)
             except Exception as e:
                 logger.warning(f"Could not load risk state: {e}")
+
+    def _restore_active_status(self, last_line: dict) -> None:
+        """Restore an active CAUTION/SEVERE cooldown across a process restart.
+
+        The 2026-07-05 streak had 4 restarts, each of which reset the risk mode
+        to NORMAL and dropped the loss streak — so CAUTION cooldowns (1800s) were
+        silently discarded mid-cooldown. We persist the active status and its
+        cooldown start; on load we re-arm it only if the cooldown has NOT expired.
+        """
+        mode = str(last_line.get("current_mode") or "NORMAL").upper()
+        if mode not in {"CAUTION", "SEVERE"}:
+            return
+        cooldown_start_raw = last_line.get("cooldown_start")
+        if not cooldown_start_raw:
+            return
+        try:
+            cooldown_start = datetime.fromisoformat(str(cooldown_start_raw).replace("Z", "+00:00"))
+            if cooldown_start.tzinfo is None:
+                cooldown_start = cooldown_start.replace(tzinfo=timezone.utc)
+        except Exception:
+            return
+
+        cooldown_seconds = (
+            self.config.caution_cooldown_seconds
+            if mode == "CAUTION"
+            else self.config.severe_cooldown_seconds
+        )
+        elapsed = (datetime.now(timezone.utc) - cooldown_start).total_seconds()
+        if elapsed >= cooldown_seconds:
+            return  # cooldown already expired; nothing to restore
+
+        self._cooldown_start = cooldown_start
+        try:
+            self.current_status = RiskFeedbackStatus(
+                mode=mode,
+                risk_bias=float(last_line.get("risk_bias", 0.7) or 0.7),
+                block_trading=bool(mode == "SEVERE"),
+                reason=f"Restored {mode} after restart ({cooldown_seconds - elapsed:.0f}s left)",
+                cooldown_seconds=cooldown_seconds,
+                expires_at=cooldown_start + timedelta(seconds=cooldown_seconds),
+            )
+        except TypeError:
+            # Minimal fallback dataclass (mode/risk_bias only).
+            self.current_status = RiskFeedbackStatus(
+                mode=mode, risk_bias=float(last_line.get("risk_bias", 0.7) or 0.7)
+            )
+        logger.warning(
+            "🔁 Restored risk mode %s after restart: %.0fs of %ds cooldown remaining",
+            mode,
+            cooldown_seconds - elapsed,
+            cooldown_seconds,
+        )
 
     def _save_state(self) -> None:
         """Persiste estado actual."""
@@ -161,6 +214,9 @@ class RuntimeRiskManager:
             "current_balance": self._current_balance,
             "current_mode": self.current_status.mode,
             "risk_bias": self.current_status.risk_bias,
+            "cooldown_start": (
+                self._cooldown_start.isoformat() if self._cooldown_start else None
+            ),
         }
         try:
             with open(self.storage_path, "a") as f:
@@ -216,6 +272,7 @@ class RuntimeRiskManager:
                 balance,
             )
 
+        prev_persisted = self._current_balance
         self._current_balance = balance
 
         # Reset diario si es nuevo día
@@ -233,6 +290,14 @@ class RuntimeRiskManager:
             self._peak_balance = balance
         if balance > self._all_time_peak:
             self._all_time_peak = balance
+
+        # Persist when the balance moved materially, so the on-disk state (used by
+        # dashboards and by _load_state on restart) reflects the real balance even
+        # for an instance that never calls record_trade. Otherwise a stale/zero
+        # baseline (the SOL current_balance=-0.33 bug) lingers on disk until the
+        # next closed trade. A 1% threshold avoids writing on every price tick.
+        if prev_persisted <= 0 or abs(balance - prev_persisted) > max(0.01, prev_persisted * 0.01):
+            self._save_state()
 
     def set_max_exposure_pct(self, max_exposure_pct: float) -> None:
         self._max_exposure_pct = max(0.0, float(max_exposure_pct))
@@ -405,12 +470,14 @@ class RuntimeRiskManager:
         self._trades.append(trade)
         self._daily_pnl += trade.pnl
 
-        # Recalcular balance y guardar estado
+        # Recalcular balance
         self._current_balance += trade.pnl
-        self._save_state()
 
-        # Auto-reevaluar riesgo después de cada trade
+        # Auto-reevaluar riesgo después de cada trade, LUEGO persistir. The
+        # evaluation is what arms _cooldown_start / current_mode, so saving after
+        # it is what lets an active CAUTION/SEVERE cooldown survive a restart.
         status = self.evaluate_risk()
+        self._save_state()
         if status.mode != "NORMAL":
             logger.warning(f"Risk mode changed after trade: {status.describe()}")
 

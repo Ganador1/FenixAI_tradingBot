@@ -249,7 +249,7 @@ Examples:
     )
     parser.add_argument(
         "--nanofenix-hard-veto-reasons",
-        default="direction_mismatch,high_uncertainty,stale_signal,symbol_mismatch,run_id_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
+        default="direction_mismatch,no_directional_signal,high_uncertainty,stale_signal,symbol_mismatch,run_id_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
         help=(
             "Comma-separated NanoFenix veto reasons that hard-block a Fenix entry. "
             "Soft reasons (e.g. low_actionable_edge, companion_not_ready) are observed "
@@ -369,6 +369,44 @@ def _stop_nanofenix_companion(proc: subprocess.Popen | None) -> None:
         logger.warning("Error stopping NanoFenix companion: %s", e)
 
 
+def _apply_per_instance_isolation(symbol: str) -> None:
+    """Derive per-instance isolation env vars from ``symbol`` when unset.
+
+    Sets, only if not already present in the environment:
+    - FENIX_BALANCE_ASSETS: the quote stablecoin (USDC/USDT) so each bot sizes
+      from its own capital bucket instead of the combined account balance.
+    - FENIX_RISK_MANAGER_STORAGE_PATH: per-symbol risk state file so loss-streak
+      / peak / drawdown tracking is not corrupted by the other instance.
+    - FENIX_REASONING_BANK_DIR / FENIX_LLM_RESPONSE_LOG_DIR: per-symbol dirs so
+      reasoning banks and raw LLM dumps do not interleave between instances.
+
+    Explicit user configuration always wins — we never overwrite an existing var.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return
+    slug = sym.lower()
+
+    quote = None
+    for asset in ("USDC", "USDT", "FDUSD", "BUSD"):
+        if sym.endswith(asset):
+            quote = asset
+            break
+
+    defaults = {
+        "FENIX_RISK_MANAGER_STORAGE_PATH": f"logs/risk_manager_{slug}.jsonl",
+        "FENIX_REASONING_BANK_DIR": f"logs/reasoning_bank_{slug}",
+        "FENIX_LLM_RESPONSE_LOG_DIR": f"logs/llm_responses_{slug}",
+    }
+    if quote:
+        defaults["FENIX_BALANCE_ASSETS"] = quote
+
+    for key, value in defaults.items():
+        if not os.getenv(key):
+            os.environ[key] = value
+            logger.info("  Per-instance isolation: %s=%s", key, value)
+
+
 async def main():
     """Main function."""
     args = parse_args()
@@ -398,6 +436,14 @@ async def main():
     if args.mode == "live" and not args.allow_live:
         logger.error("Live mode requested but --allow-live not provided. Aborting for safety.")
         return 1
+
+    # Per-instance isolation (dual-bot safety). When two Fenix instances run on
+    # the same account (e.g. ETHUSDC + SOLUSDT), they must NOT share balance
+    # accounting or risk/log state, otherwise both size against the same capital
+    # and corrupt each other's peak/drawdown tracking (root cause of the
+    # 2026-07-05 double-exposure). We derive sane per-symbol defaults from the
+    # quote asset without overriding anything the user set explicitly.
+    _apply_per_instance_isolation(args.symbol)
 
     # v2.5: forward model-role assignment to the engine. The LLMFactory
     # honours FENIX_ROTATE_MODELS_<AGENT> with a single-model "rotation"

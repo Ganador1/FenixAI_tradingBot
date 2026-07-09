@@ -106,8 +106,14 @@ async def test_execute_trade_passes_size_multiplier_adjusted_base_to_risk_manage
 
 @pytest.mark.asyncio
 async def test_execute_trade_caps_requested_notional_to_available_margin(monkeypatch):
+    """Legacy sizing: the available-margin cap clamps an oversized LLM notional.
+
+    Deterministic sizing is disabled here so the LLM's absolute position_size is
+    honoured and we can assert the margin cap in isolation.
+    """
     import src.trading.engine as engine_mod
 
+    monkeypatch.setenv("FENIX_DETERMINISTIC_SIZING", "0")
     monkeypatch.setenv("FENIX_LEVERAGE", "1.0")
     monkeypatch.setenv("FENIX_MAX_ENTRY_MARGIN_PCT", "0.90")
     monkeypatch.setattr(engine_mod, "RISK_MANAGER_AVAILABLE", True, raising=False)
@@ -130,3 +136,32 @@ async def test_execute_trade_caps_requested_notional_to_available_margin(monkeyp
 
     assert engine.risk_manager.checked_base_size == pytest.approx(45.0)
     assert engine.executor.last_quantity == pytest.approx(0.45)
+
+
+@pytest.mark.asyncio
+async def test_deterministic_sizing_clamps_oversized_llm_notional(monkeypatch):
+    """Deterministic sizing: a 400 LLM notional on a $50/1x account is clamped to
+    1.5× the base notional (50 * 0.02 * 1 = 1.0 -> 1.5), not honoured verbatim."""
+    import src.trading.engine as engine_mod
+
+    monkeypatch.setenv("FENIX_DETERMINISTIC_SIZING", "1")
+    monkeypatch.setenv("FENIX_MAX_RISK_PER_TRADE", "0.02")
+    monkeypatch.setenv("FENIX_LEVERAGE", "1.0")
+    monkeypatch.setenv("FENIX_LLM_SIZE_MULT_MIN", "0.5")
+    monkeypatch.setenv("FENIX_LLM_SIZE_MULT_MAX", "1.5")
+    monkeypatch.setattr(engine_mod, "RISK_MANAGER_AVAILABLE", True, raising=False)
+
+    engine = TradingEngine(symbol="SOLUSDT", timeframe="15m", paper_trading=False, allow_live_trading=True)
+    engine.executor = _StubExecutor(balance=50.0)
+    engine.market_data = _StubMarketData(price=100.0)
+    engine.risk_manager = _StubRiskManager()
+
+    decision_data = {
+        "risk_assessment": {"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0},
+        "position_size": 400.0,
+    }
+
+    await engine._execute_trade("BUY", "MEDIUM", decision_data)
+
+    # base = 50 * 0.02 * 1 = 1.0; clamped ratio 1.5 -> $1.50, far below the $400 ask
+    assert engine.risk_manager.checked_base_size == pytest.approx(1.5)

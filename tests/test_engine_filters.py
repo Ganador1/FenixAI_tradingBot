@@ -6,6 +6,24 @@ import pytest
 from src.trading.engine import TradingEngine
 
 
+@pytest.fixture(autouse=True)
+def _isolate_companion_disk_state(monkeypatch):
+    """These tests exercise the SR/NanoFenix entry filters, not the counter-trend
+    gate (which has its own suite). Both the gate and other code paths read the
+    live companion JSON off disk for the test symbol; if the running bot has just
+    rewritten it with a fresh timestamp, that stale regime leaks into the test.
+    Disable the gate and force the raw companion read to report "unavailable" so
+    these filter tests depend only on the data they explicitly inject.
+    """
+    monkeypatch.setenv("FENIX_TREND_GATE_ENABLED", "0")
+    monkeypatch.setattr(
+        TradingEngine,
+        "_read_nanofenix_companion_signal",
+        lambda self: (None, "signal_file_missing"),
+        raising=False,
+    )
+
+
 class _StubMarketData:
     def __init__(
         self,

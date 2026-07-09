@@ -100,6 +100,28 @@ def _env_float(name: str, default: float) -> float:
     return value
 
 
+def _deterministic_notional(
+    llm_requested_notional: float | None,
+    base_notional: float,
+    mult_min: float,
+    mult_max: float,
+) -> tuple[float, float, float]:
+    """Derive the entry notional deterministically from ``base_notional`` while
+    treating the LLM's requested notional as a bounded ratio.
+
+    Returns ``(requested_notional, llm_ratio, clamped_ratio)``. The LLM value is
+    interpreted relative to ``base_notional`` (= balance × risk% × leverage) and
+    clamped to ``[mult_min, mult_max]`` so a single LLM call cannot 163× the
+    size or shrink it below the exchange minimum. When there is no LLM value or
+    no base notional the ratio defaults to 1.0.
+    """
+    llm_ratio = 1.0
+    if llm_requested_notional and base_notional > 0:
+        llm_ratio = llm_requested_notional / base_notional
+    clamped_ratio = min(max(llm_ratio, mult_min), mult_max)
+    return base_notional * clamped_ratio, llm_ratio, clamped_ratio
+
+
 def _confidence_label(value: Any) -> str:
     raw = str(value or "LOW").strip().upper()
     return raw if raw in {"LOW", "MEDIUM", "HIGH"} else "LOW"
@@ -396,6 +418,25 @@ class TradingEngine:
             "FENIX_NANOFENIX_TIMING_TRIGGER_ALLOW_COUNTERTREND", False
         )
         self._nanofenix_timing_regime: dict[str, Any] | None = None
+
+        # Counter-trend entry gate: when the NanoFenix companion reports a
+        # TRENDING regime with a directional bias, block NEW entries that fade
+        # that trend (SELL into an up-trend / BUY into a down-trend). This is the
+        # dominant failure of the 2026-07-05 streak — 7 of 8 losses were shorts
+        # fading "RSI overbought" while the trend was still up. Off by default so
+        # it only activates when the companion is enabled and configured.
+        self._trend_gate_enabled = _env_flag("FENIX_TREND_GATE_ENABLED", True)
+        self._trend_gate_regimes = {
+            r.strip().upper()
+            for r in os.getenv("FENIX_TREND_GATE_REGIMES", "TRENDING").split(",")
+            if r.strip()
+        }
+        self._trend_gate_max_signal_age_sec = _env_float(
+            "FENIX_TREND_GATE_MAX_SIGNAL_AGE_SEC", 90.0
+        )
+        # Last companion EMA slope (bps), cached for the price-confirmation
+        # fallback when engine EMAs are unavailable.
+        self._last_companion_ema_trend_bps: float | None = None
 
         # State
         self._running = False
@@ -1189,6 +1230,24 @@ class TradingEngine:
                     fallback=[],
                 )
                 logger.info(f"📰 Fetched {len(news_data)} news articles")
+                # Fresh high-impact macro/geopolitical headlines (crypto feeds
+                # are blind to them; 2026-07-07 the sentiment agent never saw
+                # the US-Iran strikes). Prepended so they survive the top-5 cut.
+                try:
+                    from src.tools.macro_news import get_macro_alerts
+
+                    macro_alerts = await self._run_blocking_sentiment_call(
+                        "macro_news",
+                        lambda: get_macro_alerts(max_items=3),
+                        fallback=[],
+                    )
+                    if macro_alerts:
+                        news_data = list(macro_alerts) + list(news_data)
+                        logger.info(
+                            "🌍 Injected %d macro alerts into news feed", len(macro_alerts)
+                        )
+                except Exception:
+                    logger.debug("Macro news fetch failed", exc_info=True)
                 # Send news update event to frontend
                 if (callback := self.on_agent_event) is not None:
                     await callback(
@@ -1222,9 +1281,13 @@ class TradingEngine:
                 fg = await self._run_blocking_sentiment_call(
                     "fear_greed",
                     lambda: (
-                        self.fear_greed_tool._run(1)
-                        if hasattr(self.fear_greed_tool, "_run")
-                        else None
+                        self.fear_greed_tool.get_value_with_trend()
+                        if hasattr(self.fear_greed_tool, "get_value_with_trend")
+                        else (
+                            self.fear_greed_tool._run(1)
+                            if hasattr(self.fear_greed_tool, "_run")
+                            else None
+                        )
                     ),
                     fallback=None,
                 )
@@ -1430,6 +1493,17 @@ class TradingEngine:
                 )
             else:
                 logger.info("Balance for risk manager: %.2f USDT", graph_balance)
+                # Feed the real exchange balance to the risk manager every cycle,
+                # not only inside _execute_trade. Otherwise an instance that never
+                # opens a NEW position (e.g. it only closes an inherited one) never
+                # calls update_balance, so its _current_balance/_peak_balance stay
+                # at 0 and drawdown is computed against a zero baseline. The risk
+                # manager's own re-anchor logic initialises cleanly from this.
+                if self.risk_manager and RISK_MANAGER_AVAILABLE:
+                    try:
+                        self.risk_manager.update_balance(float(graph_balance))
+                    except Exception as e:
+                        logger.debug("Could not seed risk manager balance: %s", e)
 
             # Execute LangGraph analysis (always, even without visual)
             result = await self._trading_graph.invoke(
@@ -2652,6 +2726,301 @@ class TradingEngine:
             position_side == "SHORT" and decision == "BUY"
         )
 
+    def _directional_agents_agreeing(self, decision: str, decision_data: dict[str, Any]) -> int:
+        """Count how many of the 3 directional agents (Technical, QABBA, Visual)
+        agree with ``decision``. Maps BUY_QABBA/SELL_QABBA to BUY/SELL."""
+        decision = str(decision or "").upper()
+        count = 0
+        for key in (
+            "_execution_technical_signal",
+            "_execution_qabba_signal",
+            "_execution_visual_signal",
+        ):
+            sig = str(decision_data.get(key) or "").upper()
+            if sig.startswith("BUY"):
+                sig = "BUY"
+            elif sig.startswith("SELL"):
+                sig = "SELL"
+            if sig == decision:
+                count += 1
+        return count
+
+    async def _macro_riskoff_event(self) -> dict[str, Any] | None:
+        """Return a FRESH severe macro/geopolitical alert, if any.
+
+        Event-study literature on crypto: geopolitical shocks produce negative
+        returns with ELEVATED VOLATILITY concentrated in the first hours, with
+        initial overreaction and partial reversal. The robust response is a
+        self-expiring defensive window (no new longs, reduced size), NOT
+        chasing the panic with shorts. Window: FENIX_MACRO_RISKOFF_MAX_AGE_H
+        (default 6h). Disable with FENIX_MACRO_RISKOFF_ENABLE=0.
+        """
+        if not _env_flag("FENIX_MACRO_RISKOFF_ENABLE", True):
+            return None
+        max_age = _env_float("FENIX_MACRO_RISKOFF_MAX_AGE_H", 6.0)
+        try:
+            from src.tools.macro_news import get_macro_alerts
+
+            alerts = await asyncio.to_thread(get_macro_alerts, 5)
+        except Exception:
+            return None
+        for alert in alerts or []:
+            if str(alert.get("severity")) != "severe":
+                continue
+            age = _safe_float(alert.get("age_hours"))
+            if age is None or age <= max_age:
+                return alert
+        return None
+
+    def _flow_coherence_blocks_entry(self, decision: str) -> str | None:
+        """Deterministic order-flow coherence guard using the RAW OBI value.
+
+        Three real losses (2026-07-05/06/07) shared the same failure: an entry
+        against an EXTREME order-book imbalance that the QABBA LLM misread as
+        continuation. The raw number is more reliable than the LLM's opinion:
+        - SELL blocked when OBI >= FENIX_FLOW_GUARD_SHORT_OBI (default 5.0,
+          overwhelming bid dominance — shorting into a wall of buyers)
+        - BUY blocked when OBI <= FENIX_FLOW_GUARD_LONG_OBI (default 0.2,
+          overwhelming ask dominance — buying into a wall of sellers)
+        Disable with FENIX_FLOW_GUARD_ENABLE=0.
+        """
+        if decision not in {"BUY", "SELL"}:
+            return None
+        if not _env_flag("FENIX_FLOW_GUARD_ENABLE", True):
+            return None
+        try:
+            micro = self.market_data.get_microstructure_metrics()
+        except Exception:
+            return None
+        obi = _safe_float(getattr(micro, "obi", None))
+        if obi is None or obi <= 0:
+            return None
+        short_max = _env_float("FENIX_FLOW_GUARD_SHORT_OBI", 5.0)
+        long_min = _env_float("FENIX_FLOW_GUARD_LONG_OBI", 0.2)
+        if decision == "SELL" and obi >= short_max:
+            return f"flow_guard:OBI {obi:.2f} extreme bid dominance opposes SELL"
+        if decision == "BUY" and obi <= long_min:
+            return f"flow_guard:OBI {obi:.2f} extreme ask dominance opposes BUY"
+        return None
+
+    def _weighted_consensus(self, decision: str, decision_data: dict[str, Any]) -> float:
+        """Sum of scorecard multipliers of the directional agents agreeing with
+        ``decision``. Falls back to plain count (multiplier 1.0) when scorecards
+        are unavailable, so the gate degrades gracefully."""
+        try:
+            from src.analysis.agent_scorecards import get_agent_scorecards
+
+            scores = get_agent_scorecards().get_scores()
+        except Exception:
+            scores = {}
+
+        def _mult(key: str) -> float:
+            score = scores.get(key)
+            mult = _safe_float(getattr(score, "multiplier", None)) if score else None
+            return mult if mult is not None and mult > 0 else 1.0
+
+        decision = str(decision or "").upper()
+        weighted = 0.0
+        for key, score_key in (
+            ("_execution_technical_signal", "tech"),
+            ("_execution_qabba_signal", "qabba"),
+            ("_execution_visual_signal", "visual"),
+        ):
+            sig = str(decision_data.get(key) or "").upper()
+            if sig.startswith("BUY"):
+                sig = "BUY"
+            elif sig.startswith("SELL"):
+                sig = "SELL"
+            if sig == decision:
+                weighted += _mult(score_key)
+        return weighted
+
+    def _opposite_exit_quality_ok(
+        self,
+        exit_signal: str,
+        confidence: str,
+        decision_data: dict[str, Any] | None,
+    ) -> bool:
+        """A signal whose ENTRY was blocked by a filter may still close an
+        opposite position — but only when it has real quality: HIGH final
+        confidence OR >=2 of the 3 directional agents backing it.
+
+        2026-07-06: a vetoed QABBA-only SELL (1/3 agents, MEDIUM) closed a
+        winning SOL LONG far below its TP. A signal deemed not tradeable and
+        near-unanimous against should not kill a winner either.
+        Disable with FENIX_OPPOSITE_EXIT_MIN_QUALITY=0.
+        """
+        if not _env_flag("FENIX_OPPOSITE_EXIT_MIN_QUALITY", True):
+            return True
+        if str(confidence or "").upper() == "HIGH":
+            return True
+        if not isinstance(decision_data, dict):
+            return True
+        min_agents = int(os.getenv("FENIX_OPPOSITE_EXIT_MIN_AGENTS", "2"))
+        return self._directional_agents_agreeing(exit_signal, decision_data) >= min_agents
+
+    def _exit_signal_for_blocked_entry(
+        self,
+        entry_signal: str,
+        *,
+        confidence: str = "",
+        decision_data: dict[str, Any] | None = None,
+    ) -> str:
+        """Decide which signal to hand to position management when an ENTRY
+        filter blocked ``entry_signal``.
+
+        Entry filters (RESISTANCE, MTF_VETO, POST_STOPOUT, etc.) should stop us
+        from OPENING a new position, but must not trap us in a position that the
+        signal has flipped against. If ``entry_signal`` is opposite to an open
+        position, return it so the opposite-signal exit can still fire; otherwise
+        return "HOLD" (a no-op for exit purposes).
+
+        Set ``FENIX_BLOCK_EXIT_ON_ENTRY_FILTER=1`` to restore the old behaviour
+        where a blocked entry also suppressed the exit.
+        """
+        entry_signal = str(entry_signal or "").upper()
+        if entry_signal not in {"BUY", "SELL"}:
+            return "HOLD"
+        if _env_flag("FENIX_BLOCK_EXIT_ON_ENTRY_FILTER", False):
+            return "HOLD"
+        tracked = self._get_tracked_position()
+        if tracked is None:
+            return "HOLD"
+        tracked_side = str(getattr(tracked, "side", "") or "").upper()
+        if not self._is_opposite_side(tracked_side, entry_signal):
+            return "HOLD"
+        if not self._opposite_exit_quality_ok(entry_signal, confidence, decision_data):
+            logger.info(
+                "🔒 Blocked-entry %s opposes open %s but lacks exit quality "
+                "(not HIGH and <2/3 agents agree) -> keeping position",
+                entry_signal,
+                tracked_side,
+            )
+            return "HOLD"
+        return entry_signal
+
+    def _price_confirms_trend(self, trend: str, indicators: dict[str, Any] | None) -> bool:
+        """Cross-check the companion's ``trend`` label against real recent price
+        structure, so a stale/lagging label cannot veto on its own.
+
+        BULL is confirmed when short-term EMAs are stacked up (ema_9 >= ema_20)
+        and price is not below the mid EMA; BEAR the mirror. Falls back to the
+        companion's own ``ema_trend_bps`` sign when engine EMAs are unavailable.
+        Returns True only when the price agrees with the label.
+        """
+        trend = str(trend or "").upper()
+        ind = indicators or {}
+        ema_fast = _safe_float(ind.get("ema_9"))
+        ema_slow = _safe_float(ind.get("ema_20")) or _safe_float(ind.get("ema_21"))
+        price = _safe_float(ind.get("last_price")) or _safe_float(
+            getattr(self.market_data, "current_price", None)
+        )
+        min_sep_bps = _env_float("FENIX_TREND_GATE_MIN_EMA_SEP_BPS", 1.0)
+
+        if ema_fast is not None and ema_slow is not None and ema_slow > 0:
+            sep_bps = (ema_fast - ema_slow) / ema_slow * 1e4
+            if trend == "BULL":
+                ok = sep_bps >= min_sep_bps and (price is None or price >= ema_slow)
+                return bool(ok)
+            if trend == "BEAR":
+                ok = sep_bps <= -min_sep_bps and (price is None or price <= ema_slow)
+                return bool(ok)
+            return False
+
+        # Fallback: companion's own EMA slope in bps must agree with the label.
+        ema_bps = _safe_float((self._last_companion_ema_trend_bps or 0.0))
+        if trend == "BULL":
+            return ema_bps >= min_sep_bps
+        if trend == "BEAR":
+            return ema_bps <= -min_sep_bps
+        return False
+
+    def _agents_confirm_direction(self, decision: str, decision_data: dict[str, Any]) -> bool:
+        """True when the primary agents strongly agree with ``decision``.
+
+        Used to let a high-confluence entry override the NanoFenix hard-veto: the
+        2026-07-05 xray showed NanoFenix blocking correct SELLs in a sustained
+        trend (ETH −1.68%) that Technical + QABBA + Decision all called right. We
+        require BOTH primary agents (Technical, QABBA) to point the same way as
+        the final decision, with a minimum confidence, and the final decision to
+        be HIGH-conviction. Maps QABBA's BUY_QABBA/SELL_QABBA to BUY/SELL.
+        """
+        def _norm(sig: str) -> str:
+            sig = str(sig or "").upper()
+            if sig.startswith("BUY"):
+                return "BUY"
+            if sig.startswith("SELL"):
+                return "SELL"
+            return "HOLD"
+
+        min_conf = _env_float("FENIX_NANOFENIX_OVERRIDE_MIN_AGENT_CONF", 0.60)
+        tech = _norm(decision_data.get("_execution_technical_signal"))
+        tech_c = _safe_float(decision_data.get("_execution_technical_confidence")) or 0.0
+        qabba = _norm(decision_data.get("_execution_qabba_signal"))
+        qabba_c = _safe_float(decision_data.get("_execution_qabba_confidence")) or 0.0
+
+        tech_ok = tech == decision and tech_c >= min_conf
+        qabba_ok = qabba == decision and qabba_c >= min_conf
+        # Require both primaries aligned (strongest evidence the model missed it).
+        return bool(tech_ok and qabba_ok)
+
+    def _trend_gate_blocks_entry(
+        self, decision: str, indicators: dict[str, Any] | None = None
+    ) -> str | None:
+        """Return a block reason when ``decision`` fades a *confirmed* trend.
+
+        Reads the NanoFenix companion signal (regime + trend) and blocks NEW
+        entries that fade a TRENDING bias (SELL into BULL, BUY into BEAR) — but
+        ONLY when real recent price structure confirms that trend label. The
+        2026-07-05 xray showed the raw companion label lagged/inverted the price
+        (SOL 17-19h: label BEAR while price rose), so the unconfirmed gate blocked
+        6 winning BUYs. Requiring price confirmation removes that failure mode.
+        Set ``FENIX_TREND_GATE_REQUIRE_PRICE_CONFIRM=0`` to restore the old
+        label-only behaviour.
+        """
+        if not bool(getattr(self, "_trend_gate_enabled", False)):
+            return None
+        if decision not in {"BUY", "SELL"}:
+            return None
+        if not bool(getattr(self, "_nanofenix_companion_enabled", False)):
+            return None
+
+        signal, status = self._read_nanofenix_companion_signal()
+        if status != "ok" or not isinstance(signal, dict):
+            return None
+
+        age = _safe_float(signal.get("_signal_age_sec"))
+        if age is not None and age > float(
+            getattr(self, "_trend_gate_max_signal_age_sec", 90.0)
+        ):
+            return None
+
+        regime = str(signal.get("regime") or "").upper()
+        if regime not in getattr(self, "_trend_gate_regimes", {"TRENDING"}):
+            return None
+
+        trend = str(signal.get("trend") or "").upper()
+        # Cache the companion's EMA slope for the price-confirmation fallback.
+        self._last_companion_ema_trend_bps = _safe_float(signal.get("ema_trend_bps"))
+
+        faded = (decision == "SELL" and trend == "BULL") or (
+            decision == "BUY" and trend == "BEAR"
+        )
+        if not faded:
+            return None
+
+        require_confirm = _env_flag("FENIX_TREND_GATE_REQUIRE_PRICE_CONFIRM", True)
+        if require_confirm and not self._price_confirms_trend(trend, indicators):
+            logger.info(
+                "Trend gate stood down: companion says %s but price does not "
+                "confirm it (%s allowed)",
+                trend,
+                decision,
+            )
+            return None
+
+        return f"trend_gate:{decision} fades {regime}/{trend} (price-confirmed)"
+
     def _nanofenix_confirms_action(self, action: str, companion: dict[str, Any] | None) -> bool:
         if not isinstance(companion, dict):
             return False
@@ -3087,6 +3456,31 @@ class TradingEngine:
                         "Exchange already flat for %s (protective order filled); recording exit",
                         self.symbol,
                     )
+                    # Reconcile with the REAL protective-order fills before
+                    # recording. Without this, the exit was booked at the candle
+                    # close price (up to 15m after the actual stop fill),
+                    # inflating losses/gains in the DB, poisoning ReasoningBank
+                    # rewards and delaying the post-stopout filter (2026-07-07:
+                    # ETH SHORT booked -4.38 at close 1787.29 when the SL filled
+                    # at ~1782.95 for ~-3.1 real).
+                    if hasattr(self, "_synchronize_live_exit"):
+                        try:
+                            synced = await self._synchronize_live_exit(
+                                close_result=close_result,
+                                tracked_position=tracked_position,
+                            )
+                            if not synced:
+                                logger.warning(
+                                    "Could not reconcile protective-order fills for %s; "
+                                    "recording exit at estimated price %s",
+                                    self.symbol,
+                                    close_result.get("exit_price"),
+                                )
+                        except Exception:
+                            logger.exception(
+                                "Protective-order fill reconciliation failed for %s",
+                                self.symbol,
+                            )
                     await self._close_position_record(
                         close_result, tracked_position=tracked_position
                     )
@@ -3685,6 +4079,13 @@ class TradingEngine:
         )
         companion_policy = self._build_nanofenix_policy_payload(decision)
 
+        # Reference price at decision time, used by the pre-order drift guard in
+        # _execute_trade (the LLM pipeline takes 30-40s; entering at market after
+        # an adverse move gives away 0.1-0.2% per entry).
+        decision_data["_decision_reference_price"] = _safe_float(
+            getattr(self.market_data, "current_price", None)
+        )
+
         logger.info("=" * 50)
         logger.info("📋 FINAL DECISION: %s (%s)", decision, confidence)
         logger.info("📝 Reasoning: %s...", reasoning[:200])
@@ -3708,6 +4109,13 @@ class TradingEngine:
 
         self._log_signal(decision, confidence, reasoning, result)
 
+        # Preserve the directional signal that entered the filter pipeline so an
+        # entry-filter block does not also suppress an opposite-signal EXIT of an
+        # already-open position. Entry filters (RESISTANCE, MTF_VETO, POST_STOPOUT,
+        # etc.) are meant to stop OPENING a new position, not to trap us in a
+        # losing position when the signal has flipped against it.
+        entry_signal_for_exit = decision if decision in {"BUY", "SELL"} else "HOLD"
+
         async def _hold(reason: str | None = None, *, filter_name: str | None = None) -> None:
             nonlocal decision
             if filter_name:
@@ -3719,7 +4127,22 @@ class TradingEngine:
             if reason:
                 decision_data["hold_reason"] = reason
             self._consecutive_holds += 1
-            await self._manage_open_position(new_signal="HOLD")
+            # If an entry filter blocked a directional signal that is OPPOSITE to
+            # an open position, still let that signal close the position. Opening
+            # is blocked; exiting is not. Falls back to HOLD (no-op exit) when
+            # there is no open position or the signal is not opposite.
+            manage_signal = self._exit_signal_for_blocked_entry(
+                entry_signal_for_exit,
+                confidence=confidence,
+                decision_data=decision_data,
+            )
+            if manage_signal != "HOLD":
+                logger.info(
+                    "🔁 Entry blocked (%s) but %s opposes open position -> allowing exit",
+                    reason or filter_name or "filter",
+                    manage_signal,
+                )
+            await self._manage_open_position(new_signal=manage_signal)
 
         # MTF veto in full-graph path: if the 1h (or configured HTF) bias
         # strongly opposes the decision, block the entry. This was previously
@@ -3756,6 +4179,76 @@ class TradingEngine:
                 await _hold(stopout_reason, filter_name="POST_STOPOUT")
                 return
 
+        if decision in {"BUY", "SELL"}:
+            trend_gate_reason = self._trend_gate_blocks_entry(decision, indicators)
+            if trend_gate_reason:
+                await _hold(trend_gate_reason, filter_name="TREND_GATE")
+                return
+
+        # Minimum agent consensus: the Decision Agent has twice executed entries
+        # backed by only 1/3 directional agents against its own conflict policy
+        # (SOL 2026-07-05 09:30, ETH 2026-07-06 10:30 -> -7.60). Enforce at code
+        # level: require >=2 of Technical/QABBA/Visual to agree with the decision.
+        # Tune/disable with FENIX_MIN_AGENT_CONSENSUS (0 disables).
+        # The count is additionally weighted by the live agent scorecards
+        # (ReasoningBank-derived multipliers): two historically weak agents
+        # agreeing count for less than two strong ones.
+        if decision in {"BUY", "SELL"}:
+            min_consensus = int(os.getenv("FENIX_MIN_AGENT_CONSENSUS", "2"))
+            if min_consensus > 0:
+                agreeing = self._directional_agents_agreeing(decision, decision_data)
+                if agreeing < min_consensus:
+                    await _hold(
+                        f"agent_consensus_too_low:{agreeing}/3 directional agents "
+                        f"agree with {decision} (min {min_consensus})",
+                        filter_name="AGENT_CONSENSUS",
+                    )
+                    return
+                min_weight = _env_float("FENIX_MIN_CONSENSUS_WEIGHT", 1.0)
+                if min_weight > 0:
+                    weighted = self._weighted_consensus(decision, decision_data)
+                    decision_data["_consensus_weight"] = round(weighted, 3)
+                    if weighted < min_weight:
+                        await _hold(
+                            f"agent_consensus_weight_too_low:{weighted:.2f} < "
+                            f"{min_weight:.2f} (scorecard-weighted, {agreeing} agents)",
+                            filter_name="AGENT_CONSENSUS",
+                        )
+                        return
+
+        # Deterministic order-flow coherence guard (raw OBI, not the LLM's read).
+        if decision in {"BUY", "SELL"}:
+            flow_reason = self._flow_coherence_blocks_entry(decision)
+            if flow_reason:
+                await _hold(flow_reason, filter_name="FLOW_GUARD")
+                return
+
+        # Macro risk-off window: a fresh severe geopolitical/macro event blocks
+        # NEW longs and halves sizing on shorts. It does NOT force a SELL —
+        # news spikes overreact and partially revert (never chase the panic).
+        if decision in {"BUY", "SELL"}:
+            macro_event = await self._macro_riskoff_event()
+            if macro_event is not None:
+                title = str(macro_event.get("title") or "")[:90]
+                decision_data["macro_risk_event"] = title
+                if decision == "BUY":
+                    await _hold(
+                        f"macro_riskoff:fresh severe macro event blocks new BUY — {title}",
+                        filter_name="MACRO_RISKOFF",
+                    )
+                    return
+                size_cap = _env_float("FENIX_MACRO_RISKOFF_SIZE_CAP", 0.6)
+                if size_cap > 0:
+                    current_mult = max(
+                        0.0, _safe_float(decision_data.get("size_multiplier")) or 1.0
+                    )
+                    if size_cap < current_mult:
+                        decision_data["size_multiplier"] = size_cap
+                        await self._emit_filter_adjusted(
+                            "MACRO_RISKOFF",
+                            {"size_multiplier": size_cap, "event": title},
+                        )
+
         if decision in {"BUY", "SELL"} and bool(getattr(self, "_engine_enforce_llm_risk", False)):
             verdict = str(risk_report.get("verdict") or "").strip().upper()
             if risk_report.get("parse_error") or verdict not in {
@@ -3773,11 +4266,71 @@ class TradingEngine:
             and isinstance(companion_policy, dict)
             and self._nanofenix_policy_hard_vetoes_entry(companion_policy)
         ):
-            await _hold(
-                f"nanofenix_hard_veto:{companion_policy.get('reason', 'blocked')}",
-                filter_name="NANOFENIX",
+            # Confluence override: if BOTH primary agents (Technical + QABBA) agree
+            # with a HIGH-conviction final decision, let it through despite the
+            # companion's veto. The 2026-07-05 xray showed the hard-veto blocking
+            # correct trend-following SELLs the other agents called right. Disable
+            # with FENIX_NANOFENIX_ALLOW_CONFLUENCE_OVERRIDE=0.
+            #
+            # BUT never override a veto whose reason is a hard directional/identity
+            # conflict: direction_mismatch means the model points the OPPOSITE way
+            # (exactly when it may be right and the LLMs wrong), and symbol/run_id
+            # mismatches mean the signal is not even for this instance.
+            veto_reason_text = str(companion_policy.get("reason") or "")
+            veto_reasons = {r.strip() for r in veto_reason_text.split(",") if r.strip()}
+            non_overridable = {
+                "direction_mismatch",
+                "symbol_mismatch",
+                "run_id_mismatch",
+                "signal_file_missing",
+                "signal_file_empty",
+                "signal_parse_error",
+            }
+            override = (
+                _env_flag("FENIX_NANOFENIX_ALLOW_CONFLUENCE_OVERRIDE", True)
+                and str(confidence).upper() == "HIGH"
+                and not (veto_reasons & non_overridable)
+                and self._agents_confirm_direction(decision, decision_data)
             )
-            return
+            # Graduated abstention: when the veto fired ONLY because the companion
+            # has no opinion (no_directional_signal / companion_not_ready), a model
+            # that isn't voting should not out-vote a real agent consensus. The
+            # AGENT_CONSENSUS and TREND_GATE filters already ran earlier in this
+            # pipeline, but we re-check the agent count here so the abstention is
+            # self-contained even if FENIX_MIN_AGENT_CONSENSUS is disabled.
+            # 2026-07-06: this rule alone cost the +2.02% SOL 14:45 BUY that
+            # Technical+Visual+Decision all called right. Disable with
+            # FENIX_NANOFENIX_ABSTAIN_WHEN_NO_SIGNAL=0.
+            abstain = False
+            if not override and _env_flag("FENIX_NANOFENIX_ABSTAIN_WHEN_NO_SIGNAL", True):
+                min_agents = int(os.getenv("FENIX_NANOFENIX_ABSTAIN_MIN_AGENTS", "2"))
+                if self._nanofenix_veto_is_pure_abstention(companion_policy):
+                    agreeing = self._directional_agents_agreeing(decision, decision_data)
+                    if agreeing >= min_agents:
+                        abstain = True
+                        logger.info(
+                            "🟡 NanoFenix abstains (no directional opinion) — "
+                            "%d/3 agents back %s; entry allowed: %s",
+                            agreeing,
+                            decision,
+                            companion_policy.get("reason", "blocked"),
+                        )
+                        decision_data["nanofenix_abstained"] = True
+
+            if override:
+                logger.info(
+                    "🟢 NanoFenix hard-veto overridden by agent confluence "
+                    "(Technical+QABBA agree on %s, decision HIGH): %s",
+                    decision,
+                    companion_policy.get("reason", "blocked"),
+                )
+                decision_data["nanofenix_veto_overridden"] = True
+            elif not abstain:
+                await _hold(
+                    f"nanofenix_hard_veto:{companion_policy.get('reason', 'blocked')}",
+                    filter_name="NANOFENIX",
+                )
+                return
 
         if decision in {"BUY", "SELL"}:
             trend_conflict = bool(indicators.get("trend_conflict"))
@@ -4351,14 +4904,43 @@ class TradingEngine:
         if not configured_reasons:
             return True
 
+        reasons = self._nanofenix_policy_reasons(companion_policy)
+        return bool(reasons & configured_reasons)
+
+    @staticmethod
+    def _nanofenix_policy_reasons(companion_policy: dict[str, Any]) -> set[str]:
         raw_reasons = companion_policy.get("reasons")
         if isinstance(raw_reasons, list):
-            reasons = {str(reason).strip() for reason in raw_reasons if str(reason).strip()}
-        else:
-            reason_text = str(companion_policy.get("reason") or "")
-            reasons = {reason.strip() for reason in reason_text.split(",") if reason.strip()}
+            return {str(reason).strip() for reason in raw_reasons if str(reason).strip()}
+        reason_text = str(companion_policy.get("reason") or "")
+        return {reason.strip() for reason in reason_text.split(",") if reason.strip()}
 
-        return bool(reasons & configured_reasons)
+    # Veto reasons that mean the companion simply has NO opinion right now
+    # (model idle / warming up), as opposed to actively disagreeing
+    # (direction_mismatch), actively warning (high_uncertainty), or being
+    # operationally broken (stale/missing/mismatched signal).
+    _NANOFENIX_ABSTAIN_REASONS = frozenset({"no_directional_signal", "companion_not_ready"})
+
+    def _nanofenix_veto_is_pure_abstention(self, companion_policy: dict[str, Any] | None) -> bool:
+        """True when the companion's hard-veto fired ONLY because it has no
+        directional opinion (no_directional_signal / companion_not_ready).
+
+        2026-07-06 xray: SOL 14:45 BUY had Technical+Visual+Decision aligned and
+        would have hit TP (+2.02%), but the veto fired solely on
+        ``no_directional_signal``. A model with no opinion should ABSTAIN when the
+        agent consensus is real — it should not out-vote it. Any triggering reason
+        outside the abstain set (disagreement, warning, operational failure)
+        keeps the veto absolute.
+        """
+        if not isinstance(companion_policy, dict):
+            return False
+        configured_reasons = set(getattr(self, "_nanofenix_hard_veto_reasons", set()) or set())
+        if not configured_reasons:
+            return False
+        triggering = self._nanofenix_policy_reasons(companion_policy) & configured_reasons
+        if not triggering:
+            return False
+        return triggering <= self._NANOFENIX_ABSTAIN_REASONS
 
     def _apply_nanofenix_marginal_short_size_cap(
         self,
@@ -4408,6 +4990,34 @@ class TradingEngine:
         decision_data: dict[str, Any],
     ) -> None:
         """Executes a trade based on decision with active RiskManager."""
+        # Pre-order drift guard: abort if price moved adversely beyond
+        # FENIX_MAX_ENTRY_DRIFT_BPS (default 15) since the decision snapshot.
+        ref_price = _safe_float(decision_data.get("_decision_reference_price"))
+        live_price = _safe_float(getattr(self.market_data, "current_price", None))
+        max_drift_bps = _env_float("FENIX_MAX_ENTRY_DRIFT_BPS", 15.0)
+        if ref_price and live_price and ref_price > 0 and max_drift_bps > 0:
+            drift_bps = (live_price - ref_price) / ref_price * 1e4
+            adverse = drift_bps if decision == "BUY" else -drift_bps
+            if adverse > max_drift_bps:
+                logger.warning(
+                    "⛔ Entry drift guard: %s aborted — price moved %.1f bps against "
+                    "since decision (ref %.4f -> live %.4f, max %.1f)",
+                    decision,
+                    adverse,
+                    ref_price,
+                    live_price,
+                    max_drift_bps,
+                )
+                await self._emit_filter_blocked(
+                    "ENTRY_DRIFT",
+                    {
+                        "reason": f"entry_drift:{adverse:.1f}bps adverse since decision",
+                        "reference_price": ref_price,
+                        "live_price": live_price,
+                    },
+                )
+                return
+
         logger.info(f"🎯 Executing {decision} trade...")
 
         self._consecutive_holds = 0
@@ -4459,13 +5069,37 @@ class TradingEngine:
             APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01,
         )
         fallback_notional = balance * max(0.0, risk_fraction) * leverage
-        requested_notional = (
+        llm_requested_notional = (
             _safe_float(decision_data.get("position_size"))
             or _safe_float(order_details.get("approved_size"))
             or _safe_float(risk_data.get("adjusted_position_size"))
             or _safe_float(risk_data.get("approved_size"))
-            or fallback_notional
         )
+        # Deterministic sizing (default ON): the base notional is derived from
+        # balance × risk% × leverage, NOT taken verbatim from the LLM. The LLM's
+        # requested_notional is treated as a RATIO relative to that base and
+        # clamped to [min, max]. This prevents the failure seen on 2026-07-05
+        # where the LLM asked for $10.73 on a winning setup (skipped as sub-min)
+        # and $1748.53 on a losing one (163× larger, right after 3 losses).
+        if _env_flag("FENIX_DETERMINISTIC_SIZING", True):
+            base_notional = fallback_notional if fallback_notional > 0 else 0.0
+            mult_min = max(0.0, _env_float("FENIX_LLM_SIZE_MULT_MIN", 0.5))
+            mult_max = max(mult_min, _env_float("FENIX_LLM_SIZE_MULT_MAX", 1.5))
+            requested_notional, llm_ratio, clamped_ratio = _deterministic_notional(
+                llm_requested_notional, base_notional, mult_min, mult_max
+            )
+            if llm_requested_notional and abs(clamped_ratio - llm_ratio) > 1e-9:
+                logger.info(
+                    "Deterministic sizing: LLM asked $%.2f (%.2f× base $%.2f), "
+                    "clamped to %.2f× -> $%.2f",
+                    llm_requested_notional,
+                    llm_ratio,
+                    base_notional,
+                    clamped_ratio,
+                    requested_notional,
+                )
+        else:
+            requested_notional = llm_requested_notional or fallback_notional
         size_multiplier = max(0.0, _safe_float(decision_data.get("size_multiplier")) or 1.0)
         companion_policy = (
             decision_data.get("nanofenix_policy") if isinstance(decision_data, dict) else None
