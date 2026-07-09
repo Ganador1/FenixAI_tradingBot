@@ -34,6 +34,19 @@ It has been a few months since v2.0. I've been testing the project 24/7 and brai
 
 Among these improvements are the removal of the Sentiment agent, as well as refining the entry and exit logic with new rules, better indicators, and improved timing for decisions. Another upgrade that has provided a massive boost is **Nanofenix**, which introduces a classical ML model with live training. It acts as a strict filter for trades—preventing us from entering too early or too late—and improves the overall win rate by analyzing more input layers. Fenix now executes fewer trades, but the system is much safer and more confident when deciding on an entry or exit.
 
+### 🌍 Update (July 2026): the Sentiment agent is back — and macro-aware
+
+The Sentiment agent has been **reactivated and substantially upgraded**. The original removal happened because it added noise without edge: it only read crypto-native feeds (CoinDesk, Cointelegraph, Decrypt) and was structurally blind to the macro/geopolitical events that actually move risk assets. During the July 2026 US–Iran escalation, the market sold off for hours while the agent kept reporting NEUTRAL — it literally could not see the news.
+
+The new Sentiment stack fixes the root cause:
+
+- **Macro/geopolitical news scanner** (`src/tools/macro_news.py`): world-news RSS feeds (BBC, Al Jazeera, CNBC) filtered by high-impact keywords with word-boundary matching and a `severe`/`high` severity classifier. Fresh high-impact headlines are injected into the sentiment prompt ahead of crypto news.
+- **Fear & Greed with day-over-day trend**: the prompt now receives `"20 (yesterday 27, change -7)"` instead of a bare number — a sharp drop flags an active macro shock with causal context.
+- **Macro alert rules in the prompt**: a fresh severe event (military strikes, war escalation, major default) justifies NEGATIVE sentiment on its own; stale or mild items only modulate confidence.
+- **Deterministic macro risk-off window** (engine-level, grounded in event-study literature): while a severe event is fresh (<6h), new longs are blocked and short sizing is capped at 0.6× — the system defends instead of chasing the panic, and the window expires automatically.
+
+Validated offline with a live A/B test against the real LLM: before the upgrade the agent output NEUTRAL (0.85) while ignoring the Iran strikes; after it, NEGATIVE (0.95) citing *"US military strikes on Iran"* as the key event.
+
 I will keep testing and improving Fenix. I know I don't push commits very often, but I strongly prefer to test everything exhaustively in a local environment before sharing my findings with you all, just to ensure everything is perfect. 
 
 This version will be available as a new Release. If you prefer to revert to v2.0 (which is highly stable), you will still be able to do so.
@@ -147,7 +160,7 @@ Thank you all so much for your massive support!
 |-------------|---------|
 | **Tiered trailing stop** | Four profit tiers: 0–1% → 2.0%, 1–2% → 1.0%, 2–3% → 0.5%, >3% → 0.3% trailing. Trailing history tracked per trade. |
 | **Risk Manager soft-cap** | Instead of vetoing, the Risk Manager now caps position size to available exposure and approves the trade. |
-| **Agent weight rebalance** | Technical/QABBA raised to 0.35 each; Sentiment reduced to 0.05 (was 0.15) — reflects real-world reliability. |
+| **Agent weight rebalance** | Technical/QABBA at 0.35 each; Sentiment at 0.15 as a confidence modulator (reactivated July 2026 with macro awareness), with live agent track records injected so the Decision Agent discounts underperforming agents. |
 | **Decision Agent JSON fix** | Prompt payload trimmed to essential fields; timeout reduced 15 s → 12 s; fallback consensus improved. |
 | **Sentiment Agent cache** | 15-minute news cache (`_NEWS_CACHE_TTL_SEC=900`); payload and retries reduced for faster fallback. |
 
