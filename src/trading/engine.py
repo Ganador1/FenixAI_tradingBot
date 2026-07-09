@@ -3024,6 +3024,47 @@ class TradingEngine:
 
         return f"trend_gate:{decision} fades {regime}/{trend} (price-confirmed)"
 
+    def _tech_trend_blocks_entry(
+        self, decision: str, indicators: dict[str, Any]
+    ) -> str | None:
+        """Technical trend filter using EMA/SuperTrend from the engine's indicators.
+
+        Blocks SELL when EMAs are bullish (EMA20 > EMA50) and SuperTrend is bullish,
+        and BUY when EMAs are bearish and SuperTrend is bearish. This catches
+        counter-trend entries that slip through when NanoFenix abstains.
+
+        Disable with FENIX_TECH_TREND_FILTER=0.
+        """
+        decision = str(decision or "").upper()
+        if decision not in {"BUY", "SELL"}:
+            return None
+
+        ema20 = _safe_float(indicators.get("ema_20")) or 0.0
+        ema50 = _safe_float(indicators.get("ema_50")) or 0.0
+        supertrend_dir = str(
+            indicators.get("supertrend_direction")
+            or indicators.get("supertrend_signal")
+            or ""
+        ).upper()
+
+        # Need at least EMAs to make a determination
+        if ema20 <= 0 or ema50 <= 0:
+            return None
+
+        bullish_trend = ema20 > ema50
+        bearish_trend = ema20 < ema50
+
+        # SuperTrend confirmation: direction is "bullish"/"bearish"
+        st_bullish = supertrend_dir in {"BULLISH", "UP", "BUY"}
+        st_bearish = supertrend_dir in {"BEARISH", "DOWN", "SELL"}
+
+        # Only block when BOTH EMA and SuperTrend agree against the decision
+        if decision == "SELL" and bullish_trend and st_bullish:
+            return "tech_trend:SELL against bullish EMA20>EMA50 + SuperTrend BULLISH"
+        if decision == "BUY" and bearish_trend and st_bearish:
+            return "tech_trend:BUY against bearish EMA20<EMA50 + SuperTrend BEARISH"
+        return None
+
     def _nanofenix_confirms_action(self, action: str, companion: dict[str, Any] | None) -> bool:
         if not isinstance(companion, dict):
             return False
@@ -4150,6 +4191,11 @@ class TradingEngine:
         # MTF veto in full-graph path: if the 1h (or configured HTF) bias
         # strongly opposes the decision, block the entry. This was previously
         # only active in the lite consensus path but not in the LangGraph path.
+        # NOTE: the veto only fires when the HTF bias OPPOSES the decision.
+        # When the decision aligns with the HTF bias, the MTF context is
+        # confirmatory and should never block — this prevents the 2026-07-05
+        # failure mode where the MTF vetoed recovery BUYs that aligned with
+        # the 1h trend. Disable entirely with FENIX_STRICT_MTF_BIAS_TIMEFRAME="".
         if decision in {"BUY", "SELL"}:
             htf_bias = None
             try:
@@ -4188,6 +4234,20 @@ class TradingEngine:
                 await _hold(trend_gate_reason, filter_name="TREND_GATE")
                 return
 
+        # Technical trend filter (2026-07-09): blocks counter-trend entries
+        # based on EMA/SuperTrend even when NanoFenix companion abstains.
+        # The companion trend gate only fires when NanoFenix reports TRENDING,
+        # but when it abstains (allow_execute=false), SELLs in BULL slip through.
+        # This uses the engine's own indicators (EMA20/50, SuperTrend) as a
+        # second line of defense. Disable with FENIX_TECH_TREND_FILTER=0.
+        if decision in {"BUY", "SELL"} and _env_flag(
+            "FENIX_TECH_TREND_FILTER", True
+        ):
+            tech_trend_block = self._tech_trend_blocks_entry(decision, indicators)
+            if tech_trend_block:
+                await _hold(tech_trend_block, filter_name="TECH_TREND")
+                return
+
         # Minimum agent consensus: the Decision Agent has twice executed entries
         # backed by only 1/3 directional agents against its own conflict policy
         # (SOL 2026-07-05 09:30, ETH 2026-07-06 10:30 -> -7.60). Enforce at code
@@ -4218,6 +4278,17 @@ class TradingEngine:
                             filter_name="AGENT_CONSENSUS",
                         )
                         return
+                    elif weighted < min_weight * 1.3:
+                        # Near the threshold: log so radiographies can spot
+                        # entries that barely passed the quality gate.
+                        logger.info(
+                            "⚖️ Consensus weight %.2f barely passed min %.2f "
+                            "(%d agents, decision=%s)",
+                            weighted,
+                            min_weight,
+                            agreeing,
+                            decision,
+                        )
 
         # Deterministic order-flow coherence guard (raw OBI, not the LLM's read).
         if decision in {"BUY", "SELL"}:
