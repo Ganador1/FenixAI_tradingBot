@@ -2768,7 +2768,10 @@ class TradingEngine:
             if str(alert.get("severity")) != "severe":
                 continue
             age = _safe_float(alert.get("age_hours"))
-            if age is None or age <= max_age:
+            # Unknown-age alerts must NOT arm the hard gate: a severe headline
+            # without a timestamp could block every BUY indefinitely even if it
+            # is far older than the window (Codex review, PR #12).
+            if age is not None and age <= max_age:
                 return alert
         return None
 

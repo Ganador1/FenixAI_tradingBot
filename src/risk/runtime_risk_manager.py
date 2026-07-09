@@ -227,6 +227,11 @@ class RuntimeRiskManager:
     def update_balance(self, balance: float) -> None:
         """Actualiza balance y recalcula drawdown."""
         balance = float(balance)
+        # Capture BEFORE any re-anchor mutation: otherwise the save condition
+        # below compares the balance against itself and the stale/zero state
+        # stays on disk until a trade closes (Codex review, PR #12).
+        prev_persisted = self._current_balance
+        reanchored = False
 
         # Re-anchor stale persisted baselines to the first real balance observed for this runtime.
         # This avoids phantom drawdown when a previous session stored a much larger peak balance.
@@ -241,6 +246,7 @@ class RuntimeRiskManager:
                 or self._current_balance > (balance * 1.5)
             )
         ):
+            reanchored = True
             self._current_balance = balance
             self._peak_balance = balance
             self._daily_pnl = 0.0
@@ -272,7 +278,6 @@ class RuntimeRiskManager:
                 balance,
             )
 
-        prev_persisted = self._current_balance
         self._current_balance = balance
 
         # Reset diario si es nuevo día
@@ -296,7 +301,12 @@ class RuntimeRiskManager:
         # for an instance that never calls record_trade. Otherwise a stale/zero
         # baseline (the SOL current_balance=-0.33 bug) lingers on disk until the
         # next closed trade. A 1% threshold avoids writing on every price tick.
-        if prev_persisted <= 0 or abs(balance - prev_persisted) > max(0.01, prev_persisted * 0.01):
+        # A re-anchor always persists immediately.
+        if (
+            reanchored
+            or prev_persisted <= 0
+            or abs(balance - prev_persisted) > max(0.01, prev_persisted * 0.01)
+        ):
             self._save_state()
 
     def set_max_exposure_pct(self, max_exposure_pct: float) -> None:
