@@ -270,6 +270,54 @@ def _normalize_technical_report(report: dict[str, Any] | None) -> dict[str, Any]
     return normalized
 
 
+def _normalize_compact_agent_response(
+    agent_type: str,
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    """Map safe compact-model aliases into the strict legacy agent contract.
+
+    Missing directional reasoning or confidence is never invented for BUY/SELL.
+    Only HOLD responses receive conservative defaults, allowing small local
+    models to abstain without four pointless retries.
+    """
+    normalized = dict(response or {})
+    if agent_type == "technical_analyst":
+        signal = str(normalized.get("signal") or "").upper().strip()
+        normalized["signal"] = signal
+        if "confidence_level" not in normalized and "confidence" in normalized:
+            normalized["confidence_level"] = _confidence_label_from_score(
+                normalized.get("confidence")
+            )
+        if "reasoning" not in normalized:
+            alias = normalized.get("rationale") or normalized.get("analysis")
+            if alias:
+                normalized["reasoning"] = str(alias)
+            elif signal == "HOLD":
+                normalized["reasoning"] = (
+                    "Compact model abstained; no validated directional reasoning supplied."
+                )
+
+    elif agent_type == "qabba_analyst":
+        signal = str(normalized.get("signal") or "").upper().strip()
+        signal_aliases = {
+            "BUY": "BUY_QABBA",
+            "SELL": "SELL_QABBA",
+            "HOLD": "HOLD_QABBA",
+        }
+        normalized["signal"] = signal_aliases.get(signal, signal)
+        is_hold = normalized["signal"] == "HOLD_QABBA"
+        if "qabba_confidence" not in normalized:
+            if "confidence" in normalized:
+                normalized["qabba_confidence"] = normalized.get("confidence")
+            elif is_hold:
+                normalized["qabba_confidence"] = 0.0
+        if "order_flow_bias" not in normalized and is_hold:
+            normalized["order_flow_bias"] = "neutral"
+        if "absorption_detected" not in normalized and is_hold:
+            normalized["absorption_detected"] = False
+    return normalized
+
+
 def validate_agent_response(agent_type: str, response: dict[str, Any]) -> list[str]:
     """
     Validates a response against agent rules.
@@ -622,6 +670,8 @@ Retry with valid JSON.
                         attempt + 1,
                         last_errors,
                     )
+
+            parsed = _normalize_compact_agent_response(agent_type, parsed)
 
             # Validar respuesta
             validation_errors = validate_agent_response(agent_type, parsed)
@@ -2123,18 +2173,28 @@ class FenixTradingGraph:
         graph.add_edge(START, "Technical Agent")
         graph.add_edge(START, "QABBA Agent")
 
+        decision_sources: list[str]
         if self.enable_sentiment:
             graph.add_edge(START, "Sentiment Agent")
-            graph.add_edge("Sentiment Agent", "Decision Agent")
 
-        # Technical and QABBA go to Visual or Decision
+        # Technical and QABBA must both complete before visual analysis.  Two
+        # ordinary edges trigger the downstream node independently in
+        # LangGraph; a waiting edge makes the intended fan-in explicit.
         if self.enable_visual:
-            graph.add_edge("Technical Agent", "Visual Agent")
-            graph.add_edge("QABBA Agent", "Visual Agent")
-            graph.add_edge("Visual Agent", "Decision Agent")
+            graph.add_edge(["Technical Agent", "QABBA Agent"], "Visual Agent")
+            decision_sources = ["Visual Agent"]
         else:
-            graph.add_edge("Technical Agent", "Decision Agent")
-            graph.add_edge("QABBA Agent", "Decision Agent")
+            decision_sources = ["Technical Agent", "QABBA Agent"]
+
+        if self.enable_sentiment:
+            decision_sources.append("Sentiment Agent")
+
+        # Wait for every enabled analysis source.  This prevents the Decision
+        # Agent (and LLM-as-Judge) from being invoked once per inbound edge.
+        if len(decision_sources) == 1:
+            graph.add_edge(decision_sources[0], "Decision Agent")
+        else:
+            graph.add_edge(decision_sources, "Decision Agent")
 
         # Flow from Decision to Risk (if enabled) or END
         if self.enable_risk:

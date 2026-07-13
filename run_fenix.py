@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import logging
 import os
 import signal
@@ -20,6 +21,11 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Fenix production hosts are POSIX.
+    fcntl = None
 
 # Load .env early so JWT_SECRET, API keys, etc. are visible to every module.
 try:
@@ -42,6 +48,46 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("Fenix")
+
+
+class InstanceLock:
+    """Advisory process lock that prevents duplicate live engines per symbol."""
+
+    def __init__(self, symbol: str):
+        lock_dir = Path(os.getenv("FENIX_INSTANCE_LOCK_DIR", "logs/runtime_locks"))
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        slug = "".join(ch for ch in symbol.lower() if ch.isalnum()) or "unknown"
+        self.path = lock_dir / f"fenix_{slug}.lock"
+        self._handle = None
+
+    def acquire(self) -> None:
+        if fcntl is None:
+            raise RuntimeError("Fenix instance locking requires a POSIX host")
+        handle = self.path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.seek(0)
+            owner = handle.read().strip() or "unknown owner"
+            handle.close()
+            raise RuntimeError(
+                f"Another Fenix process already owns {self.path} ({owner})"
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        self._handle = handle
+
+    def release(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is None:
+            return
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -320,7 +366,9 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
 
     # Persist live training so each session continues learning from the last.
     runtime_path = nano_dir / f"runtime_{symbol.lower()}_live.pkl"
+    runtime_model_path = nano_dir / f"runtime_{symbol.lower()}_live_model.pkl"
     env["NANOFENIXV3_RUNTIME_STATE_PATH"] = str(runtime_path)
+    env["NANOFENIXV3_RUNTIME_MODEL_PATH"] = str(runtime_model_path)
     cmd.extend(["--runtime-state-path", str(runtime_path)])
 
     logger.info("Launching NanoFenix companion: %s", " ".join(cmd))
@@ -437,6 +485,11 @@ async def main():
         logger.error("Live mode requested but --allow-live not provided. Aborting for safety.")
         return 1
 
+    if not 0 < args.max_risk <= 100:
+        logger.error("--max-risk must be greater than 0 and no more than 100 percent")
+        return 1
+    os.environ["FENIX_MAX_RISK_PER_TRADE"] = str(args.max_risk / 100.0)
+
     # Per-instance isolation (dual-bot safety). When two Fenix instances run on
     # the same account (e.g. ETHUSDC + SOLUSDT), they must NOT share balance
     # accounting or risk/log state, otherwise both size against the same capital
@@ -444,6 +497,16 @@ async def main():
     # 2026-07-05 double-exposure). We derive sane per-symbol defaults from the
     # quote asset without overriding anything the user set explicitly.
     _apply_per_instance_isolation(args.symbol)
+
+    instance_lock = None
+    if not args.api:
+        instance_lock = InstanceLock(args.symbol)
+        try:
+            instance_lock.acquire()
+        except RuntimeError as exc:
+            logger.error("Refusing to start duplicate engine: %s", exc)
+            return 1
+        atexit.register(instance_lock.release)
 
     # v2.5: forward model-role assignment to the engine. The LLMFactory
     # honours FENIX_ROTATE_MODELS_<AGENT> with a single-model "rotation"
@@ -487,6 +550,9 @@ async def main():
         response = httpx.get("http://localhost:11434/api/tags", timeout=5)
         if response.status_code != 200:
             logger.error("Ollama is not available. Run: ollama serve")
+            _stop_nanofenix_companion(nanofenix_proc)
+            if instance_lock:
+                instance_lock.release()
             return 1
 
         models = [m["name"] for m in response.json().get("models", [])]
@@ -499,6 +565,9 @@ async def main():
 
     except Exception as e:
         logger.error(f"Error connecting to Ollama: {e}")
+        _stop_nanofenix_companion(nanofenix_proc)
+        if instance_lock:
+            instance_lock.release()
         return 1
 
     # Verify Binance
@@ -595,6 +664,7 @@ async def main():
         # moves. Without it, CLI sessions write memory that is never evaluated
         # (success stays None) so scorecards and distilled strategies starve.
         evaluator_task = None
+        auto_evaluator = None
         try:
             from src.analysis.auto_evaluator import AutoEvaluator
 
@@ -608,13 +678,30 @@ async def main():
         except Exception as e:
             logger.warning(f"AutoEvaluator unavailable: {e}")
 
-        # Execute
+        # Execute. The signal event races the long-running engine task so
+        # SIGINT/SIGTERM always reaches TradingEngine.stop() before teardown.
         try:
-            await engine.start()
+            engine_task = asyncio.create_task(engine.start())
+            stop_task = asyncio.create_task(stop_event.wait())
+            done, _ = await asyncio.wait(
+                {engine_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task in done and stop_event.is_set():
+                await engine.stop()
+                await engine_task
+            else:
+                await engine_task
+            if not stop_task.done():
+                stop_task.cancel()
         finally:
+            if auto_evaluator is not None:
+                await auto_evaluator.stop()
             if evaluator_task is not None:
                 evaluator_task.cancel()
             _stop_nanofenix_companion(nanofenix_proc)
+            if instance_lock:
+                instance_lock.release()
 
         return 0
 
@@ -625,6 +712,8 @@ async def main():
             return await run_simple_test(args)
         finally:
             _stop_nanofenix_companion(nanofenix_proc)
+            if instance_lock:
+                instance_lock.release()
 
 
 async def run_simple_test(args):

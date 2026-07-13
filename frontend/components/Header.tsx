@@ -9,6 +9,7 @@ interface EngineState {
   symbol?: string;
   timeframe?: string;
   paper?: boolean;
+  observer?: boolean;
 }
 
 export function Header() {
@@ -27,6 +28,7 @@ export function Header() {
           symbol: eng.symbol,
           timeframe: eng.timeframe,
           paper: eng.paper_trading,
+          observer: Boolean(data.observer_mode),
         });
       }
     } catch {
@@ -41,6 +43,7 @@ export function Header() {
   }, []);
 
   const toggleEngine = async () => {
+    if (engine?.observer) return;
     const action = engine?.running ? 'stop' : 'start';
     setEngineBusy(true);
     try {
@@ -77,7 +80,9 @@ export function Header() {
             <div className="hidden md:flex items-center space-x-2 text-xs text-gray-500" data-testid="header-engine-status">
               <Activity className={`w-3 h-3 ${online ? 'text-emerald-500' : 'text-gray-400'}`} />
               <span>
-                {online
+                {engine?.observer
+                  ? `Observer mode · managed by live CLI${engine?.symbol ? ` · ${engine.symbol}` : ''}`
+                  : online
                   ? `Engine running · ${engine?.symbol || ''}@${engine?.timeframe || ''}${engine?.paper ? ' · paper' : ''}`
                   : 'Engine stopped'}
               </span>
@@ -103,11 +108,12 @@ export function Header() {
             variant={online ? 'danger' : 'success'}
             size="sm"
             loading={engineBusy}
+            disabled={Boolean(engine?.observer)}
             onClick={toggleEngine}
             data-testid="engine-toggle-btn"
             icon={online ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
           >
-            {online ? 'Stop engine' : 'Start engine'}
+            {engine?.observer ? 'CLI managed' : online ? 'Stop engine' : 'Start engine'}
           </Button>
 
           <Button

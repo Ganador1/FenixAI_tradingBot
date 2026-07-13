@@ -27,7 +27,7 @@ def test_core_uses_default_pretrained_path(monkeypatch):
     bot = core_module.NanoFenixV3(symbol="ETHUSDT", balance=1000.0)
 
     assert captured["model_path"] == "nanofenixv3/pretrained_ethusdt.pkl"
-    assert bot._model_save_path == "nanofenixv3/pretrained_ethusdt.pkl"
+    assert str(bot._model_save_path) == "nanofenixv3/runtime_ethusdt_1s_model.pkl"
     assert str(bot._runtime_state_path) == "nanofenixv3/runtime_ethusdt_1s.pkl"
 
 

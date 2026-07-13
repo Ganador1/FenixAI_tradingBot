@@ -312,61 +312,51 @@ class OrderMonitor:
 
     async def _is_order_filled(self, symbol: str, order_id: int | str) -> bool:
         """Verifica si una orden está llena."""
+        # Protective orders are migrated to Binance's algo API. Query that
+        # endpoint first so every monitor tick does not emit a standard-order
+        # -2013 error before falling back.
         try:
-            order = self.service.get_order(symbol, order_id)
-            status = order.get("status", "")
-
-            # Para órdenes de algoritmo (TP/SL), también verificar algoId
-            if status in ["FILLED", "EXECUTED", "TRIGGERED"]:
+            order = await asyncio.to_thread(self.service.get_algo_order, symbol, order_id)
+            status = (order.get("algoStatus") or order.get("status") or "").upper()
+            if status in {"FILLED", "EXECUTED", "TRIGGERED", "COMPLETED", "SUCCESS"}:
                 return True
-
-            # Para órdenes condicionales, verificar si se ejecutó
-            if order.get("algoId") and order.get("executedQty", 0) > 0:
+            if float(order.get("executedQty", 0.0) or 0.0) > 0:
                 return True
-
             return False
+        except Exception as algo_error:
+            logger.debug("Algo lookup failed for %s: %s", order_id, algo_error)
 
-        except Exception as e:
-            # Si la orden no existe, intentar como ALGO order
-            if self._is_unknown_order_error(e):
-                try:
-                    order = self.service.get_algo_order(symbol, order_id)
-                    status = (order.get("algoStatus") or order.get("status") or "").upper()
-
-                    if status in {"FILLED", "EXECUTED", "TRIGGERED", "COMPLETED", "SUCCESS"}:
-                        return True
-
-                    executed_qty = order.get("executedQty") or order.get("executedQty", 0)
-                    if executed_qty and float(executed_qty) > 0:
-                        return True
-
-                    return False
-                except Exception as algo_error:
-                    logger.debug(f"Error checking algo order {order_id}: {algo_error}")
-                    return False
-
-            logger.debug(f"Error checking order {order_id}: {e}")
+        try:
+            order = await asyncio.to_thread(self.service.get_order, symbol, order_id)
+            return str(order.get("status", "")).upper() in {
+                "FILLED",
+                "EXECUTED",
+                "TRIGGERED",
+            }
+        except Exception as error:
+            logger.debug("Error checking order %s: %s", order_id, error)
             return False
 
     async def _cancel_order(self, symbol: str, order_id: int | str) -> bool:
         """Cancela una orden."""
+        algo_error: Exception | None = None
         try:
-            self.service.cancel_order(symbol, order_id)
+            await asyncio.to_thread(self.service.cancel_algo_order, symbol, order_id)
             return True
-        except Exception as e:
-            # Si la orden ya no existe o ya se ejecutó, intentar como ALGO
-            if self._is_unknown_order_error(e):
-                try:
-                    self.service.cancel_algo_order(symbol, order_id)
-                    return True
-                except Exception as algo_error:
-                    if self._is_unknown_order_error(algo_error):
-                        logger.info(f"Order {order_id} already cancelled or filled")
-                        return True
-                    logger.error(f"Failed to cancel algo order {order_id}: {algo_error}")
-                    return False
+        except Exception as exc:
+            algo_error = exc
+            logger.debug("Algo cancellation failed for %s: %s", order_id, algo_error)
 
-            logger.error(f"Failed to cancel order {order_id}: {e}")
+        try:
+            await asyncio.to_thread(self.service.cancel_order, symbol, order_id)
+            return True
+        except Exception as error:
+            if self._is_unknown_order_error(error) or (
+                algo_error is not None and self._is_unknown_order_error(algo_error)
+            ):
+                logger.info("Order %s is already cancelled or filled", order_id)
+                return True
+            logger.error("Failed to cancel order %s: %s", order_id, error)
             return False
 
     @staticmethod

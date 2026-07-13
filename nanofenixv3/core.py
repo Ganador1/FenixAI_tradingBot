@@ -126,9 +126,6 @@ class NanoFenixV3:
             interval=float(os.getenv("NANOFENIXV3_BAR_INTERVAL", "1.0"))
         )
         self.features = MultiScaleFeatureEngine()
-        resolved_model_path = model_path or f"nanofenixv3/pretrained_{self.symbol.lower()}.pkl"
-        self.predictor = DualHorizonPredictor(model_path=resolved_model_path)
-        self.executor = PaperExecutor(balance=balance)
 
         runtime_interval = float(getattr(self.aggregator, "_interval", 1.0) or 1.0)
         default_runtime_path = _default_runtime_state_path(self.symbol, runtime_interval)
@@ -139,6 +136,24 @@ class NanoFenixV3:
             self._runtime_state_path = default_runtime_path
         self._runtime_state_path.parent.mkdir(parents=True, exist_ok=True)
         self._runtime_restore_path = self._resolve_runtime_restore_path(default_runtime_path)
+
+        runtime_model_path = os.getenv("NANOFENIXV3_RUNTIME_MODEL_PATH", "").strip()
+        if runtime_model_path:
+            self._model_save_path = Path(runtime_model_path)
+        else:
+            self._model_save_path = self._runtime_state_path.with_name(
+                f"{self._runtime_state_path.stem}_model.pkl"
+            )
+        self._model_save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seed_model_path = model_path or f"nanofenixv3/pretrained_{self.symbol.lower()}.pkl"
+        resolved_model_path = (
+            str(self._model_save_path) if self._model_save_path.exists() else seed_model_path
+        )
+        if self._model_save_path.exists():
+            logger.info("Restoring NanoFenix runtime model from %s", self._model_save_path)
+        self.predictor = DualHorizonPredictor(model_path=resolved_model_path)
+        self.executor = PaperExecutor(balance=balance)
 
         self._running = False
         self._tick_count = 0
@@ -162,18 +177,15 @@ class NanoFenixV3:
                 self._signal_state_file = None
 
         # ── Auto-save model periodically ──
-        # Always save to THIS symbol's canonical path. When warm-starting from
-        # another market's pretrained model (e.g. ETHUSDT -> ETHUSDC), the
-        # borrowed file must stay read-only or we contaminate it with data
-        # from a different microstructure.
-        own_model_path = f"nanofenixv3/pretrained_{self.symbol.lower()}.pkl"
-        if model_path and Path(model_path).resolve() != Path(own_model_path).resolve():
+        # A pretrained model is a read-only seed.  Live online learning is
+        # persisted in a separate runtime model, preserving reproducibility and
+        # preventing a borrowed sibling-market model from being contaminated.
+        if Path(seed_model_path).resolve() != self._model_save_path.resolve():
             logger.info(
-                "Warm-start model %s is read-only; autosaves go to %s",
-                model_path,
-                own_model_path,
+                "NanoFenix seed model %s is read-only; runtime autosaves go to %s",
+                seed_model_path,
+                self._model_save_path,
             )
-        self._model_save_path = own_model_path
         self._autosave_every = max(60, _env_int("NANOFENIXV3_AUTOSAVE_EVERY", 120))
         self._last_model_save_bar = 0
         self._load_runtime_state()

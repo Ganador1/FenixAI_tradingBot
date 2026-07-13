@@ -33,7 +33,10 @@ def load_env_variables():
 
     for env_path in possible_paths:
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            # Explicit process environment always wins. This is required for
+            # CLI flags, per-instance isolation, and hermetic test databases;
+            # reloading .env with override=True silently replaced all three.
+            load_dotenv(env_path, override=False)
             return True
 
     return False
