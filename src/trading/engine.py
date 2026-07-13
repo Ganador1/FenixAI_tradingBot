@@ -748,6 +748,12 @@ class TradingEngine:
             self._running = False
             return
 
+        if not self.paper_trading and self.allow_live_trading:
+            if not await self._run_account_preflight():
+                logger.error("Account preflight failed, aborting start")
+                self._running = False
+                return
+
         # Backfill de velas cerradas ANTES de abrir el WS: así los indicadores
         # del primer ciclo son reales y el dedupe por open_time evita que el
         # stream re-ingiera lo ya sembrado.
@@ -1030,6 +1036,70 @@ class TradingEngine:
                 side=close_side,
                 quantity=close_qty,
             )
+
+    async def _run_account_preflight(self) -> bool:
+        """Validate account-level assumptions before any live order is sent.
+
+        Position mode (hedge vs one-way) and trading permission are GLOBAL to
+        the Binance account, not per-symbol, so a stale or manually-changed
+        setting affects every Fenix instance sharing that account. Fenix never
+        sends positionSide on entries or protective orders (confirmed: no
+        call-site in executor.py/binance_service.py sets it), which is only
+        valid in one-way mode — in hedge mode every order would be rejected
+        with -4061. A confirmed hedge mode aborts startup; a preflight that
+        could not be verified (network/API error) logs a warning and lets the
+        engine start rather than blocking live trading on a transient fault.
+        """
+        service = getattr(self.executor, "service", None)
+        if service is None:
+            logger.warning("Account preflight skipped: no Binance service available")
+            return True
+
+        try:
+            dual_side = await asyncio.to_thread(service.get_position_mode)
+        except Exception as e:
+            logger.warning("Account preflight could not read position mode: %s", e)
+            dual_side = None
+
+        if dual_side is True:
+            logger.critical(
+                "Binance account is in HEDGE (dual-side) position mode. Fenix "
+                "never sends positionSide, so every order would be rejected. "
+                "Switch the account to one-way mode before starting live "
+                "trading for %s.",
+                self.symbol,
+            )
+            try:
+                from src.risk.safety_alerts import alert_safety_event
+
+                await alert_safety_event(
+                    "RECONCILIATION_FAILURE",
+                    f"Startup blocked for {self.symbol}: account is in hedge position mode",
+                    {"symbol": self.symbol},
+                )
+            except Exception:
+                logger.debug("Safety alert delivery failed", exc_info=True)
+            return False
+        if dual_side is None:
+            logger.warning(
+                "Account preflight could not confirm position mode for %s; "
+                "proceeding, but a hedge-mode account would reject every order",
+                self.symbol,
+            )
+
+        try:
+            can_trade, issues = await asyncio.to_thread(service.validate_permissions)
+        except Exception as e:
+            logger.warning("Account preflight could not validate permissions: %s", e)
+            return True
+
+        if not can_trade:
+            logger.critical(
+                "Binance account preflight failed for %s: %s", self.symbol, "; ".join(issues)
+            )
+            return False
+
+        return True
 
     def _log_safety_alert_channel_status(self) -> None:
         """Surface at startup whether critical safety events can reach a human."""
@@ -3319,7 +3389,14 @@ class TradingEngine:
         realized_pnl = float(close_result.get("pnl", 0.0) or 0.0)
         realized_pnl_pct = float(close_result.get("pnl_pct", 0.0) or 0.0)
         realized_exit_price = _safe_float(close_result.get("exit_price"))
-        realized_success = realized_pnl >= 0.0
+        exit_commission = _safe_float(close_result.get("exchange_commission")) or 0.0
+        # win/loss classification must be fee-aware: a trade that made money on
+        # price but lost it to round-trip commission is a net loss, and letting
+        # it count as a "win" understates loss_streak/overstates win_rate for
+        # the RiskManager's HOT-streak and CAUTION/SEVERE gates. Reported pnl
+        # stays gross (it is the real ledger amount); only the classification
+        # boundary moves to net-of-commission.
+        realized_success = (realized_pnl - exit_commission) >= 0.0
         self._register_post_stopout_block(close_result, tracked_position, realized_pnl)
         if self.risk_manager is not None:
             # Binance equity is authoritative in live mode. Refresh it before
@@ -3414,8 +3491,8 @@ class TradingEngine:
                 self.reasoning_bank.update_entry_outcome(
                     agent_name=_reasoning_bank_agent_key(agent_name),
                     prompt_digest=digest,
-                    success=(float(close_result.get("pnl", 0.0)) >= 0.0),
-                    reward=float(close_result.get("pnl", 0.0)),
+                    success=realized_success,
+                    reward=realized_pnl,
                     trade_id=trade_id,
                 )
             except Exception:
