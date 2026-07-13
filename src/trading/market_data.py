@@ -162,6 +162,14 @@ class MarketDataManager:
         self._tasks: list[asyncio.Task] = []
         self._running = False
 
+        # Kline dispatch decoupling: the WS receive loop must never wait for a
+        # subscriber (a full analysis cycle can take >60s, which starves the
+        # socket reads/pings and forces Binance keepalive disconnects — the
+        # 54-63 reconnects/day observed live on 2026-07-09). Klines are queued
+        # here and delivered in order by a dedicated dispatcher task.
+        self._kline_dispatch_queue: asyncio.Queue | None = None
+        self._kline_backlog_warned = False
+
         logger.info(f"MarketDataManager initialized for {symbol}@{timeframe}")
 
     def on_kline(self, callback: Callable[[dict], None]) -> None:
@@ -184,11 +192,15 @@ class MarketDataManager:
         # Prefill de velas históricas para evitar gráficos vacíos en timeframes cortos
         await self._prefill_klines()
 
-        # Iniciar tareas de WebSocket
+        # Iniciar tareas de WebSocket + despachador de klines (desacoplado del
+        # loop de recepción para que un análisis lento nunca bloquee el socket).
+        self._kline_dispatch_queue = asyncio.Queue()
+        self._kline_backlog_warned = False
         self._tasks = [
             asyncio.create_task(self._run_kline_ws()),
             asyncio.create_task(self._run_depth_ws()),
             asyncio.create_task(self._run_trade_ws()),
+            asyncio.create_task(self._dispatch_klines()),
         ]
 
         logger.info("All WebSocket connections started")
@@ -222,14 +234,7 @@ class MarketDataManager:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
-                for callback in self._kline_callbacks:
-                    try:
-                        if asyncio.iscoroutinefunction(callback):
-                            await callback(kline_data)
-                        else:
-                            callback(kline_data)
-                    except Exception as e:
-                        logger.error(f"Error in kline prefill callback: {e}")
+                await self._notify_kline_callbacks(kline_data, context="kline prefill")
 
             await client.close()
             logger.info(f"Prefilled {len(klines)} historical klines")
@@ -248,6 +253,9 @@ class MarketDataManager:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
         self._tasks.clear()
+        # Without a live dispatcher, direct _process_kline calls fall back to
+        # inline delivery (unit tests / ad-hoc consumers).
+        self._kline_dispatch_queue = None
         logger.info("MarketDataManager stopped")
 
     async def _run_kline_ws(self) -> None:
@@ -351,7 +359,40 @@ class MarketDataManager:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Notificar callbacks
+        # Notificar callbacks fuera del loop del WS: encolar y volver a recv()
+        # de inmediato. Sin despachador activo (llamadas directas en tests o
+        # consumidores ad-hoc) se conserva la entrega inline histórica.
+        queue = self._kline_dispatch_queue
+        if queue is not None:
+            queue.put_nowait(kline_data)
+            backlog = queue.qsize()
+            if backlog >= 100 and not self._kline_backlog_warned:
+                self._kline_backlog_warned = True
+                logger.warning(
+                    "Kline dispatch backlog reached %d for %s: a subscriber is "
+                    "slower than the stream cadence",
+                    backlog,
+                    self.symbol,
+                )
+            elif backlog < 50:
+                self._kline_backlog_warned = False
+        else:
+            await self._notify_kline_callbacks(kline_data)
+
+    async def _dispatch_klines(self) -> None:
+        """Entrega klines a los suscriptores sin bloquear el loop del WS."""
+        while self._running:
+            queue = self._kline_dispatch_queue
+            if queue is None:
+                return
+            try:
+                kline_data = await queue.get()
+            except asyncio.CancelledError:
+                raise
+            await self._notify_kline_callbacks(kline_data)
+
+    async def _notify_kline_callbacks(self, kline_data: dict, context: str = "kline") -> None:
+        """Invoca cada callback registrado aislando sus excepciones."""
         for callback in self._kline_callbacks:
             try:
                 if asyncio.iscoroutinefunction(callback):
@@ -359,7 +400,7 @@ class MarketDataManager:
                 else:
                     callback(kline_data)
             except Exception as e:
-                logger.error(f"Error in kline callback: {e}")
+                logger.error(f"Error in {context} callback: {e}")
 
     def _update_orderbook(self, data: dict) -> None:
         """Actualiza snapshot del order book."""

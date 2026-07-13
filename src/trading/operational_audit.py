@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("FenixOperationalAudit")
+
+# Strong references so fire-and-forget alert tasks are not garbage collected
+# mid-flight (asyncio only keeps weak references to running tasks).
+_ALERT_TASKS: set = set()
 
 
 def _utcnow() -> str:
@@ -183,9 +190,23 @@ def _alert_stale_heartbeat(payload: dict[str, Any], age_seconds: float | None) -
         symbol = payload.get("symbol", "unknown")
         age_str = f"{age_seconds:.0f}s" if age_seconds is not None else "unknown"
 
-        # Try to schedule the alert without blocking the caller.
-        loop = asyncio.get_event_loop()
-        loop.create_task(
+        # Schedule without blocking the caller. get_event_loop() is unreliable
+        # outside a running loop (deprecated, and it can return a loop that
+        # never runs, silently dropping the alert) — require a running loop
+        # and make the skip observable instead.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning(
+                "Stale heartbeat for %s (%s, %s old) could not be alerted: "
+                "no running event loop in this context",
+                instance_id,
+                symbol,
+                age_str,
+            )
+            return
+
+        task = loop.create_task(
             alert_safety_event(
                 "STALE_HEARTBEAT",
                 f"Instance {instance_id} ({symbol}) heartbeat is {age_str} old",
@@ -196,5 +217,7 @@ def _alert_stale_heartbeat(payload: dict[str, Any], age_seconds: float | None) -
                 },
             )
         )
+        _ALERT_TASKS.add(task)
+        task.add_done_callback(_ALERT_TASKS.discard)
     except Exception:
-        pass
+        logger.debug("Stale heartbeat alert scheduling failed", exc_info=True)
