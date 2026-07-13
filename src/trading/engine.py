@@ -772,6 +772,9 @@ class TradingEngine:
         if not self.paper_trading:
             await self._write_instance_heartbeat(status="running")
 
+        if not self.paper_trading and self.allow_live_trading:
+            self._log_safety_alert_channel_status()
+
         if (
             not self.paper_trading
             and self.allow_live_trading
@@ -904,35 +907,84 @@ class TradingEngine:
                 if hasattr(self.executor, "cancel_all_orders"):
                     await self.executor.cancel_all_orders()
 
-                exchange_snapshot = self.executor.get_position() or {}
-                position_amt = abs(_safe_float(exchange_snapshot.get("positionAmt")) or 0.0)
-                if position_amt > 0:
-                    close_side = "BUY" if str(tracked_position.side).upper() == "SHORT" else "SELL"
-                    close_qty = abs(
-                        _safe_float(getattr(tracked_position, "quantity", None)) or position_amt
+                close_side = "BUY" if str(tracked_position.side).upper() == "SHORT" else "SELL"
+                tracked_qty = abs(_safe_float(getattr(tracked_position, "quantity", None)) or 0.0)
+
+                # Strict read with retries: protective orders were just
+                # cancelled, so a failed query must NOT read as flat — that
+                # would leave live exposure unprotected on shutdown.
+                exchange_snapshot: dict[str, Any] | None = None
+                for attempt in range(1, 4):
+                    try:
+                        exchange_snapshot = self._get_verified_exchange_position_snapshot()
+                        break
+                    except Exception as e:
+                        logger.warning(
+                            "Shutdown position read failed for %s (attempt %d/3): %s",
+                            self.symbol,
+                            attempt,
+                            e,
+                        )
+                        if attempt < 3:
+                            await asyncio.sleep(1.0)
+
+                confirmed_snapshot: dict[str, Any] = {}
+                confirmed_flat = False
+                if exchange_snapshot is None:
+                    logger.critical(
+                        "Cannot verify the exchange position for %s during shutdown and "
+                        "protections were already cancelled — attempting a defensive "
+                        "reduce-only close for the tracked quantity %.8f",
+                        self.symbol,
+                        tracked_qty,
                     )
                     try:
-                        await self.executor.execute_market_order(
-                            side=close_side,
-                            quantity=close_qty,
-                            reduce_only=True,
+                        from src.risk.safety_alerts import alert_safety_event
+
+                        await alert_safety_event(
+                            "RECONCILIATION_FAILURE",
+                            f"Shutdown could not verify the {self.symbol} position; "
+                            "defensive reduce-only close attempted",
+                            {"symbol": self.symbol, "tracked_qty": tracked_qty},
                         )
-                    except TypeError:
-                        await self.executor.execute_market_order(
-                            side=close_side,
-                            quantity=close_qty,
+                    except Exception:
+                        logger.debug("Safety alert delivery failed", exc_info=True)
+                    if tracked_qty > 0:
+                        try:
+                            await self._execute_cleanup_close(close_side, tracked_qty)
+                        except Exception:
+                            logger.critical(
+                                "Defensive shutdown close failed for %s",
+                                self.symbol,
+                                exc_info=True,
+                            )
+                    try:
+                        (
+                            confirmed_snapshot,
+                            _,
+                            confirmed_flat,
+                        ) = await self._confirm_exchange_flat_snapshot()
+                    except Exception:
+                        logger.critical(
+                            "%s position state is UNKNOWN at shutdown; "
+                            "verify manually on Binance before restarting",
+                            self.symbol,
                         )
-                    (
-                        confirmed_snapshot,
-                        _,
-                        confirmed_flat,
-                    ) = await self._confirm_exchange_flat_snapshot()
                 else:
-                    (
-                        confirmed_snapshot,
-                        _,
-                        confirmed_flat,
-                    ) = await self._confirm_exchange_flat_snapshot(exchange_snapshot)
+                    position_amt = abs(_safe_float(exchange_snapshot.get("positionAmt")) or 0.0)
+                    if position_amt > 0:
+                        await self._execute_cleanup_close(close_side, tracked_qty or position_amt)
+                        (
+                            confirmed_snapshot,
+                            _,
+                            confirmed_flat,
+                        ) = await self._confirm_exchange_flat_snapshot()
+                    else:
+                        (
+                            confirmed_snapshot,
+                            _,
+                            confirmed_flat,
+                        ) = await self._confirm_exchange_flat_snapshot(exchange_snapshot)
 
                 if confirmed_flat:
                     exit_price = (
@@ -964,6 +1016,37 @@ class TradingEngine:
             self._stopping = False
             self._stopped = True
             logger.info("TradingEngine stopped")
+
+    async def _execute_cleanup_close(self, close_side: str, close_qty: float) -> None:
+        """Submit the shutdown reduce-only close, tolerating legacy executors."""
+        try:
+            await self.executor.execute_market_order(
+                side=close_side,
+                quantity=close_qty,
+                reduce_only=True,
+            )
+        except TypeError:
+            await self.executor.execute_market_order(
+                side=close_side,
+                quantity=close_qty,
+            )
+
+    def _log_safety_alert_channel_status(self) -> None:
+        """Surface at startup whether critical safety events can reach a human."""
+        try:
+            from src.risk.safety_alerts import get_safety_alert_notifier
+
+            if get_safety_alert_notifier().enabled:
+                logger.info("Safety alerts enabled (Telegram/Discord channel configured)")
+            else:
+                logger.warning(
+                    "⚠️ SAFETY ALERTS DISABLED: no Telegram/Discord credentials are "
+                    "configured, so ORDER_OUTCOME_UNCERTAIN, PROTECTION_NOT_VERIFIED "
+                    "and RECONCILIATION_FAILURE will only be visible in local logs. "
+                    "Set TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID or DISCORD_WEBHOOK_URL."
+                )
+        except Exception:
+            logger.debug("Could not determine safety alert channel status", exc_info=True)
 
     async def _refresh_chart_cache(self, *, force: bool = False, timeout_sec: float = 5.0) -> None:
         """Minimal chart cache hook used by tests and inline warmup paths."""

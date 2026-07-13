@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
-from src.trading.operational_audit import OperationalAudit, read_runtime_instances
+import pytest
+
+from src.trading.operational_audit import (
+    OperationalAudit,
+    _alert_stale_heartbeat,
+    read_runtime_instances,
+)
 
 
 def test_operational_audit_writes_instance_heartbeat_and_durable_ledger(tmp_path, monkeypatch):
@@ -61,3 +68,32 @@ def test_runtime_instances_marks_expired_heartbeat_as_not_fresh(tmp_path, monkey
 
     assert len(instances) == 1
     assert instances[0]["fresh"] is False
+
+
+def test_alert_stale_heartbeat_without_running_loop_is_safe():
+    """Outside an event loop the alert is skipped observably, never raised."""
+    _alert_stale_heartbeat({"instance_id": "eth-live", "symbol": "ETHUSDC"}, 120.0)
+
+
+@pytest.mark.asyncio
+async def test_alert_stale_heartbeat_schedules_alert(monkeypatch):
+    import src.risk.safety_alerts as safety_alerts
+
+    calls: list[tuple[str, dict | None]] = []
+
+    async def record_alert(event_type, message, context=None):
+        calls.append((event_type, context))
+        return True
+
+    monkeypatch.setattr(safety_alerts, "alert_safety_event", record_alert)
+
+    _alert_stale_heartbeat({"instance_id": "eth-live", "symbol": "ETHUSDC"}, 99.0)
+
+    for _ in range(50):
+        if calls:
+            break
+        await asyncio.sleep(0.01)
+
+    assert calls, "stale heartbeat alert was never scheduled"
+    assert calls[0][0] == "STALE_HEARTBEAT"
+    assert calls[0][1]["age_seconds"] == 99.0
