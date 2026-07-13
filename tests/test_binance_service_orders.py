@@ -88,6 +88,34 @@ class TestBinanceServiceOrders(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "not initialized"):
             self.service.get_position("BTCUSDT")
 
+    def test_get_position_mode_returns_true_for_hedge_mode(self):
+        self.service._client.futures_get_position_mode.return_value = {
+            "dualSidePosition": True
+        }
+
+        result = self.service.get_position_mode()
+
+        self.assertTrue(result)
+
+    def test_get_position_mode_returns_false_for_one_way_mode(self):
+        self.service._client.futures_get_position_mode.return_value = {
+            "dualSidePosition": False
+        }
+
+        result = self.service.get_position_mode()
+
+        self.assertFalse(result)
+
+    def test_get_position_mode_returns_none_when_client_unavailable(self):
+        self.service._client = None
+
+        self.assertIsNone(self.service.get_position_mode())
+
+    def test_get_position_mode_returns_none_on_failure(self):
+        self.service._client.futures_get_position_mode.side_effect = Exception("boom")
+
+        self.assertIsNone(self.service.get_position_mode())
+
     def test_get_balance_usdt_prefers_total_margin_balance_over_available(self):
         """Risk sizing/drawdown should use futures equity, not free collateral."""
         self.service._client.futures_account.return_value = {

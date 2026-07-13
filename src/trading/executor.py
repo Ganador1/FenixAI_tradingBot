@@ -379,6 +379,40 @@ class OrderExecutor:
         finally:
             handle.close()
 
+    def _resolve_account_leverage(self, account: dict[str, Any]) -> float:
+        """Prefer the exchange's own configured leverage for this symbol.
+
+        FENIX_LEVERAGE is a local sizing assumption; if it drifts from what is
+        actually configured on Binance (changed manually, or never applied —
+        the live launcher does not call futures_change_leverage), the margin
+        projection below would be wrong precisely when it matters: a real
+        leverage lower than assumed makes projected_margin an underestimate,
+        so the guard could wave through an entry that consumes more margin
+        than calculated. futures_account() already returns this per-symbol,
+        so no extra request is needed.
+        """
+        configured = max(1.0, float(os.getenv("FENIX_LEVERAGE", "1") or 1.0))
+        for position in account.get("positions", []) or []:
+            if str(position.get("symbol", "")).upper() != self.symbol.upper():
+                continue
+            try:
+                exchange_leverage = float(position.get("leverage", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                exchange_leverage = 0.0
+            if exchange_leverage <= 0:
+                break
+            if abs(exchange_leverage - configured) > 0.01:
+                logger.warning(
+                    "FENIX_LEVERAGE=%s does not match the exchange-configured "
+                    "leverage %sx for %s; using the exchange value for the "
+                    "margin guard",
+                    configured,
+                    exchange_leverage,
+                    self.symbol,
+                )
+            return exchange_leverage
+        return configured
+
     def _check_global_account_margin(self, quantity: float) -> tuple[bool, str]:
         """Fail closed when a new entry would breach the account margin cap."""
         # MagicMock-based unit executors have no concrete service method; the
@@ -395,7 +429,7 @@ class OrderExecutor:
             initial_margin = float(account.get("totalPositionInitialMargin", 0.0) or 0.0)
             initial_margin += float(account.get("totalOpenOrderInitialMargin", 0.0) or 0.0)
         mark_price = float(self.service.get_ticker_price(self.symbol) or 0.0)
-        leverage = max(1.0, float(os.getenv("FENIX_LEVERAGE", "1") or 1.0))
+        leverage = self._resolve_account_leverage(account)
         if equity <= 0 or mark_price <= 0:
             return False, "Binance equity or mark price is unavailable"
         projected_margin = initial_margin + (abs(float(quantity)) * mark_price / leverage)

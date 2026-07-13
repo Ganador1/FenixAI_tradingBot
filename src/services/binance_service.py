@@ -617,6 +617,24 @@ class BinanceService:
             logger.error(f"Failed to get income history for {symbol}: {e}")
             return []
 
+    def get_position_mode(self) -> bool | None:
+        """Return True if the account uses hedge (dual-side) position mode.
+
+        Fenix never sends positionSide on entries or protective orders, which
+        is only valid in one-way mode. Returns None when the mode could not
+        be determined (caller must treat that as "unverified", not "safe").
+        """
+        if not self._client:
+            return None
+        try:
+            result = self._call_with_retries(self._client.futures_get_position_mode, retries=1)
+        except Exception as e:
+            logger.error(f"Failed to get futures position mode: {e}")
+            return None
+        if not isinstance(result, dict):
+            return None
+        return bool(result.get("dualSidePosition"))
+
     def validate_permissions(self) -> tuple[bool, list[str]]:
         """Validate the current API key can trade on futures."""
         if not self._client:
