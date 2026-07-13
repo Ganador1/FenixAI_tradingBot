@@ -158,7 +158,7 @@ class BinanceService:
         return self._symbol_configs.get(symbol)
 
     def get_balance_usdt(self) -> float:
-        """Get stablecoin balance (Futures).
+        """Get stablecoin futures equity for risk and drawdown calculations.
 
         By default sums USDT+USDC (single-account behaviour). When running
         multiple Fenix instances on the same account with capital split by
@@ -181,23 +181,26 @@ class BinanceService:
         try:
             account = self._call_with_retries(self._client.futures_account, retries=1)
             if isinstance(account, dict):
-                # In single-asset mode totalMarginBalance only reflects the
-                # USDT bucket, so a USDC-funded account would read near-zero.
-                # Always compute the stablecoin sum and take the max.
+                # In single-asset mode totalMarginBalance may only reflect the
+                # USDT bucket, so restricted USDC instances use per-asset equity.
                 total_margin = float(account.get("totalMarginBalance", 0.0) or 0.0)
 
                 stable_total = 0.0
                 for asset in account.get("assets", []) or []:
                     if asset.get("asset") not in allowed_assets:
                         continue
-                    margin_balance = float(asset.get("marginBalance", 0.0) or 0.0)
-                    wallet_balance = float(asset.get("walletBalance", 0.0) or 0.0)
-                    available = float(asset.get("availableBalance", 0.0) or 0.0)
-                    stable_total += max(margin_balance, wallet_balance, available)
+                    margin_balance = asset.get("marginBalance")
+                    if margin_balance is None:
+                        wallet_balance = float(asset.get("walletBalance", 0.0) or 0.0)
+                        unrealized = float(
+                            asset.get("unrealizedProfit", asset.get("crossUnPnl", 0.0)) or 0.0
+                        )
+                        margin_balance = wallet_balance + unrealized
+                    stable_total += float(margin_balance or 0.0)
 
                 # When restricted to specific assets, never fall back to the
                 # account-wide margin total (it would leak the other bucket).
-                best = stable_total if restricted else max(total_margin, stable_total)
+                best = stable_total if restricted else (total_margin or stable_total)
                 if best > 0:
                     return best
         except Exception as e:
@@ -209,13 +212,56 @@ class BinanceService:
             for balance in balances:
                 if balance.get("asset") in allowed_assets:
                     wallet = float(balance.get("balance", 0.0) or 0.0)
-                    available = float(balance.get("availableBalance", 0.0) or 0.0)
-                    stable_total += max(wallet, available)
+                    unrealized = float(balance.get("crossUnPnl", 0.0) or 0.0)
+                    stable_total += wallet + unrealized
             if stable_total > 0:
                 return stable_total
         except Exception as e:
             logger.error(f"Failed to get USDT balance: {e}")
         return 0.0
+
+    def get_available_balance_usdt(self) -> float:
+        """Return free stablecoin collateral available for a new futures order."""
+        if not self._client:
+            logger.warning("Binance client not initialized when requesting available balance")
+            return 0.0
+
+        assets_env = os.getenv("FENIX_BALANCE_ASSETS", "").strip().upper()
+        allowed_assets = (
+            {asset.strip() for asset in assets_env.split(",") if asset.strip()}
+            if assets_env
+            else {"USDT", "USDC"}
+        )
+        restricted = bool(assets_env)
+
+        try:
+            account = self._call_with_retries(self._client.futures_account, retries=1)
+            if isinstance(account, dict):
+                per_asset_available = sum(
+                    float(asset.get("availableBalance", 0.0) or 0.0)
+                    for asset in account.get("assets", []) or []
+                    if asset.get("asset") in allowed_assets
+                )
+                if restricted:
+                    return max(0.0, per_asset_available)
+                account_available = float(account.get("availableBalance", 0.0) or 0.0)
+                return max(0.0, account_available or per_asset_available)
+        except Exception as exc:
+            logger.error("Failed to get available futures balance: %s", exc)
+
+        try:
+            balances = self._call_with_retries(self._client.futures_account_balance, retries=1)
+            return max(
+                0.0,
+                sum(
+                    float(balance.get("availableBalance", 0.0) or 0.0)
+                    for balance in balances
+                    if balance.get("asset") in allowed_assets
+                ),
+            )
+        except Exception as exc:
+            logger.error("Failed to get fallback available futures balance: %s", exc)
+            return 0.0
 
     def get_ticker_price(self, symbol: str) -> float:
         """Get current ticker price (Futures)"""
@@ -230,41 +276,62 @@ class BinanceService:
             return 0.0
 
     def place_market_order(
-        self, symbol: str, side: str, quantity: float, reduce_only: bool = False
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> dict[str, Any]:
         """Place a market order (Futures)"""
         if not self._client:
             raise Exception("Binance client not initialized")
 
         try:
+            params: dict[str, Any] = {
+                "symbol": symbol,
+                "side": side,
+                "type": binance_enums.ORDER_TYPE_MARKET,
+                "quantity": quantity,
+                "reduceOnly": reduce_only,
+                "newOrderRespType": "RESULT",
+            }
+            if client_order_id:
+                params["newClientOrderId"] = client_order_id
             return self._client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type=binance_enums.ORDER_TYPE_MARKET,
-                quantity=quantity,
-                reduceOnly=reduce_only,
+                **params,
             )
         except Exception as e:
             logger.error(f"Failed to place market order for {symbol}: {e}")
             raise e
 
     def place_limit_order(
-        self, symbol: str, side: str, quantity: float, price: float, reduce_only: bool = False
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> dict[str, Any]:
         """Place a limit order (Futures, post-only for maker fee)."""
         if not self._client:
             raise Exception("Binance client not initialized")
 
         try:
-            return self._client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type="LIMIT",
-                timeInForce="GTX",  # Post-only: rejected if would fill immediately
-                quantity=quantity,
-                price=price,
-                reduceOnly=reduce_only,
-            )
+            params: dict[str, Any] = {
+                "symbol": symbol,
+                "side": side,
+                "type": "LIMIT",
+                "timeInForce": "GTX",  # Post-only: rejected if it would cross the book.
+                "quantity": quantity,
+                "price": price,
+                "reduceOnly": reduce_only,
+                "newOrderRespType": "RESULT",
+            }
+            if client_order_id:
+                params["newClientOrderId"] = client_order_id
+            return self._client.futures_create_order(**params)
         except Exception as e:
             logger.error(f"Failed to place limit order for {symbol}: {e}")
             raise e
@@ -391,6 +458,39 @@ class BinanceService:
             logger.error(f"Failed to get order {order_id}: {e}")
             raise e
 
+    def get_order_by_client_id(self, symbol: str, client_order_id: str) -> dict[str, Any]:
+        """Query an order by its idempotency key after an ambiguous submission."""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+        return self._client.futures_get_order(
+            symbol=symbol,
+            origClientOrderId=client_order_id,
+        )
+
+    def get_algo_order(self, symbol: str, order_id: int | str) -> dict[str, Any]:
+        """Query a conditional order migrated to Binance's algo-order API."""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+        result = self._client._request_futures_api(
+            "get",
+            "algoOrder",
+            True,
+            data={"symbol": symbol, "algoId": order_id},
+        )
+        return result if isinstance(result, dict) else {}
+
+    def cancel_algo_order(self, symbol: str, order_id: int | str) -> dict[str, Any]:
+        """Cancel a conditional order migrated to Binance's algo-order API."""
+        if not self._client:
+            raise Exception("Binance client not initialized")
+        result = self._client._request_futures_api(
+            "delete",
+            "algoOrder",
+            True,
+            data={"symbol": symbol, "algoId": order_id},
+        )
+        return result if isinstance(result, dict) else {}
+
     def cancel_order(self, symbol: str, order_id: int) -> dict[str, Any]:
         """Cancel an order (Futures)"""
         if not self._client:
@@ -411,7 +511,7 @@ class BinanceService:
             return self._client.futures_cancel_all_open_orders(symbol=symbol)
         except Exception as e:
             logger.error(f"Failed to cancel all orders for {symbol}: {e}")
-            return []
+            raise
 
     def get_open_orders(self, symbol: str) -> list[dict[str, Any]]:
         """Get currently open futures orders for a symbol."""

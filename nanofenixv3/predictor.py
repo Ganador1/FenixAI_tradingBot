@@ -1860,6 +1860,7 @@ class DualHorizonPredictor:
 
     def save_model(self, path: str) -> None:
         """Save both models and buffer for warmup."""
+        temp_path: Path | None = None
         try:
             data = {
                 "short_model": self._short._model,
@@ -1884,9 +1885,21 @@ class DualHorizonPredictor:
                 "drift_detector": self._drift_detector.export_state(),
                 "drift_retrain_count": int(self._drift_retrain_count),
             }
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "wb") as f:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = target.with_name(
+                f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+            )
+            with temp_path.open("wb") as f:
                 pickle.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, target)
             logger.info(f"💾 Model saved to {path}")
         except Exception as e:
             logger.warning(f"Failed to save model: {e}")
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass

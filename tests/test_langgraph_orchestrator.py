@@ -64,6 +64,54 @@ class TestHelperFunctions:
         assert normalized["confidence"] == pytest.approx(0.85)
         assert normalized["confidence_level"] == "HIGH"
 
+    def test_compact_technical_hold_is_normalized_conservatively(self):
+        from src.core.langgraph_orchestrator import (
+            _normalize_compact_agent_response,
+            validate_agent_response,
+        )
+
+        normalized = _normalize_compact_agent_response(
+            "technical_analyst",
+            {"signal": "HOLD", "confidence": 0.75, "indicator_validations": {}},
+        )
+
+        assert normalized["confidence_level"] == "HIGH"
+        assert "abstained" in normalized["reasoning"]
+        assert validate_agent_response("technical_analyst", normalized) == []
+
+    def test_compact_qabba_hold_is_normalized_without_directional_invention(self):
+        from src.core.langgraph_orchestrator import (
+            _normalize_compact_agent_response,
+            validate_agent_response,
+        )
+
+        normalized = _normalize_compact_agent_response(
+            "qabba_analyst",
+            {"signal": "HOLD", "qabba_scores": {"obi": 0.5}},
+        )
+
+        assert normalized["signal"] == "HOLD_QABBA"
+        assert normalized["qabba_confidence"] == 0.0
+        assert normalized["order_flow_bias"] == "neutral"
+        assert normalized["absorption_detected"] is False
+        assert validate_agent_response("qabba_analyst", normalized) == []
+
+    def test_compact_directional_response_still_requires_reasoning(self):
+        from src.core.langgraph_orchestrator import (
+            _normalize_compact_agent_response,
+            validate_agent_response,
+        )
+
+        normalized = _normalize_compact_agent_response(
+            "technical_analyst",
+            {"signal": "BUY", "confidence": 0.9},
+        )
+
+        assert "reasoning" not in normalized
+        assert "Missing required field: 'reasoning'" in validate_agent_response(
+            "technical_analyst", normalized
+        )
+
 
 class TestReasoningBankHelpers:
     """Tests para helpers de ReasoningBank."""
@@ -237,6 +285,54 @@ class TestFenixTradingGraph:
 
         # Solo verificar que la variable existe
         assert isinstance(LANGGRAPH_AVAILABLE, bool)
+
+    def test_graph_uses_waiting_edges_for_visual_and_decision_fan_in(self, monkeypatch):
+        from src.core import langgraph_orchestrator as mod
+
+        captured: list[object] = []
+
+        class GraphSpy:
+            def __init__(self, _state):
+                self.nodes = []
+                self.edges = []
+                captured.append(self)
+
+            def add_node(self, name, _node):
+                self.nodes.append(name)
+
+            def add_edge(self, start, end):
+                self.edges.append((start, end))
+
+            def compile(self):
+                return self
+
+        class FactorySpy:
+            def __init__(self, _config):
+                pass
+
+            def get_llm_for_agent(self, _name):
+                return object()
+
+        monkeypatch.setattr(mod, "StateGraph", GraphSpy)
+        monkeypatch.setattr(mod, "LLMFactory", FactorySpy)
+        monkeypatch.setattr(mod, "create_technical_agent_node", lambda *_: object())
+        monkeypatch.setattr(mod, "create_qabba_agent_node", lambda *_: object())
+        monkeypatch.setattr(mod, "create_sentiment_agent_node", lambda *_: object())
+        monkeypatch.setattr(mod, "create_visual_agent_node", lambda *_: object())
+        monkeypatch.setattr(mod, "create_decision_agent_node", lambda *_: object())
+
+        mod.FenixTradingGraph(
+            enable_visual=True,
+            enable_sentiment=True,
+            enable_risk=False,
+            reasoning_bank=None,
+        )
+
+        graph = captured[0]
+        assert (["Technical Agent", "QABBA Agent"], "Visual Agent") in graph.edges
+        assert (["Visual Agent", "Sentiment Agent"], "Decision Agent") in graph.edges
+        assert ("Sentiment Agent", "Decision Agent") not in graph.edges
+        assert ("Visual Agent", "Decision Agent") not in graph.edges
 
     @pytest.mark.skipif(
         True,  # Skip por defecto, requiere LangGraph instalado

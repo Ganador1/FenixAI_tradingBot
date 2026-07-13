@@ -24,6 +24,10 @@ _TITLE_CACHE: Dict[str, tuple[float, List[str]]] = {}
 # Último intento (éxito o no) por subreddit, para rotar de forma justa aunque
 # haya 429s repetidos.
 _LAST_ATTEMPT: Dict[str, float] = {}
+# A 429 must be treated as a degraded source, not as an invitation to retry on
+# every analysis cycle.  The backoff is shared by all scraper instances in one
+# bot process, exactly like the title cache.
+_BACKOFF_UNTIL: Dict[str, float] = {}
 
 class RedditScraper(BaseTool):
     name: str = "RedditPostTitleScraper" # More descriptive name
@@ -35,6 +39,20 @@ class RedditScraper(BaseTool):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._mlx_model_name = get_agent_model('sentiment')
+
+    def get_source_health(self) -> Dict[str, object]:
+        """Expose cache/backoff state so sentiment can discount unavailable Reddit data."""
+        now = time.time()
+        blocked = {
+            subreddit: round(max(0.0, until - now), 1)
+            for subreddit, until in _BACKOFF_UNTIL.items()
+            if until > now
+        }
+        return {
+            "status": "degraded" if blocked else "ok",
+            "backoff_seconds_by_subreddit": blocked,
+            "cached_subreddits": sorted(_TITLE_CACHE),
+        }
 
     def _run(
         self,
@@ -75,6 +93,18 @@ class RedditScraper(BaseTool):
             max_fetch = int(os.getenv("FENIX_REDDIT_MAX_FETCH_PER_CYCLE", "2"))
         except ValueError:
             max_fetch = 2
+        try:
+            rate_limit_backoff = max(
+                30.0, float(os.getenv("FENIX_REDDIT_429_BACKOFF_SEC", "900"))
+            )
+        except ValueError:
+            rate_limit_backoff = 900.0
+        try:
+            transient_backoff = max(
+                15.0, float(os.getenv("FENIX_REDDIT_ERROR_BACKOFF_SEC", "120"))
+            )
+        except ValueError:
+            transient_backoff = 120.0
 
         def _cached_titles(sub_name: str, max_age: float) -> Optional[List[str]]:
             entry = _TITLE_CACHE.get(sub_name)
@@ -87,7 +117,12 @@ class RedditScraper(BaseTool):
         # llamada cabe en el presupuesto de 10s del engine y en ~2 ciclos
         # todas las subs quedan calientes.
         cleaned = [s.strip().replace('r/', '') for s in subreddits]
-        pending = [s for s in cleaned if _cached_titles(s, cache_ttl) is None]
+        now = time.time()
+        pending = [
+            s
+            for s in cleaned
+            if _cached_titles(s, cache_ttl) is None and now >= _BACKOFF_UNTIL.get(s, 0.0)
+        ]
         pending.sort(key=lambda s: _LAST_ATTEMPT.get(s, 0.0))
         to_fetch = set(pending[: max(0, max_fetch)])
 
@@ -96,6 +131,11 @@ class RedditScraper(BaseTool):
             fresh = _cached_titles(subreddit_name_cleaned, cache_ttl)
             if fresh is not None:
                 all_titles_by_subreddit[subreddit_name_cleaned] = fresh
+                continue
+            if time.time() < _BACKOFF_UNTIL.get(subreddit_name_cleaned, 0.0):
+                all_titles_by_subreddit[subreddit_name_cleaned] = (
+                    _cached_titles(subreddit_name_cleaned, float("inf")) or []
+                )
                 continue
             if subreddit_name_cleaned not in to_fetch:
                 all_titles_by_subreddit[subreddit_name_cleaned] = (
@@ -124,21 +164,40 @@ class RedditScraper(BaseTool):
                 ]
 
                 all_titles_by_subreddit[subreddit_name_cleaned] = titles
-                if titles:
-                    _TITLE_CACHE[subreddit_name_cleaned] = (time.time(), titles)
+                # Cache empty but successful feeds too; otherwise a quiet feed
+                # becomes a request on every cycle.
+                _TITLE_CACHE[subreddit_name_cleaned] = (time.time(), titles)
+                _BACKOFF_UNTIL.pop(subreddit_name_cleaned, None)
                 logger.debug(f"[RedditScraper] Found {len(titles)} titles for /r/{subreddit_name_cleaned}.")
 
             except requests.exceptions.Timeout:
                 logger.warning(f"[RedditScraper] Timeout connecting to Reddit for /r/{subreddit_name_cleaned}.")
+                _BACKOFF_UNTIL[subreddit_name_cleaned] = time.time() + transient_backoff
                 all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
             except requests.exceptions.HTTPError as http_err:
-                logger.warning(f"[RedditScraper] HTTP error {http_err.response.status_code} for /r/{subreddit_name_cleaned}")
+                response = http_err.response
+                status_code = getattr(response, "status_code", None)
+                retry_after = 0.0
+                try:
+                    retry_after = float((getattr(response, "headers", {}) or {}).get("Retry-After", 0))
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+                delay = max(rate_limit_backoff, retry_after) if status_code == 429 else transient_backoff
+                _BACKOFF_UNTIL[subreddit_name_cleaned] = time.time() + delay
+                logger.warning(
+                    "[RedditScraper] HTTP error %s for /r/%s; backing off %.0fs",
+                    status_code,
+                    subreddit_name_cleaned,
+                    delay,
+                )
                 all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
             except requests.exceptions.RequestException as req_err:
                 logger.warning(f"[RedditScraper] Request error for /r/{subreddit_name_cleaned}: {req_err}")
+                _BACKOFF_UNTIL[subreddit_name_cleaned] = time.time() + transient_backoff
                 all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
             except Exception as e:
                 logger.error(f"[RedditScraper] Unexpected error scraping /r/{subreddit_name_cleaned}: {e}", exc_info=True)
+                _BACKOFF_UNTIL[subreddit_name_cleaned] = time.time() + transient_backoff
                 all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
         
         total_titles_scraped = sum(len(t) for t in all_titles_by_subreddit.values())
@@ -162,4 +221,3 @@ if __name__ == "__main__":
                 print(f"{i+1}. {title_text}")
         else:
             print(f"\n--- No titles found for r/{subreddit} ---")
-

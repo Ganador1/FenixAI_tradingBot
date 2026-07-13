@@ -24,6 +24,20 @@ def test_symbol_config_reads_futures_min_notional_notional_key():
 
 
 @pytest.mark.unit
+def test_strict_position_snapshot_never_conflates_query_failure_with_flat_position():
+    executor = OrderExecutor(symbol="BTCUSDT", testnet=True, timeframe="15m")
+    executor._service = MagicMock()
+    executor.service.get_position.side_effect = RuntimeError("Binance unavailable")
+
+    with pytest.raises(RuntimeError, match="Binance unavailable"):
+        executor.get_position_snapshot()
+
+    # Legacy callers retain their non-throwing behaviour, but reconciliation
+    # uses the strict method above and therefore cannot book a phantom close.
+    assert executor.get_position() == {}
+
+
+@pytest.mark.unit
 def test_sl_tp_clamping(monkeypatch):
     """OrderExecutor clamps SL/TP values if they are too close to entry."""
     # Avoid depending on global indicator buffers
@@ -69,6 +83,7 @@ def test_sl_tp_clamping(monkeypatch):
             _, kwargs = svc.place_stop_loss_market.call_args
             actual_sl = float(kwargs["stop_price"])
             assert actual_sl == pytest.approx(49850.0, abs=0.11)  # tick_size=0.1
+            assert executor._last_protective_prices == pytest.approx((actual_sl, None))
 
             # SELL: SL too close (should clamp up to 50000 * (1 + 0.003) = 50150)
             svc.reset_mock()
@@ -83,6 +98,7 @@ def test_sl_tp_clamping(monkeypatch):
             _, kwargs = svc.place_stop_loss_market.call_args
             actual_sl_short = float(kwargs["stop_price"])
             assert actual_sl_short == pytest.approx(50150.0, abs=0.11)
+            assert executor._last_protective_prices == pytest.approx((actual_sl_short, None))
 
             # BUY: TP too close (should clamp up to 50000 * (1 + 0.005) = 50250)
             svc.reset_mock()
@@ -233,6 +249,32 @@ async def test_market_entry_succeeds_when_protection_is_visible():
     assert result.sl_order_id == 2001
     assert result.tp_order_id == 2002
     svc.place_market_order.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_filled_market_response_with_zero_average_is_requeried():
+    executor = OrderExecutor(symbol="SOLUSDT", testnet=True, timeframe="1m")
+    svc = MagicMock()
+    svc.place_market_order.return_value = {
+        "orderId": 1001,
+        "status": "FILLED",
+        "avgPrice": "0.0",
+        "executedQty": "0.09",
+    }
+    svc.get_order.return_value = {
+        "orderId": 1001,
+        "status": "FILLED",
+        "avgPrice": "78.11",
+        "executedQty": "0.09",
+    }
+    executor._service = svc
+
+    result = await executor.execute_market_order("BUY", quantity=0.09)
+
+    assert result.success is True
+    assert result.entry_price == pytest.approx(78.11)
+    svc.get_order.assert_called_once_with("SOLUSDT", 1001)
 
 
 @pytest.mark.unit

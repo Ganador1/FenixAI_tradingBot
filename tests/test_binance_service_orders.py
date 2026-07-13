@@ -136,6 +136,39 @@ class TestBinanceServiceOrders(unittest.TestCase):
         self.assertEqual(result, 111.7)
         self.assertEqual(self.service._client.futures_account.call_count, 2)
 
+    def test_get_balance_usdt_includes_negative_unrealized_pnl(self):
+        """Equity must not be inflated back to wallet balance during drawdown."""
+        self.service._client.futures_account.return_value = {
+            "totalMarginBalance": "95.0",
+            "availableBalance": "80.0",
+            "assets": [
+                {
+                    "asset": "USDT",
+                    "walletBalance": "100.0",
+                    "marginBalance": "95.0",
+                    "unrealizedProfit": "-5.0",
+                    "availableBalance": "80.0",
+                }
+            ],
+        }
+
+        self.assertEqual(self.service.get_balance_usdt(), 95.0)
+        self.assertEqual(self.service.get_available_balance_usdt(), 80.0)
+
+    def test_market_order_uses_client_id_and_result_response(self):
+        self.service._client.futures_create_order.return_value = {"orderId": 44}
+
+        self.service.place_market_order(
+            "BTCUSDT",
+            "BUY",
+            0.01,
+            client_order_id="fenix-btc-entry-1",
+        )
+
+        kwargs = self.service._client.futures_create_order.call_args.kwargs
+        self.assertEqual(kwargs["newClientOrderId"], "fenix-btc-entry-1")
+        self.assertEqual(kwargs["newOrderRespType"], "RESULT")
+
     def test_validate_permissions_success(self):
         """Test validate_permissions returns True when canTrade is True."""
         self.service.get_account_info = Mock(return_value={"canTrade": True})

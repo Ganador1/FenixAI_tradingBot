@@ -61,6 +61,7 @@ class TestMacroRiskoffEvent:
 
     @pytest.mark.asyncio
     async def test_custom_window_via_env(self, monkeypatch):
+        monkeypatch.setenv("FENIX_MACRO_RISKOFF_ENABLE", "1")
         monkeypatch.setenv("FENIX_MACRO_RISKOFF_MAX_AGE_H", "24")
         with patch("src.tools.macro_news.get_macro_alerts", return_value=SEVERE_OLD):
             event = await _engine()._macro_riskoff_event()

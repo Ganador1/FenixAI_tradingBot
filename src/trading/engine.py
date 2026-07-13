@@ -41,7 +41,9 @@ from src.tools.technical_tools import (
 from src.tools.twitter_scraper import TwitterScraper
 from src.trading.binance_client import BinanceClient
 from src.trading.executor import OrderExecutor
+from src.trading.user_data_stream import FuturesUserDataStream
 from src.trading.market_data import get_market_data_manager
+from src.trading.operational_audit import OperationalAudit
 from src.trading.persistence import (
     expire_stale_pending_orders,
     persist_open_position,
@@ -98,6 +100,28 @@ def _env_float(name: str, default: float) -> float:
     if value is None:
         return default
     return value
+
+
+def _reasoning_bank_agent_key(agent_name: str | None) -> str:
+    """Map UI labels and legacy values to ReasoningBank storage keys."""
+    normalized = str(agent_name or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "decision": "decision_agent",
+        "decision_agent": "decision_agent",
+        "technical": "technical_agent",
+        "technical_analyst": "technical_agent",
+        "technical_agent": "technical_agent",
+        "qabba": "qabba_agent",
+        "qabba_agent": "qabba_agent",
+        "sentiment": "sentiment_agent",
+        "sentiment_agent": "sentiment_agent",
+        "visual": "visual_agent",
+        "visual_analyst": "visual_agent",
+        "visual_agent": "visual_agent",
+        "risk": "risk_manager",
+        "risk_manager": "risk_manager",
+    }
+    return aliases.get(normalized, normalized or "decision_agent")
 
 
 def _deterministic_notional(
@@ -294,6 +318,23 @@ class TradingEngine:
         self.use_testnet = use_testnet
         self.paper_trading = paper_trading
         self.allow_live_trading = allow_live_trading
+        # Protective orders can fill between closed-candle analysis cycles.  Keep
+        # the local position ledger synchronized with the exchange so a filled
+        # stop/target cannot leave RiskManager and persistence believing that a
+        # position is still open.
+        self._live_position_reconciliation_enabled = _env_flag(
+            "FENIX_LIVE_POSITION_RECONCILIATION_ENABLED", True
+        )
+        self._live_position_reconciliation_interval_sec = max(
+            1.0,
+            _env_float("FENIX_LIVE_POSITION_RECONCILIATION_INTERVAL_SEC", 5.0),
+        )
+        self._live_position_reconciliation_task: asyncio.Task | None = None
+        self._live_position_reconciliation_lock = asyncio.Lock()
+        self._live_position_reconciliation_wakeup = asyncio.Event()
+        self._user_data_stream_enabled = _env_flag("FENIX_USER_DATA_STREAM_ENABLED", True)
+        self._user_data_stream: FuturesUserDataStream | None = None
+        self._last_user_data_stream_status: dict[str, Any] | None = None
 
         # Components
         self.market_data = get_market_data_manager(
@@ -315,6 +356,13 @@ class TradingEngine:
 
         # Signal log path for persistence
         project_root = Path(__file__).parent.parent.parent
+        self._operational_audit = OperationalAudit(
+            project_root=project_root,
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+            paper_trading=self.paper_trading,
+            allow_live_trading=self.allow_live_trading,
+        )
         self.signal_log_path = (
             project_root / "logs" / "signals" / f"{symbol}_{timeframe}_signals.jsonl"
         )
@@ -487,13 +535,17 @@ class TradingEngine:
             1.0 if self._short_tf_mode else 0.0,
         )
         self._engine_cleanup_on_stop = _env_flag("FENIX_CLEANUP_ON_STOP", False)
-        self._engine_enforce_llm_risk = _env_flag("FENIX_ENFORCE_LLM_RISK", False)
+        # Live entries fail closed when the risk agent response is malformed.
+        # Paper mode keeps the permissive default for experimentation.
+        self._engine_enforce_llm_risk = _env_flag(
+            "FENIX_ENFORCE_LLM_RISK", not self.paper_trading
+        )
         self._stale_pending_order_max_age_hours = _env_float(
             "FENIX_STALE_PENDING_ORDER_MAX_AGE_HOURS",
             24.0,
         )
         self._engine_leverage = _env_float("FENIX_LEVERAGE", 1.0)
-        self._risk_max_exposure_pct = _env_float("FENIX_MAX_EXPOSURE_PCT", 0.50)
+        self._risk_max_exposure_pct = _env_float("FENIX_MAX_EXPOSURE_PCT", 0.05)
         self._risk_exposure_leverage_multiplier = _env_float(
             "FENIX_EXPOSURE_LEVERAGE_MULTIPLIER",
             max(1.0, self._engine_leverage),
@@ -590,6 +642,11 @@ class TradingEngine:
         # Initialize RiskManager
         self.risk_manager = get_risk_manager() if RISK_MANAGER_AVAILABLE else None
         if self.risk_manager:
+            if hasattr(self.risk_manager, "set_authoritative_balance_mode"):
+                try:
+                    self.risk_manager.set_authoritative_balance_mode(not self.paper_trading)
+                except Exception as e:
+                    logger.warning("Could not set authoritative risk balance mode: %s", e)
             if hasattr(self.risk_manager, "set_max_exposure_pct"):
                 try:
                     self.risk_manager.set_max_exposure_pct(self._risk_max_exposure_pct)
@@ -712,6 +769,29 @@ class TradingEngine:
                     "Could not hydrate existing exchange position on startup", exc_info=True
                 )
 
+        if not self.paper_trading:
+            await self._write_instance_heartbeat(status="running")
+
+        if (
+            not self.paper_trading
+            and self.allow_live_trading
+            and bool(getattr(self, "_user_data_stream_enabled", False))
+        ):
+            await self._start_user_data_stream()
+
+        if (
+            not self.paper_trading
+            and self.allow_live_trading
+            and self._live_position_reconciliation_enabled
+        ):
+            logger.info(
+                "Live position reconciliation enabled: interval=%.1fs",
+                self._live_position_reconciliation_interval_sec,
+            )
+            self._live_position_reconciliation_task = asyncio.create_task(
+                self._run_live_position_reconciliation_watchdog()
+            )
+
         if self._analyze_on_start and not self._startup_analysis_done:
             self._startup_analysis_task = asyncio.create_task(self._run_startup_analysis_cycle())
         if self._kline_watchdog_enabled:
@@ -784,6 +864,12 @@ class TradingEngine:
         self._stopping = True
 
         try:
+            user_stream = getattr(self, "_user_data_stream", None)
+            if user_stream is not None:
+                await user_stream.stop()
+                self._last_user_data_stream_status = user_stream.get_status()
+                self._user_data_stream = None
+
             startup_task = getattr(self, "_startup_analysis_task", None)
             if startup_task is not None and not startup_task.done():
                 startup_task.cancel()
@@ -797,6 +883,14 @@ class TradingEngine:
                 watchdog_task.cancel()
                 try:
                     await asyncio.gather(watchdog_task, return_exceptions=True)
+                except Exception:
+                    pass
+
+            reconciliation_task = getattr(self, "_live_position_reconciliation_task", None)
+            if reconciliation_task is not None and not reconciliation_task.done():
+                reconciliation_task.cancel()
+                try:
+                    await asyncio.gather(reconciliation_task, return_exceptions=True)
                 except Exception:
                     pass
 
@@ -865,6 +959,8 @@ class TradingEngine:
             if getattr(self, "market_data", None) is not None:
                 await self.market_data.stop()
         finally:
+            if not self.paper_trading:
+                await self._write_instance_heartbeat(status="stopped")
             self._stopping = False
             self._stopped = True
             logger.info("TradingEngine stopped")
@@ -1277,6 +1373,11 @@ class TradingEngine:
                     ),
                     fallback={},
                 )
+                reddit_health = (
+                    self.reddit_scraper.get_source_health()
+                    if hasattr(self.reddit_scraper, "get_source_health")
+                    else {"status": "unknown"}
+                )
 
                 fg = await self._run_blocking_sentiment_call(
                     "fear_greed",
@@ -1296,6 +1397,7 @@ class TradingEngine:
                 social_data = {
                     "twitter": twitter_data,
                     "reddit": reddit_data,
+                    "reddit_health": reddit_health,
                 }
 
             # 5. Execute agent graph
@@ -2206,14 +2308,17 @@ class TradingEngine:
             return False
         if self._get_tracked_position() is not None:
             return False
-        if not hasattr(self.executor, "get_position"):
+        if not (
+            hasattr(self.executor, "get_position_snapshot")
+            or hasattr(self.executor, "get_position")
+        ):
             return False
         if getattr(self, "trade_manager", None) is None or not hasattr(
             self.trade_manager, "open_position"
         ):
             return False
 
-        snapshot = self.executor.get_position() or {}
+        snapshot = self._get_verified_exchange_position_snapshot()
         position_amt = _safe_float(snapshot.get("positionAmt")) or 0.0
         if abs(position_amt) <= 1e-9:
             return False
@@ -2931,7 +3036,7 @@ class TradingEngine:
             return False
 
         # Fallback: companion's own EMA slope in bps must agree with the label.
-        ema_bps = _safe_float((self._last_companion_ema_trend_bps or 0.0))
+        ema_bps = _safe_float(self._last_companion_ema_trend_bps or 0.0)
         if trend == "BULL":
             return ema_bps >= min_sep_bps
         if trend == "BEAR":
@@ -3134,6 +3239,19 @@ class TradingEngine:
         realized_success = realized_pnl >= 0.0
         self._register_post_stopout_block(close_result, tracked_position, realized_pnl)
         if self.risk_manager is not None:
+            # Binance equity is authoritative in live mode. Refresh it before
+            # recording the outcome so realized PnL is not applied twice.
+            if not self.paper_trading and hasattr(self.executor, "get_balance"):
+                try:
+                    exchange_balance = await asyncio.to_thread(self.executor.get_balance)
+                    if exchange_balance is not None and float(exchange_balance) > 0:
+                        self.risk_manager.update_balance(float(exchange_balance))
+                except Exception:
+                    logger.warning(
+                        "Could not refresh exchange equity after closing %s",
+                        self.symbol,
+                        exc_info=True,
+                    )
             if trade_id and hasattr(self.risk_manager, "close_trade"):
                 try:
                     self.risk_manager.close_trade(
@@ -3175,6 +3293,33 @@ class TradingEngine:
         except Exception:
             logger.debug("Could not persist closed position for %s", self.symbol, exc_info=True)
 
+        await self._append_live_ledger_record(
+            {
+                "record_type": "position_closed",
+                "trade_id": str(trade_id) if trade_id else None,
+                "side": str(
+                    close_result.get("side") or getattr(tracked_position, "side", "") or ""
+                ).upper(),
+                "entry_price": _safe_float(getattr(tracked_position, "entry_price", None)),
+                "entry_time": str(getattr(tracked_position, "entry_time", "") or "") or None,
+                "quantity": _safe_float(
+                    close_result.get("quantity") or getattr(tracked_position, "quantity", None)
+                ),
+                "exit_price": realized_exit_price,
+                "exit_time": close_result.get("exit_time"),
+                "exit_reason": close_result.get("exit_reason") or close_result.get("reason"),
+                "realized_pnl": realized_pnl,
+                "realized_pnl_pct": realized_pnl_pct,
+                "exchange_fill_reconciled": bool(close_result.get("exchange_fill_reconciled")),
+                "exchange_realized_pnl": _safe_float(close_result.get("exchange_realized_pnl")),
+                "exit_commission": _safe_float(close_result.get("exchange_commission")),
+                "net_after_exit_commission": (
+                    realized_pnl - (_safe_float(close_result.get("exchange_commission")) or 0.0)
+                ),
+                "exit_fills": close_result.get("exchange_exit_fills") or [],
+            }
+        )
+
         digest = close_result.get("reasoning_digest") or getattr(
             tracked_position, "reasoning_digest", None
         )
@@ -3184,7 +3329,7 @@ class TradingEngine:
         if digest:
             try:
                 self.reasoning_bank.update_entry_outcome(
-                    agent_name=agent_name or "Decision Agent",
+                    agent_name=_reasoning_bank_agent_key(agent_name),
                     prompt_digest=digest,
                     success=(float(close_result.get("pnl", 0.0)) >= 0.0),
                     reward=float(close_result.get("pnl", 0.0)),
@@ -3388,6 +3533,30 @@ class TradingEngine:
         tracked_position = self._get_tracked_position()
         if tracked_position is None:
             return None
+
+        # Never rely exclusively on the local candle price to infer whether an
+        # exchange-side SL/TP has filled.  A protective order can execute and
+        # price can subsequently return inside the local stop/target range
+        # before this method runs again.  In that case the old code never
+        # entered its local exit branch, leaving a phantom position open.
+        if (
+            not self.paper_trading
+            and self.allow_live_trading
+            and bool(getattr(self, "_live_position_reconciliation_enabled", False))
+        ):
+            try:
+                await self._reconcile_tracked_position_with_exchange()
+            except Exception:
+                # A transient account query failure must not disable local
+                # rule-based exits; it is logged and retried by the watchdog.
+                logger.warning(
+                    "Live position reconciliation failed before managing %s",
+                    self.symbol,
+                    exc_info=True,
+                )
+            tracked_position = self._get_tracked_position()
+            if tracked_position is None:
+                return None
 
         current_price = (
             _safe_float(getattr(self.market_data, "current_price", None))
@@ -3594,17 +3763,183 @@ class TradingEngine:
     async def _run_fast_decision_cycle(self) -> None:
         await self._manage_open_position()
 
+    async def _run_live_position_reconciliation_watchdog(self) -> None:
+        """Continuously reconcile an open live position with Binance state.
+
+        This is deliberately independent of closed-candle analysis.  Exchange
+        protective orders are authoritative and may close intrabar; detecting
+        that event promptly keeps risk limits, local persistence and future
+        entry decisions consistent with the account.
+        """
+        interval = max(
+            1.0,
+            float(getattr(self, "_live_position_reconciliation_interval_sec", 5.0) or 5.0),
+        )
+        while self._running:
+            try:
+                await self._reconcile_tracked_position_with_exchange()
+                await self._write_instance_heartbeat(status="running")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Live position reconciliation watchdog failed for %s",
+                    self.symbol,
+                    exc_info=True,
+                )
+                try:
+                    from src.risk.safety_alerts import alert_safety_event
+                    await alert_safety_event(
+                        "RECONCILIATION_FAILURE",
+                        f"Position reconciliation watchdog failed for {self.symbol}",
+                        {"symbol": self.symbol},
+                    )
+                except Exception:
+                    logger.debug("Safety alert for reconciliation failure not sent", exc_info=True)
+            wakeup = getattr(self, "_live_position_reconciliation_wakeup", None)
+            if wakeup is None:
+                await asyncio.sleep(interval)
+                continue
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=interval)
+            except TimeoutError:
+                pass
+            finally:
+                wakeup.clear()
+
+    async def _start_user_data_stream(self) -> None:
+        key_name = "BINANCE_TESTNET_API_KEY" if self.use_testnet else "BINANCE_API_KEY"
+        secret_name = (
+            "BINANCE_TESTNET_API_SECRET" if self.use_testnet else "BINANCE_API_SECRET"
+        )
+        api_key = os.getenv(key_name, "").strip()
+        api_secret = os.getenv(secret_name, "").strip()
+        if not api_key or not api_secret:
+            logger.warning(
+                "Private user-data stream disabled: missing %s/%s; polling remains active",
+                key_name,
+                secret_name,
+            )
+            return
+        stream = FuturesUserDataStream(
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=self.use_testnet,
+            on_event=self._on_user_data_event,
+            reconnect_delay_sec=_env_float("FENIX_USER_DATA_RECONNECT_DELAY_SEC", 2.0),
+        )
+        try:
+            await stream.start(
+                timeout_sec=_env_float("FENIX_USER_DATA_CONNECT_TIMEOUT_SEC", 15.0)
+            )
+        except Exception:
+            logger.warning(
+                "Private user-data stream failed to start; polling remains active",
+                exc_info=True,
+            )
+            return
+        self._user_data_stream = stream
+        self._last_user_data_stream_status = stream.get_status()
+
+    async def _on_user_data_event(self, event: dict[str, Any]) -> None:
+        event_type = str(event.get("e") or event.get("eventType") or "UNKNOWN")
+        order = event.get("o") if isinstance(event.get("o"), dict) else {}
+        event_symbol = str(order.get("s") or event.get("s") or "").upper()
+        if event_symbol and event_symbol != self.symbol:
+            return
+        wakeup = getattr(self, "_live_position_reconciliation_wakeup", None)
+        if wakeup is not None and event_type in {
+            "ORDER_TRADE_UPDATE",
+            "ACCOUNT_UPDATE",
+            "ALGO_UPDATE",
+        }:
+            wakeup.set()
+        if (callback := self.on_agent_event) is not None:
+            await callback(
+                "exchange:user_event",
+                {
+                    "event_type": event_type,
+                    "symbol": event_symbol or self.symbol,
+                    "order_status": str(order.get("X") or "") or None,
+                    "execution_type": str(order.get("x") or "") or None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+    def _tracked_position_audit_payload(self) -> dict[str, Any] | None:
+        tracked = self._get_tracked_position()
+        if tracked is None:
+            return None
+        return {
+            "side": str(getattr(tracked, "side", "") or "").upper(),
+            "quantity": _safe_float(getattr(tracked, "quantity", None)),
+            "entry_price": _safe_float(getattr(tracked, "entry_price", None)),
+            "entry_time": str(getattr(tracked, "entry_time", "") or "") or None,
+            "trade_id": str(getattr(tracked, "trade_id", "") or "") or None,
+            "stop_loss": _safe_float(getattr(tracked, "stop_loss", None)),
+            "take_profit": _safe_float(getattr(tracked, "take_profit", None)),
+        }
+
+    async def _write_instance_heartbeat(self, *, status: str, detail: str | None = None) -> None:
+        audit = getattr(self, "_operational_audit", None)
+        if audit is None:
+            return
+        try:
+            await asyncio.to_thread(
+                audit.write_heartbeat,
+                status=status,
+                tracked_position=self._tracked_position_audit_payload(),
+                detail=detail,
+            )
+        except Exception:
+            logger.debug("Could not write runtime heartbeat for %s", self.symbol, exc_info=True)
+
+    async def _append_live_ledger_record(self, record: dict[str, Any]) -> None:
+        if self.paper_trading:
+            return
+        audit = getattr(self, "_operational_audit", None)
+        if audit is None:
+            return
+        try:
+            await asyncio.to_thread(audit.append_ledger_record, record)
+        except Exception:
+            logger.warning("Could not append live ledger record for %s", self.symbol, exc_info=True)
+
     async def _confirm_exchange_flat_snapshot(
         self,
         snapshot: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], float, bool]:
-        first = snapshot or self.executor.get_position() or {}
+        first = (
+            snapshot
+            if snapshot is not None
+            else self._get_verified_exchange_position_snapshot()
+        )
+        if not isinstance(first, dict):
+            raise RuntimeError("Exchange position snapshot is unavailable")
         amount = abs(_safe_float(first.get("positionAmt")) or 0.0)
-        if amount <= 1e-9:
-            return first, amount, True
-        second = self.executor.get_position() or {}
+        # A non-zero first snapshot is authoritative enough to keep tracking
+        # the position.  Double-read only a flat response before releasing
+        # local risk state, which avoids both phantom closures and an
+        # unnecessary second account request every watchdog interval.
+        if amount > 1e-9:
+            return first, amount, False
+        second = self._get_verified_exchange_position_snapshot()
+        if not isinstance(second, dict):
+            raise RuntimeError("Exchange position confirmation is unavailable")
         second_amount = abs(_safe_float(second.get("positionAmt")) or 0.0)
         return second, second_amount, second_amount <= 1e-9
+
+    def _get_verified_exchange_position_snapshot(self) -> dict[str, Any]:
+        """Read a position without treating an exchange failure as flat."""
+        strict_reader = getattr(type(self.executor), "get_position_snapshot", None)
+        snapshot = (
+            self.executor.get_position_snapshot()
+            if callable(strict_reader)
+            else self.executor.get_position()
+        )
+        if not isinstance(snapshot, dict):
+            raise RuntimeError("Exchange position snapshot is unavailable")
+        return snapshot
 
     async def _synchronize_live_exit(
         self,
@@ -3688,6 +4023,7 @@ class TradingEngine:
         close_result["exchange_realized_pnl"] = round(realized_pnl, 8)
         close_result["exchange_commission"] = round(commission, 8)
         close_result["exchange_fill_reconciled"] = True
+        close_result["exchange_exit_fills"] = self._serialize_exchange_fills(selected)
 
         close_result["pnl"] = realized_pnl
         entry_price = _safe_float(getattr(tracked_position, "entry_price", None)) or 0.0
@@ -3707,13 +4043,63 @@ class TradingEngine:
         )
         return True
 
+    @staticmethod
+    def _serialize_exchange_fills(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep only immutable, non-sensitive fill fields in the local ledger."""
+        return [
+            {
+                "trade_id": str(trade.get("id") or "") or None,
+                "order_id": str(trade.get("orderId") or "") or None,
+                "price": _safe_float(trade.get("price")),
+                "quantity": abs(_safe_float(trade.get("qty")) or 0.0),
+                "realized_pnl": _safe_float(trade.get("realizedPnl")),
+                "commission": abs(_safe_float(trade.get("commission")) or 0.0),
+                "commission_asset": trade.get("commissionAsset"),
+                "time": int(trade.get("time", 0) or 0),
+            }
+            for trade in trades
+        ]
+
+    async def _capture_entry_exchange_fills(
+        self,
+        *,
+        order_id: str | int | None,
+        side: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch the actual entry fills once, keyed by Binance order ID."""
+        if order_id is None or not hasattr(self.executor, "get_recent_trades"):
+            return []
+
+        normalized_order_id = str(order_id)
+        normalized_side = str(side or "").upper()
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        def _read_fills() -> list[dict[str, Any]]:
+            trades = self.executor.get_recent_trades(
+                start_time=now_ms - 120_000,
+                end_time=now_ms + 30_000,
+                limit=50,
+            ) or []
+            return [
+                trade
+                for trade in trades
+                if str(trade.get("orderId") or "") == normalized_order_id
+                and str(trade.get("side") or "").upper() == normalized_side
+            ]
+
+        try:
+            fills = await asyncio.to_thread(_read_fills)
+        except Exception:
+            logger.debug("Could not capture entry fills for %s", self.symbol, exc_info=True)
+            return []
+        return self._serialize_exchange_fills(fills)
+
     async def _cleanup_flat_symbol_orders(
         self,
         *,
         tracked_position: Any | None,
         source: str,
     ) -> bool:
-        del source
         if tracked_position is None:
             return True
 
@@ -3723,19 +4109,44 @@ class TradingEngine:
             if cancelled:
                 return True
 
+        # A periodic reconciliation must never blanket-cancel all orders for a
+        # symbol: another live instance or a manual order can share it.  The
+        # tracked protection ID is safe to cancel; unknown orders are preserved
+        # and surfaced for review instead.
+        if source == "exchange_reconciliation":
+            logger.warning(
+                "Exchange flat for %s but no tracked protection ID was available; "
+                "preserving unknown open orders",
+                self.symbol,
+            )
+            return False
+
         if hasattr(self.executor, "cancel_all_orders"):
             await self.executor.cancel_all_orders()
         return True
 
-    async def _reconcile_tracked_position_with_exchange(self) -> None:
+    async def _reconcile_tracked_position_with_exchange(self) -> bool:
+        """Close local state when Binance confirms the tracked position is flat.
+
+        Returns ``True`` only when a stale local position was reconciled.  The
+        lock serializes the watchdog and the closed-candle decision path so a
+        single protective-order fill can never be recorded twice.
+        """
+        lock = getattr(self, "_live_position_reconciliation_lock", None)
+        if lock is None:
+            return await self._reconcile_tracked_position_with_exchange_unlocked()
+        async with lock:
+            return await self._reconcile_tracked_position_with_exchange_unlocked()
+
+    async def _reconcile_tracked_position_with_exchange_unlocked(self) -> bool:
         tracked_position = self._get_tracked_position()
         if tracked_position is None:
-            return
+            return False
 
-        snapshot = self.executor.get_position() or {}
+        snapshot = self._get_verified_exchange_position_snapshot()
         confirmed_snapshot, _, confirmed_flat = await self._confirm_exchange_flat_snapshot(snapshot)
         if not confirmed_flat:
-            return
+            return False
 
         await self._cleanup_flat_symbol_orders(
             tracked_position=tracked_position,
@@ -3757,6 +4168,11 @@ class TradingEngine:
             tracked_position=tracked_position,
         )
         await self._close_position_record(close_result, tracked_position=tracked_position)
+        logger.warning(
+            "Reconciled stale local position with exchange-flat snapshot for %s",
+            self.symbol,
+        )
+        return True
 
     def _compute_fast_signal(
         self, indicators: dict[str, Any], micro: Any
@@ -5115,6 +5531,18 @@ class TradingEngine:
             logger.error("Trade skipped: invalid entry price %s", entry_price)
             return
 
+        if (
+            not self.paper_trading
+            and _env_flag("FENIX_REQUIRE_LIVE_STOP_LOSS", True)
+            and (stop_loss is None or stop_loss <= 0)
+        ):
+            logger.critical("Live trade blocked: no valid stop loss was provided")
+            await self._emit_filter_blocked(
+                "MISSING_STOP_LOSS",
+                {"reason": "live_entry_requires_stop_loss"},
+            )
+            return
+
         if self.paper_trading:
             balance = _env_float("FENIX_BALANCE_FALLBACK_USDT", 100.0)
             if balance <= 0:
@@ -5131,6 +5559,16 @@ class TradingEngine:
                 return
             balance = float(balance)
             logger.info("Account balance (USDT): %.2f", balance)
+
+        available_balance = balance
+        available_reader = getattr(type(self.executor), "get_available_balance", None)
+        if not self.paper_trading and callable(available_reader):
+            available = self.executor.get_available_balance()
+            if available is None:
+                logger.error("Could not get available margin, aborting trade")
+                return
+            available_balance = max(0.0, float(available))
+            logger.info("Available margin (USDT): %.2f", available_balance)
 
         leverage = max(
             1.0,
@@ -5199,17 +5637,17 @@ class TradingEngine:
                 max(0.0, _env_float("FENIX_MAX_ENTRY_MARGIN_PCT", 0.90)),
                 1.0,
             )
-            available_notional_cap = balance * leverage * max_entry_margin_pct
+            available_notional_cap = available_balance * leverage * max_entry_margin_pct
             explicit_available_cap = _safe_float(os.getenv("FENIX_MAX_AVAILABLE_NOTIONAL_USD"))
             if explicit_available_cap is not None and explicit_available_cap > 0:
                 available_notional_cap = min(available_notional_cap, explicit_available_cap)
             if available_notional_cap > 0 and base_size > available_notional_cap:
                 logger.info(
                     "Capping requested notional to available margin: %.2f -> %.2f "
-                    "(balance=%.2f leverage=%.2f max_margin_pct=%.2f)",
+                    "(available=%.2f leverage=%.2f max_margin_pct=%.2f)",
                     base_size,
                     available_notional_cap,
-                    balance,
+                    available_balance,
                     leverage,
                     max_entry_margin_pct,
                 )
@@ -5253,6 +5691,28 @@ class TradingEngine:
         if max_notional and max_notional > 0:
             adjusted_size = min(adjusted_size, max_notional)
 
+        if stop_loss is not None and stop_loss > 0:
+            stop_fraction = abs(entry_price - stop_loss) / entry_price
+            round_trip_fee_fraction = max(
+                0.0,
+                _env_float("FENIX_ESTIMATED_ROUND_TRIP_FEE_PCT", 0.0008),
+            )
+            risk_per_notional = stop_fraction + round_trip_fee_fraction
+            max_loss_usd = balance * max(0.0, risk_fraction)
+            if risk_per_notional > 0 and max_loss_usd > 0:
+                stop_risk_notional_cap = max_loss_usd / risk_per_notional
+                if adjusted_size > stop_risk_notional_cap:
+                    logger.info(
+                        "Capping notional by stop-loss risk: %.2f -> %.2f "
+                        "(max_loss=%.2f stop=%.4f%% fees=%.4f%%)",
+                        adjusted_size,
+                        stop_risk_notional_cap,
+                        max_loss_usd,
+                        stop_fraction * 100,
+                        round_trip_fee_fraction * 100,
+                    )
+                    adjusted_size = stop_risk_notional_cap
+
         if self.paper_trading:
             simulated_price = _safe_float(getattr(self.market_data, "current_price", None))
             if simulated_price is None or simulated_price <= 0:
@@ -5277,9 +5737,11 @@ class TradingEngine:
             )
             return
 
-        if hasattr(self.executor, "get_position"):
+        if hasattr(self.executor, "get_position_snapshot") or hasattr(
+            self.executor, "get_position"
+        ):
             try:
-                current_position = self.executor.get_position() or {}
+                current_position = self._get_verified_exchange_position_snapshot()
             except Exception as e:
                 logger.warning("Trade skipped: could not confirm current position state: %s", e)
                 if (callback := self.on_agent_event) is not None:
@@ -5296,6 +5758,23 @@ class TradingEngine:
 
         current_position_amt = _safe_float(current_position.get("positionAmt")) or 0.0
         tracked_position = self._get_tracked_position()
+        if abs(current_position_amt) > 1e-9 and tracked_position is None:
+            try:
+                hydrated = await self._hydrate_tracked_position_from_exchange()
+            except Exception as e:
+                logger.warning("Could not hydrate the live position for %s: %s", self.symbol, e)
+                hydrated = False
+            await self._emit_filter_blocked(
+                "POSITION_STATE_RECOVERY",
+                {
+                    "reason": (
+                        "exchange_position_hydrated_retry_next_cycle"
+                        if hydrated
+                        else "exchange_position_not_locally_tracked"
+                    )
+                },
+            )
+            return
         if abs(current_position_amt) <= 1e-9 and tracked_position is not None:
             try:
                 await self._reconcile_tracked_position_with_exchange()
@@ -5616,10 +6095,10 @@ class TradingEngine:
             return
 
         required_margin = notional / leverage
-        if required_margin > balance:
+        if required_margin > available_balance:
             logger.warning(
                 "Trade skipped: Insufficient margin %.2f < Required %.2f",
-                balance,
+                available_balance,
                 required_margin,
             )
             return
@@ -5658,8 +6137,8 @@ class TradingEngine:
                         trade_id=str(result.order_id) if result.order_id else None,
                         reasoning_digest=decision_data.get("_reasoning_digest")
                         or decision_data.get("reasoning_prompt_digest"),
-                        decision_agent_name="Decision Agent",
-                        protection_position_id=getattr(result, "protection_position_id", None),
+                        decision_agent_name="decision_agent",
+                        protection_position_id=getattr(result, "position_id", None),
                         sl_order_id=getattr(result, "sl_order_id", None),
                         tp_order_id=getattr(result, "tp_order_id", None),
                     )
@@ -5696,6 +6175,44 @@ class TradingEngine:
             except Exception:
                 logger.debug("Could not persist executed trade for %s", self.symbol, exc_info=True)
 
+            entry_fills = await self._capture_entry_exchange_fills(
+                order_id=result.order_id,
+                side=decision,
+            )
+            entry_commission = sum(
+                _safe_float(fill.get("commission")) or 0.0 for fill in entry_fills
+            )
+            digest = decision_data.get("_reasoning_digest") or decision_data.get(
+                "reasoning_prompt_digest"
+            )
+            if digest and result.order_id and hasattr(
+                self.reasoning_bank, "attach_trade_reference"
+            ):
+                try:
+                    self.reasoning_bank.attach_trade_reference(
+                        "decision_agent", digest, str(result.order_id)
+                    )
+                except Exception:
+                    logger.debug("Could not link ReasoningBank entry to trade", exc_info=True)
+            await self._append_live_ledger_record(
+                {
+                    "record_type": "position_opened",
+                    "trade_id": str(result.order_id) if result.order_id else None,
+                    "side": decision,
+                    "quantity": executed_qty,
+                    "entry_price": executed_price,
+                    "entry_time": datetime.now(timezone.utc).isoformat(),
+                    "stop_loss": None if is_pyramid_add else stop_loss,
+                    "take_profit": None if is_pyramid_add else take_profit,
+                    "protection_position_id": getattr(result, "position_id", None),
+                    "sl_order_id": getattr(result, "sl_order_id", None),
+                    "tp_order_id": getattr(result, "tp_order_id", None),
+                    "entry_fills": entry_fills,
+                    "entry_fill_reconciled": bool(entry_fills),
+                    "entry_commission": entry_commission,
+                }
+            )
+
             if (callback := self.on_agent_event) is not None:
                 await callback(
                     "trade_executed",
@@ -5718,22 +6235,10 @@ class TradingEngine:
                     },
                 )
 
-            # --- UPDATE REASONING BANK ---
-            try:
-                digest = decision_data.get("_reasoning_digest") or decision_data.get(
-                    "reasoning_prompt_digest"
-                )
-                if digest:
-                    # For now, mark success as True and attach order id; reward will be computed asynchronously later
-                    self.reasoning_bank.update_entry_outcome(
-                        agent_name="Decision Agent",
-                        prompt_digest=digest,
-                        success=True,
-                        reward=0.0,
-                        trade_id=str(result.order_id) if result.order_id else None,
-                    )
-            except Exception as e:
-                logger.debug(f"Failed to attach trade outcome to ReasoningBank: {e}")
+            # ReasoningBank outcomes are written only from _close_position_record.
+            # An accepted entry has no realized outcome yet; marking it as a
+            # success here biases retrieval toward open (and possibly orphaned)
+            # trades, especially after an exchange-side protective close.
 
             # --- UPDATE RISK MANAGER ---
             if self.risk_manager and RISK_MANAGER_AVAILABLE:
@@ -5779,22 +6284,6 @@ class TradingEngine:
                     logger.warning(f"Could not record trade in RiskManager: {e}")
         else:
             logger.error(f"❌ Trade failed: {result.status} - {result.message}")
-
-            # --- UPDATE REASONING BANK FOR FAILED TRADE ---
-            try:
-                digest = decision_data.get("_reasoning_digest") or decision_data.get(
-                    "reasoning_prompt_digest"
-                )
-                if digest:
-                    self.reasoning_bank.update_entry_outcome(
-                        agent_name="Decision Agent",
-                        prompt_digest=digest,
-                        success=False,
-                        reward=0.0,
-                        trade_id=str(result.order_id) if result.order_id else None,
-                    )
-            except Exception as e:
-                logger.debug(f"Failed to attach failed trade outcome to ReasoningBank: {e}")
 
             logger.info(
                 "Failed execution was not recorded as a RuntimeRiskManager loss "
@@ -5858,6 +6347,12 @@ class TradingEngine:
 
     def get_status(self) -> dict[str, Any]:
         """Returns the current engine status."""
+        user_stream = getattr(self, "_user_data_stream", None)
+        user_stream_status = (
+            user_stream.get_status()
+            if user_stream is not None
+            else getattr(self, "_last_user_data_stream_status", None)
+        )
         return {
             "running": self._running,
             "symbol": self.symbol,
@@ -5870,6 +6365,7 @@ class TradingEngine:
             ),
             "current_price": self.market_data.current_price,
             "langgraph_available": self._trading_graph is not None,
+            "user_data_stream": user_stream_status,
         }
 
 

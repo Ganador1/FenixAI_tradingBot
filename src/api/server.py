@@ -43,6 +43,7 @@ from src.models.db_models import AgentOutput, Order, Position, Trade
 from src.models.user import User
 from src.trading.binance_client import BinanceClient
 from src.trading.engine import TradingEngine
+from src.trading.operational_audit import read_runtime_instances
 
 # ============ Pydantic Schemas ============
 
@@ -138,6 +139,7 @@ logger = logging.getLogger("FenixAPI")
 engine: TradingEngine | None = None
 _engine_task: asyncio.Task | None = None
 _engine_start_lock = asyncio.Lock()
+_api_observer_mode = False
 # Keep references to fire-and-forget background tasks so they are not GC'd
 # and their exceptions are surfaced in logs.
 _background_tasks: set[asyncio.Task] = set()
@@ -231,7 +233,7 @@ handle_engine_event = create_engine_event_handler(sio.emit, persist=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global engine, _engine_task
+    global engine, _engine_task, _api_observer_mode
     logger.info("Initializing Database...")
     await init_db()
 
@@ -272,10 +274,10 @@ async def lifespan(app: FastAPI):
     # (run_fenix.py --mode live + Redis bridge), the API should NOT run its
     # own analysis loop — it would duplicate LLM inference and pollute the
     # dashboard with a second (paper) session. Set FENIX_API_OBSERVER=1 to
-    # keep the API as a pure data/metrics server; the engine object is still
-    # created for status/market endpoints and can be started on demand via
-    # POST /api/engine/start.
+    # keep the API as a pure data/metrics server. The local engine object only
+    # serves read paths; control endpoints are rejected in observer mode.
     api_observer = os.getenv("FENIX_API_OBSERVER", "").lower() in ("1", "true", "yes", "on")
+    _api_observer_mode = api_observer
     if api_observer:
         logger.info(
             "🔭 FENIX_API_OBSERVER=1 — API will not start its own engine "
@@ -286,15 +288,17 @@ async def lifespan(app: FastAPI):
         # Start engine in background task
         _engine_task = asyncio.create_task(engine.start())
 
-    # Start AutoEvaluator
-    try:
-        from src.analysis.auto_evaluator import AutoEvaluator
+    # The live CLI process owns evaluation in observer mode. Starting another
+    # evaluator here duplicates labels and Binance polling.
+    if not api_observer:
+        try:
+            from src.analysis.auto_evaluator import AutoEvaluator
 
-        auto_evaluator = AutoEvaluator(symbol=api_symbol, timeframe=api_timeframe)
-        _track_task(asyncio.create_task(auto_evaluator.start()))
-        logger.info("✅ AutoEvaluator started")
-    except Exception as e:
-        logger.error(f"Failed to start AutoEvaluator: {e}")
+            auto_evaluator = AutoEvaluator(symbol=api_symbol, timeframe=api_timeframe)
+            _track_task(asyncio.create_task(auto_evaluator.start()))
+            logger.info("✅ AutoEvaluator started")
+        except Exception as e:
+            logger.error(f"Failed to start AutoEvaluator: {e}")
 
     # Start metrics broadcaster
     _track_task(asyncio.create_task(broadcast_metrics()))
@@ -831,6 +835,17 @@ async def get_system_status():
         "metrics": _summarize_metrics(metrics),
         "raw_metrics": metrics,
         "engine": status,
+        "instances": read_runtime_instances(),
+        "observer_mode": _api_observer_mode,
+    }
+
+
+@app.get("/api/system/instances")
+async def get_runtime_instances():
+    """Return discovered Fenix CLI instances; stale heartbeats are never live."""
+    return {
+        "instances": read_runtime_instances(),
+        "api_engine": _engine_config_payload(engine),
     }
 
 
@@ -998,6 +1013,11 @@ async def get_metrics_history(timeframe: str = Query("1h")):
 @app.post("/api/engine/start", dependencies=[Depends(require_control_access)])
 async def start_engine():
     global _engine_task
+    if _api_observer_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="API observer mode cannot start the separately managed trading engine",
+        )
     async with _engine_start_lock:
         if engine and not engine.get_status().get("running"):
             if _engine_task is None or _engine_task.done():
@@ -1007,6 +1027,11 @@ async def start_engine():
 
 @app.post("/api/engine/stop", dependencies=[Depends(require_control_access)])
 async def stop_engine():
+    if _api_observer_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="API observer mode cannot stop the separately managed trading engine",
+        )
     if engine and engine.get_status().get("running"):
         await engine.stop()
     return {"status": "stopped"}
@@ -1019,6 +1044,11 @@ async def get_engine_config():
 
 @app.post("/api/engine/config", dependencies=[Depends(require_control_access)])
 async def update_engine_config(payload: EngineConfigUpdate):
+    if _api_observer_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="API observer mode cannot reconfigure the separately managed trading engine",
+        )
     config = await _restart_engine_with_config(
         symbol=payload.symbol,
         timeframe=payload.timeframe,

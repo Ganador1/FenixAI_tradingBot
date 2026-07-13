@@ -18,8 +18,12 @@ class _DummyExecutor:
         return types.SimpleNamespace(
             success=True,
             status="FILLED",
+            order_id=123,
+            position_id=None,
             executed_qty=quantity,
             entry_price=stop_loss or 1.0,
+            sl_order_id=None,
+            tp_order_id=None,
             message="",
         )
 

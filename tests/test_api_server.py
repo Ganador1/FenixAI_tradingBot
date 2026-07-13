@@ -186,6 +186,19 @@ class TestHelperFunctions:
         assert result["timeframe"] == "1h"
         assert result["paper_trading"] is True
 
+    @pytest.mark.asyncio
+    async def test_runtime_instances_endpoint_exposes_cli_registry(self, monkeypatch):
+        import src.api.server as server
+
+        expected = [{"instance_id": "sol-live", "fresh": True, "symbol": "SOLUSDT"}]
+        monkeypatch.setattr(server, "read_runtime_instances", lambda: expected)
+        monkeypatch.setattr(server, "engine", None)
+
+        result = await server.get_runtime_instances()
+
+        assert result["instances"] == expected
+        assert result["api_engine"] == {}
+
     def test_build_connection_status(self):
         """Test connection status building."""
         from src.api.server import _build_connection_status
@@ -201,6 +214,21 @@ class TestHelperFunctions:
         from src.api.server import _escape_sql_like
 
         assert _escape_sql_like(r"100%_match\path") == r"100\%\_match\\path"
+
+    @pytest.mark.asyncio
+    async def test_observer_mode_rejects_local_engine_control(self, monkeypatch):
+        from fastapi import HTTPException
+        import src.api.server as server
+
+        monkeypatch.setattr(server, "_api_observer_mode", True)
+
+        with pytest.raises(HTTPException) as start_error:
+            await server.start_engine()
+        with pytest.raises(HTTPException) as stop_error:
+            await server.stop_engine()
+
+        assert start_error.value.status_code == 409
+        assert stop_error.value.status_code == 409
 
 
 class TestSystemMetrics:

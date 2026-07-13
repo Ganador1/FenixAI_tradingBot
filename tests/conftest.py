@@ -47,6 +47,17 @@ _force_test_database_url()
 # predate the gate. Disable it by default for the suite; tests that exercise the
 # gate itself re-enable it explicitly with monkeypatch.setenv.
 os.environ.setdefault("FENIX_MIN_AGENT_CONSENSUS", "0")
+# Unit tests must not perform live multi-timeframe, macro, or scorecard I/O.
+os.environ.setdefault("FENIX_STRICT_MTF_BIAS_TIMEFRAME", "")
+os.environ.setdefault("FENIX_MACRO_RISKOFF_ENABLE", "0")
+os.environ.setdefault("FENIX_SCORECARD_WEIGHTS", "0")
+# Live safety flags belong to deployment configuration, not the default unit
+# test environment. Individual safety tests opt back in with monkeypatch.
+os.environ.setdefault("FENIX_ENFORCE_LLM_RISK", "0")
+os.environ.setdefault("FENIX_REQUIRE_LIVE_STOP_LOSS", "0")
+os.environ.setdefault("FENIX_GLOBAL_PORTFOLIO_GUARD", "0")
+os.environ.setdefault("FENIX_PYRAMID_ENABLE", "0")
+os.environ.setdefault("FENIX_ALLOW_ADD_TO_POSITION", "0")
 
 
 @pytest.fixture(autouse=True, scope="session")

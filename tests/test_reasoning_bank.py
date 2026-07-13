@@ -200,6 +200,45 @@ class TestReasoningBank:
         assert all(entry.success is True for entry in matches)
         assert all(entry.reward == 0.42 for entry in matches)
 
+    def test_attach_trade_reference_keeps_entry_pending_for_realized_close(self, reasoning_bank):
+        entry = reasoning_bank.store_entry(
+            agent_name="decision_agent",
+            prompt="Trade decision",
+            normalized_result={"action": "BUY", "confidence": 0.8},
+            raw_response="BUY",
+            backend="test",
+            latency_ms=10.0,
+        )
+
+        attached = reasoning_bank.attach_trade_reference(
+            "decision_agent", entry.prompt_digest, "binance-order-123"
+        )
+
+        assert attached is True
+        updated = reasoning_bank.get_recent("decision_agent", limit=1)[0]
+        assert updated.trade_id == "binance-order-123"
+        assert updated.success is None
+
+    def test_mark_entry_not_evaluable_persists_terminal_skip(self, reasoning_bank):
+        entry = reasoning_bank.store_entry(
+            agent_name="qabba_agent",
+            prompt="No directional output",
+            normalized_result={"action": "UNKNOWN"},
+            raw_response="{}",
+            backend="test",
+        )
+
+        assert reasoning_bank.mark_entry_not_evaluable(
+            "qabba_agent",
+            entry.prompt_digest,
+            reason="unknown_action",
+        )
+
+        stored = reasoning_bank.get_recent("qabba_agent", limit=1)[0]
+        assert stored.success is None
+        assert stored.metadata["auto_evaluator_status"] == "not_evaluable"
+        assert stored.metadata["auto_evaluator_reason"] == "unknown_action"
+
 
 class TestReasoningBankPersistence:
     """Tests para persistencia de ReasoningBank."""
