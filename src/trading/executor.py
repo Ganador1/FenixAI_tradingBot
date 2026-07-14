@@ -379,6 +379,38 @@ class OrderExecutor:
         finally:
             handle.close()
 
+    @staticmethod
+    def _extract_symbol_leverage(account: dict[str, Any], symbol: str) -> float | None:
+        """Read the per-symbol leverage from a futures_account() payload."""
+        for position in account.get("positions", []) or []:
+            if str(position.get("symbol", "")).upper() != symbol.upper():
+                continue
+            try:
+                exchange_leverage = float(position.get("leverage", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return None
+            return exchange_leverage if exchange_leverage > 0 else None
+        return None
+
+    def get_exchange_leverage(self) -> float | None:
+        """Return the exchange-configured leverage for this symbol, or None.
+
+        None means "could not be determined" (no service, request failed, or
+        the symbol is absent from the account payload) — callers must fall
+        back to their configured assumption rather than treating it as 1x.
+        """
+        account_reader = getattr(type(self.service), "get_account_info", None)
+        if not callable(account_reader):
+            return None
+        try:
+            account = self.service.get_account_info()
+        except Exception:
+            logger.warning("Could not read account info for exchange leverage", exc_info=True)
+            return None
+        if not isinstance(account, dict):
+            return None
+        return self._extract_symbol_leverage(account, self.symbol)
+
     def _resolve_account_leverage(self, account: dict[str, Any]) -> float:
         """Prefer the exchange's own configured leverage for this symbol.
 
@@ -392,26 +424,19 @@ class OrderExecutor:
         so no extra request is needed.
         """
         configured = max(1.0, float(os.getenv("FENIX_LEVERAGE", "1") or 1.0))
-        for position in account.get("positions", []) or []:
-            if str(position.get("symbol", "")).upper() != self.symbol.upper():
-                continue
-            try:
-                exchange_leverage = float(position.get("leverage", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                exchange_leverage = 0.0
-            if exchange_leverage <= 0:
-                break
-            if abs(exchange_leverage - configured) > 0.01:
-                logger.warning(
-                    "FENIX_LEVERAGE=%s does not match the exchange-configured "
-                    "leverage %sx for %s; using the exchange value for the "
-                    "margin guard",
-                    configured,
-                    exchange_leverage,
-                    self.symbol,
-                )
-            return exchange_leverage
-        return configured
+        exchange_leverage = self._extract_symbol_leverage(account, self.symbol)
+        if exchange_leverage is None:
+            return configured
+        if abs(exchange_leverage - configured) > 0.01:
+            logger.warning(
+                "FENIX_LEVERAGE=%s does not match the exchange-configured "
+                "leverage %sx for %s; using the exchange value for the "
+                "margin guard",
+                configured,
+                exchange_leverage,
+                self.symbol,
+            )
+        return exchange_leverage
 
     def _check_global_account_margin(self, quantity: float) -> tuple[bool, str]:
         """Fail closed when a new entry would breach the account margin cap."""

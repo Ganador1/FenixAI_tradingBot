@@ -198,3 +198,64 @@ async def test_preflight_does_not_block_startup_on_transient_network_error():
     result = await TradingEngine._run_account_preflight(engine)
 
     assert result is True
+
+
+class _LeverageExecutor:
+    """Executor stub exposing the strict class-level leverage reader."""
+
+    def __init__(self, leverage):
+        self._leverage = leverage
+
+    def get_exchange_leverage(self):
+        if isinstance(self._leverage, Exception):
+            raise self._leverage
+        return self._leverage
+
+
+def _build_sizing_engine(executor, *, paper_trading: bool = False):
+    from src.trading.engine import TradingEngine
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.symbol = "SOLUSDT"
+    engine.paper_trading = paper_trading
+    engine._engine_leverage = 10.0
+    engine.executor = executor
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_sizing_leverage_prefers_exchange_value(monkeypatch):
+    """Sizing must use the real 3x, not a stale FENIX_LEVERAGE=10."""
+    from src.trading.engine import TradingEngine
+
+    monkeypatch.setenv("FENIX_LEVERAGE", "10")
+    engine = _build_sizing_engine(_LeverageExecutor(3.0))
+
+    assert await TradingEngine._resolve_sizing_leverage(engine) == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_sizing_leverage_falls_back_to_env_when_exchange_unknown(monkeypatch):
+    from src.trading.engine import TradingEngine
+
+    monkeypatch.setenv("FENIX_LEVERAGE", "10")
+
+    engine = _build_sizing_engine(_LeverageExecutor(None))
+    assert await TradingEngine._resolve_sizing_leverage(engine) == pytest.approx(10.0)
+
+    engine = _build_sizing_engine(_LeverageExecutor(TimeoutError("network blip")))
+    assert await TradingEngine._resolve_sizing_leverage(engine) == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+async def test_sizing_leverage_paper_mode_never_queries_exchange(monkeypatch):
+    from src.trading.engine import TradingEngine
+
+    monkeypatch.setenv("FENIX_LEVERAGE", "10")
+
+    class ExplodingExecutor:
+        def get_exchange_leverage(self):
+            raise AssertionError("paper sizing must not query the exchange")
+
+    engine = _build_sizing_engine(ExplodingExecutor(), paper_trading=True)
+    assert await TradingEngine._resolve_sizing_leverage(engine) == pytest.approx(10.0)
