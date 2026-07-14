@@ -24,6 +24,22 @@ logger = logging.getLogger("FenixEngineEvents")
 
 EmitFn = Callable[[str, dict[str, Any]], Awaitable[None]]
 
+_CONF_LABEL_MAP = {"HIGH": 0.8, "MEDIUM": 0.55, "LOW": 0.35}
+
+
+def _coerce_confidence(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        mapped = _CONF_LABEL_MAP.get(value.upper())
+        if mapped is not None:
+            return mapped
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            pass
+    return 0.5
+
 
 async def _persist_agent_output(payload: dict[str, Any], agent_name: str) -> None:
     """Persist an agent output row into the shared SQLite database."""
@@ -80,7 +96,7 @@ def create_engine_event_handler(
                     or inner.get("analysis", "")
                     or "No reasoning",
                     "decision": inner.get("signal") or inner.get("action") or "HOLD",
-                    "confidence": inner.get("confidence", 0.0),
+                    "confidence": _coerce_confidence(inner.get("confidence") or inner.get("confidence_in_decision")),
                     "input_summary": "Live Analysis",
                 }
                 # Include social and Fear&Greed data for sentiment agent
@@ -93,6 +109,29 @@ def create_engine_event_handler(
                 if persist:
                     await _persist_agent_output(payload, agent_name)
 
+            elif event_type == "cycle_summary":
+                dec = data.get("decision", "HOLD")
+                conf = data.get("confidence", 0.35)
+                conf_label = data.get("confidence_label", "LOW")
+                holds = data.get("consecutive_holds", 0)
+                elapsed = data.get("elapsed_s", 0)
+                reasoning = data.get("reasoning", "")
+                # One feed line that summarises the full cycle
+                summary = (
+                    f"📋 {dec} ({conf_label}) | {reasoning} | "
+                    f"holds={holds} | ⏱ {elapsed:.1f}s"
+                )
+                await emit("agentOutput", {
+                    "id": str(uuid.uuid4()),
+                    "agent_name": "── Cycle Summary ──",
+                    "timestamp": data.get("timestamp"),
+                    "reasoning": summary,
+                    "decision": dec,
+                    "confidence": conf,
+                    "input_summary": "cycle",
+                })
+                # Separate event so the frontend can show a countdown timer
+                await emit("cycle:summary", data)
             elif event_type == "final_decision":
                 payload = {
                     "decision": data.get("decision"),
