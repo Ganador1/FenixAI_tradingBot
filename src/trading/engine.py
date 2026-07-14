@@ -1101,6 +1101,48 @@ class TradingEngine:
 
         return True
 
+    async def _resolve_sizing_leverage(self) -> float:
+        """Leverage used for position sizing: exchange value first, env fallback.
+
+        The margin guard and the account preflight already trust the
+        exchange-configured leverage over FENIX_LEVERAGE; sizing must do the
+        same. A real leverage lower than the env assumption makes
+        balance × risk% × leverage request a notional the available margin
+        cannot actually support, and the margin caps computed from the same
+        stale value overestimate what is affordable.
+        """
+        configured = max(
+            1.0,
+            _env_float(
+                "FENIX_LEVERAGE", _safe_float(getattr(self, "_engine_leverage", 1.0)) or 1.0
+            ),
+        )
+        if self.paper_trading:
+            return configured
+        reader = getattr(type(self.executor), "get_exchange_leverage", None)
+        if not callable(reader):
+            return configured
+        try:
+            exchange_leverage = await asyncio.to_thread(self.executor.get_exchange_leverage)
+        except Exception:
+            logger.warning(
+                "Could not read exchange leverage for sizing; using FENIX_LEVERAGE=%.0fx",
+                configured,
+            )
+            return configured
+        if exchange_leverage is None or float(exchange_leverage) <= 0:
+            return configured
+        exchange_leverage = float(exchange_leverage)
+        if abs(exchange_leverage - configured) > 0.01:
+            logger.warning(
+                "Sizing %s with exchange-configured leverage %.0fx "
+                "(FENIX_LEVERAGE=%.0fx is stale)",
+                self.symbol,
+                exchange_leverage,
+                configured,
+            )
+        return max(1.0, exchange_leverage)
+
     def _log_safety_alert_channel_status(self) -> None:
         """Surface at startup whether critical safety events can reach a human."""
         try:
@@ -5730,12 +5772,7 @@ class TradingEngine:
             available_balance = max(0.0, float(available))
             logger.info("Available margin (USDT): %.2f", available_balance)
 
-        leverage = max(
-            1.0,
-            _env_float(
-                "FENIX_LEVERAGE", _safe_float(getattr(self, "_engine_leverage", 1.0)) or 1.0
-            ),
-        )
+        leverage = await self._resolve_sizing_leverage()
         risk_fraction = _env_float(
             "FENIX_MAX_RISK_PER_TRADE",
             APP_CONFIG.risk_management.base_risk_per_trade if APP_CONFIG else 0.01,

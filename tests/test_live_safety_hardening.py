@@ -147,6 +147,34 @@ def test_margin_guard_falls_back_to_env_leverage_when_symbol_missing(monkeypatch
     assert allowed is True
 
 
+def test_get_exchange_leverage_reads_symbol_from_account():
+    class AccountService:
+        def get_account_info(self):
+            return {"positions": [{"symbol": "SOLUSDT", "leverage": "3"}]}
+
+    executor = OrderExecutor(symbol="SOLUSDT", testnet=False)
+    executor._service = AccountService()
+
+    assert executor.get_exchange_leverage() == pytest.approx(3.0)
+
+
+def test_get_exchange_leverage_returns_none_when_symbol_missing_or_failed():
+    class MissingSymbolService:
+        def get_account_info(self):
+            return {"positions": [{"symbol": "ETHUSDC", "leverage": "5"}]}
+
+    class FailingService:
+        def get_account_info(self):
+            raise TimeoutError("network blip")
+
+    executor = OrderExecutor(symbol="SOLUSDT", testnet=False)
+    executor._service = MissingSymbolService()
+    assert executor.get_exchange_leverage() is None
+
+    executor._service = FailingService()
+    assert executor.get_exchange_leverage() is None
+
+
 @pytest.mark.asyncio
 async def test_ambiguous_market_submission_is_reconciled_by_client_id(monkeypatch):
     monkeypatch.setenv("FENIX_GLOBAL_PORTFOLIO_GUARD", "0")
