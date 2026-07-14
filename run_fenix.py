@@ -38,21 +38,13 @@ except ImportError:
 # Create logs directory if it doesn't exist
 Path("logs").mkdir(exist_ok=True)
 
-# Reconfigure stdio to UTF-8 so log messages containing emoji don't crash
-# on Windows consoles whose default codepage (e.g. cp1252) can't encode them.
-for _stream in (sys.stdout, sys.stderr):
-    if hasattr(_stream, "reconfigure"):
-        _stream.reconfigure(encoding="utf-8", errors="replace")
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(
-            f"logs/fenix_{datetime.now():%Y%m%d_%H%M%S}.log", encoding="utf-8"
-        ),
+        logging.FileHandler(f"logs/fenix_{datetime.now():%Y%m%d_%H%M%S}.log"),
     ],
 )
 logger = logging.getLogger("Fenix")
