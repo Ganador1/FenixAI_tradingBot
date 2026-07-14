@@ -1694,4 +1694,4 @@ if __name__ == "__main__":
         logger.warning("ALLOW_EXPOSE_API is set: the API will bind to 0.0.0.0 (external exposure)")
     else:
         logger.info("Binding to 127.0.0.1 by default. Set ALLOW_EXPOSE_API=true to bind to 0.0.0.0")
-    uvicorn.run("src.api.server:app_socketio", host=host, port=8000, reload=True) 
+    uvicorn.run("src.api.server:app_socketio", host=host, port=8000, reload=True)
