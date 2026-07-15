@@ -4,6 +4,9 @@
 
 ### Autonomous Multi-Agent Cryptocurrency Trading System with Self-Evolving Memory
 
+[![GitHub stars](https://img.shields.io/github/stars/Ganador1/FenixAI_tradingBot?style=flat&logo=github&label=Stars&color=yellow)](https://github.com/Ganador1/FenixAI_tradingBot/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/Ganador1/FenixAI_tradingBot?style=flat&logo=github&label=Forks)](https://github.com/Ganador1/FenixAI_tradingBot/network/members)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support_the_project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/ganador)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-green.svg)](https://langchain-ai.github.io/langgraph/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -26,7 +29,7 @@
 >
 > The **only** official channels are:
 > - 📦 This repository: [github.com/Ganador1/FenixAI_tradingBot](https://github.com/Ganador1/FenixAI_tradingBot)
-> - ☕ The project's official Ko-fi (linked from this repository)
+> - ☕ The project's official Ko-fi: [ko-fi.com/ganador](https://ko-fi.com/ganador)
 > - ✉️ Private contact: **hyperionganador@proton.me**
 >
 > There are **no** official Telegram groups, Discord servers, paid signal channels, or "resellers". Anything else claiming to be FenixAI is not us.
@@ -276,8 +279,6 @@ The Visual Agent supports two modes for chart analysis:
 | **Playwright Capture** | Captures TradingView screenshots via browser automation | Real TradingView charts, advanced indicators |
 
 Both modes produce base64-encoded images that are analyzed by vision-capable LLMs (LLaVA, GPT-4V, etc.).
-
-![Fenix Agent Architecture](./docs/images/architecture_v2.png)
 
 ### 🤖 The Agent Team
 
@@ -923,6 +924,6 @@ Thorp, 2007
 
 *If you find this project useful, please consider giving it a ⭐!*
 
-[⬆ Back to Top](#-fenixai-trading-bot-v25-release-candidate)
+[⬆ Back to Top](#-fenixai-trading-bot-v270)
 
 </div>
