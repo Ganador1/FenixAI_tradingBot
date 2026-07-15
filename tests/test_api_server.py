@@ -2,6 +2,8 @@
 Tests for API server functionality.
 Tests OpenAPI configuration, Pydantic schemas, and helper functions.
 """
+import os
+
 import pytest
 from unittest.mock import MagicMock
 from datetime import datetime
@@ -226,9 +228,27 @@ class TestHelperFunctions:
             await server.start_engine()
         with pytest.raises(HTTPException) as stop_error:
             await server.stop_engine()
+        with pytest.raises(HTTPException) as risk_flags_error:
+            await server.update_risk_flags(server.RiskFlagsUpdate(macro_riskoff_enabled=False))
 
         assert start_error.value.status_code == 409
         assert stop_error.value.status_code == 409
+        assert risk_flags_error.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_update_risk_flags_sets_env_flag(self, monkeypatch):
+        import src.api.server as server
+
+        monkeypatch.setattr(server, "_api_observer_mode", False)
+        monkeypatch.delenv("FENIX_MACRO_RISKOFF_ENABLE", raising=False)
+
+        result = await server.update_risk_flags(server.RiskFlagsUpdate(macro_riskoff_enabled=False))
+
+        assert result == {"macro_riskoff_enabled": False}
+        assert os.environ["FENIX_MACRO_RISKOFF_ENABLE"] == "0"
+
+        fetched = await server.get_risk_flags()
+        assert fetched == {"macro_riskoff_enabled": False}
 
 
 class TestSystemMetrics:

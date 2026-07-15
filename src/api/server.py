@@ -43,6 +43,7 @@ from src.models.db_models import AgentOutput, Order, Position, Trade
 from src.models.user import User
 from src.trading.binance_client import BinanceClient
 from src.trading.engine import TradingEngine
+from src.trading.engine import _env_flag as _engine_env_flag
 from src.trading.operational_audit import read_runtime_instances
 
 # ============ Pydantic Schemas ============
@@ -123,6 +124,14 @@ class EngineConfigUpdate(BaseModel):
     allow_live_trading: bool | None = Field(None, description="Allow live trading")
     enable_visual_agent: bool | None = Field(None, description="Toggle visual agent")
     enable_sentiment_agent: bool | None = Field(None, description="Toggle sentiment agent")
+
+
+class RiskFlagsUpdate(BaseModel):
+    """Payload para actualizar flags de riesgo del engine."""
+
+    macro_riskoff_enabled: bool = Field(
+        ..., description="Enable/disable the macro risk-off BUY-blocking filter"
+    )
 
 
 # ============ In-Memory Storage (for demo) ============
@@ -1058,6 +1067,22 @@ async def update_engine_config(payload: EngineConfigUpdate):
         enable_sentiment_agent=payload.enable_sentiment_agent,
     )
     return {"status": "restarted", "config": config}
+
+
+@app.get("/api/engine/risk-flags")
+async def get_risk_flags():
+    return {"macro_riskoff_enabled": _engine_env_flag("FENIX_MACRO_RISKOFF_ENABLE", True)}
+
+
+@app.post("/api/engine/risk-flags", dependencies=[Depends(require_control_access)])
+async def update_risk_flags(payload: RiskFlagsUpdate):
+    if _api_observer_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="API observer mode cannot change risk flags on the separately managed trading engine",
+        )
+    os.environ["FENIX_MACRO_RISKOFF_ENABLE"] = "1" if payload.macro_riskoff_enabled else "0"
+    return {"macro_riskoff_enabled": payload.macro_riskoff_enabled}
 
 
 # ============ Trading Endpoints ============
