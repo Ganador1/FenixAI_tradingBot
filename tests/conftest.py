@@ -58,6 +58,27 @@ os.environ.setdefault("FENIX_REQUIRE_LIVE_STOP_LOSS", "0")
 os.environ.setdefault("FENIX_GLOBAL_PORTFOLIO_GUARD", "0")
 os.environ.setdefault("FENIX_PYRAMID_ENABLE", "0")
 os.environ.setdefault("FENIX_ALLOW_ADD_TO_POSITION", "0")
+# The live analysis stagger would add real sleeps to live-mode engine tests.
+os.environ.setdefault("FENIX_ANALYSIS_STAGGER_SEC", "0")
+
+
+def _isolate_hybrid_log_dir() -> None:
+    """Keep hybrid paper-run artifacts (hybrid_signals/trades_*.jsonl) out of
+    the repo's real logs/ directory when tests construct a HybridController."""
+    if os.getenv("FENIX_HYBRID_LOG_DIR"):
+        return
+    path = tempfile.mkdtemp(prefix="fenix_hybrid_logs_")
+    os.environ["FENIX_HYBRID_LOG_DIR"] = path
+
+    def _cleanup() -> None:
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
+
+    atexit.register(_cleanup)
+
+
+_isolate_hybrid_log_dir()
 
 
 @pytest.fixture(autouse=True, scope="session")

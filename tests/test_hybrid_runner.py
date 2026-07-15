@@ -111,3 +111,20 @@ def test_range_helpers_can_open_position_from_indicator_context():
 
     assert controller.position is not None
     assert controller.position["side"] == "LONG"
+
+
+def test_hybrid_logs_respect_env_dir(tmp_path, monkeypatch):
+    """Paper-run artifacts must land in FENIX_HYBRID_LOG_DIR, not repo logs/."""
+    target = tmp_path / "hybrid_out"
+    monkeypatch.setenv("FENIX_HYBRID_LOG_DIR", str(target))
+
+    controller = HybridController(
+        symbol="ETHUSDT",
+        bias_tf="5m",
+        entry_tf="3m",
+        scout_tf=None,
+    )
+
+    assert controller.signal_log.parent == target
+    assert controller.trade_log.parent == target
+    assert target.exists()

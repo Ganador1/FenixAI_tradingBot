@@ -53,6 +53,30 @@ async def test_user_data_stream_dispatches_private_event(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handler_exception_does_not_tear_down_stream():
+    """A subscriber bug must not force a stream reconnect (events would be
+    lost during the backoff window); it is counted and logged instead."""
+
+    async def exploding_handler(_event):
+        raise RuntimeError("subscriber bug")
+
+    stream = FuturesUserDataStream(
+        api_key="test-key",
+        api_secret="test-secret",
+        testnet=True,
+        on_event=exploding_handler,
+    )
+
+    await stream._dispatch({"e": "ACCOUNT_UPDATE"})
+    await stream._dispatch({"e": "ORDER_TRADE_UPDATE"})
+
+    assert stream.handler_error_count == 2
+    assert stream.event_count == 2
+    assert stream.reconnect_count == 0
+    assert stream.get_status()["handler_error_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_engine_user_event_wakes_reconciliation():
     from src.trading.engine import TradingEngine
 

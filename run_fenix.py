@@ -97,6 +97,45 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _start_log_retention_thread() -> None:
+    """Run a recursive log-retention pass now and then once per day.
+
+    FENIX_LOG_RETENTION_DAYS controls the age cutoff (default 30; <=0
+    disables). Deletion races between concurrent Fenix processes are benign
+    (unlink uses missing_ok) and the audit/lock directories are protected
+    inside the cleanup utility itself.
+    """
+    import threading
+    import time as time_module
+
+    try:
+        days = float(os.getenv("FENIX_LOG_RETENTION_DAYS", "30") or 30)
+    except ValueError:
+        days = 30.0
+    if days <= 0:
+        logger.info("Log retention disabled (FENIX_LOG_RETENTION_DAYS<=0)")
+        return
+
+    def _loop() -> None:
+        from src.utils.log_cleanup import run_retention_pass
+
+        while True:
+            try:
+                stats = run_retention_pass(days_old=days)
+                logger.info(
+                    "Log retention (%.0fd): %d deleted, %d kept, %.1f MB freed",
+                    days,
+                    stats.get("deleted", 0),
+                    stats.get("kept", 0),
+                    stats.get("bytes_freed", 0) / (1024 * 1024),
+                )
+            except Exception:
+                logger.warning("Log retention pass failed", exc_info=True)
+            time_module.sleep(24 * 3600)
+
+    threading.Thread(target=_loop, name="fenix-log-retention", daemon=True).start()
+
+
 def _find_nanofenix_companion_pids(symbol: str) -> list[int]:
     """Return running NanoFenix companion PIDs for a symbol."""
     normalized_symbol = symbol.upper()
@@ -507,6 +546,11 @@ async def main():
             logger.error("Refusing to start duplicate engine: %s", exc)
             return 1
         atexit.register(instance_lock.release)
+
+    # Retention was configured but never scheduled anywhere, so logs/ grew to
+    # ~1GB / 47k files by 2026-07-10 (mostly llm_responses* agent dumps that
+    # the old top-level-only cleanup pattern never matched).
+    _start_log_retention_thread()
 
     # v2.5: forward model-role assignment to the engine. The LLMFactory
     # honours FENIX_ROTATE_MODELS_<AGENT> with a single-model "rotation"
