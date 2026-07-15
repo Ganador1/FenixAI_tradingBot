@@ -377,7 +377,9 @@ class HybridController:
         self.last_flip_time: datetime | None = None
         self.position_open_time: datetime | None = None
 
-        log_dir = Path("logs")
+        # Tests point this at a temp dir so paper-run artifacts never land in
+        # the repo's real logs/ directory.
+        log_dir = Path(os.getenv("FENIX_HYBRID_LOG_DIR", "logs"))
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.signal_log = log_dir / f"hybrid_signals_{symbol}_{ts}.jsonl"

@@ -12,6 +12,7 @@ This is the refactored core that orchestrates:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -1101,6 +1102,28 @@ class TradingEngine:
 
         return True
 
+    def _analysis_stagger_seconds(self) -> float:
+        """Deterministic per-symbol delay before each analysis cycle.
+
+        FENIX_ANALYSIS_STAGGER_OFFSET_SEC, when set on an instance, is used
+        verbatim (explicit per-bot control from the launcher). Otherwise the
+        offset is a whole-second slot derived from a stable hash of the
+        symbol, bounded by FENIX_ANALYSIS_STAGGER_SEC (default 10s in live,
+        0 in paper; <=0 disables) — ETHUSDC lands on 4s and SOLUSDT on 0s, so
+        the two live bots stop hitting the shared Ollama backend at the same
+        instant without any cross-process coordination.
+        """
+        explicit = _safe_float(os.getenv("FENIX_ANALYSIS_STAGGER_OFFSET_SEC"))
+        if explicit is not None:
+            return max(0.0, explicit)
+        stagger_max = _env_float(
+            "FENIX_ANALYSIS_STAGGER_SEC", 0.0 if self.paper_trading else 10.0
+        )
+        if stagger_max <= 0:
+            return 0.0
+        digest = int(hashlib.md5(str(self.symbol).upper().encode()).hexdigest(), 16)
+        return float(digest % max(1, int(stagger_max)))
+
     async def _resolve_sizing_leverage(self) -> float:
         """Leverage used for position sizing: exchange value first, env fallback.
 
@@ -1471,6 +1494,17 @@ class TradingEngine:
             return
 
         await analysis_lock.acquire()
+
+        # Multi-instance staggering: both bots close the same 15m candle at
+        # the same instant and fire inference simultaneously, but the LLM
+        # concurrency limit is per-process, so the shared Ollama backend gets
+        # both bursts at once. A deterministic per-symbol offset spreads the
+        # peaks without any cross-process coordination.
+        stagger = self._analysis_stagger_seconds()
+        if stagger > 0:
+            logger.info("Staggering analysis start by %.1fs for %s", stagger, self.symbol)
+            await asyncio.sleep(stagger)
+
         start_time = datetime.now(timezone.utc)
         logger.info("=" * 50)
         logger.info("🔄 Starting analysis cycle")

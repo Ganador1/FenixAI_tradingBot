@@ -259,3 +259,56 @@ async def test_sizing_leverage_paper_mode_never_queries_exchange(monkeypatch):
 
     engine = _build_sizing_engine(ExplodingExecutor(), paper_trading=True)
     assert await TradingEngine._resolve_sizing_leverage(engine) == pytest.approx(10.0)
+
+
+def _build_stagger_engine(symbol: str, *, paper_trading: bool = False):
+    from src.trading.engine import TradingEngine
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.symbol = symbol
+    engine.paper_trading = paper_trading
+    return engine
+
+
+def test_analysis_stagger_is_deterministic_and_separates_live_bots(monkeypatch):
+    from src.trading.engine import TradingEngine
+
+    monkeypatch.delenv("FENIX_ANALYSIS_STAGGER_OFFSET_SEC", raising=False)
+    monkeypatch.setenv("FENIX_ANALYSIS_STAGGER_SEC", "10")
+
+    eth = _build_stagger_engine("ETHUSDC")
+    sol = _build_stagger_engine("SOLUSDT")
+
+    eth_offset = TradingEngine._analysis_stagger_seconds(eth)
+    sol_offset = TradingEngine._analysis_stagger_seconds(sol)
+
+    assert 0.0 <= eth_offset < 10.0
+    assert 0.0 <= sol_offset < 10.0
+    # Stable across calls (hash-derived, not random).
+    assert eth_offset == TradingEngine._analysis_stagger_seconds(eth)
+    # The two live symbols land on different slots (4s vs 0s for max=10).
+    assert eth_offset != sol_offset
+
+
+def test_analysis_stagger_explicit_offset_wins(monkeypatch):
+    from src.trading.engine import TradingEngine
+
+    monkeypatch.setenv("FENIX_ANALYSIS_STAGGER_OFFSET_SEC", "2.5")
+    monkeypatch.setenv("FENIX_ANALYSIS_STAGGER_SEC", "10")
+
+    engine = _build_stagger_engine("ETHUSDC")
+    assert TradingEngine._analysis_stagger_seconds(engine) == pytest.approx(2.5)
+
+
+def test_analysis_stagger_disabled_in_paper_and_by_env(monkeypatch):
+    from src.trading.engine import TradingEngine
+
+    monkeypatch.delenv("FENIX_ANALYSIS_STAGGER_OFFSET_SEC", raising=False)
+
+    monkeypatch.delenv("FENIX_ANALYSIS_STAGGER_SEC", raising=False)
+    paper = _build_stagger_engine("ETHUSDC", paper_trading=True)
+    assert TradingEngine._analysis_stagger_seconds(paper) == 0.0
+
+    monkeypatch.setenv("FENIX_ANALYSIS_STAGGER_SEC", "0")
+    live = _build_stagger_engine("ETHUSDC")
+    assert TradingEngine._analysis_stagger_seconds(live) == 0.0

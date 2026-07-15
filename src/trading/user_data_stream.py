@@ -41,6 +41,7 @@ class FuturesUserDataStream:
         self._ready = asyncio.Event()
         self.event_count = 0
         self.reconnect_count = 0
+        self.handler_error_count = 0
         self.last_event_type: str | None = None
         self.last_error: str | None = None
 
@@ -75,9 +76,20 @@ class FuturesUserDataStream:
     async def _dispatch(self, event: dict[str, Any]) -> None:
         self.event_count += 1
         self.last_event_type = str(event.get("e") or event.get("eventType") or "UNKNOWN")
-        result = self.on_event(event)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self.on_event(event)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            # A subscriber bug must not tear down the private stream: the
+            # connection itself is healthy, only this event's handling failed.
+            # Reconnecting here would drop events during the backoff window.
+            self.handler_error_count += 1
+            logger.error(
+                "User-data event handler failed for %s event",
+                self.last_event_type,
+                exc_info=True,
+            )
 
     async def _run(self) -> None:
         while self._running:
@@ -122,6 +134,7 @@ class FuturesUserDataStream:
             "testnet": self.testnet,
             "event_count": self.event_count,
             "reconnect_count": self.reconnect_count,
+            "handler_error_count": self.handler_error_count,
             "last_event_type": self.last_event_type,
             "last_error": self.last_error,
         }

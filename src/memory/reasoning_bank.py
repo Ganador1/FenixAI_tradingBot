@@ -349,9 +349,19 @@ class ReasoningBank:
                     return []
             return list(agent_cache)[-limit:]
 
+    @staticmethod
+    def _is_quarantined(entry: ReasoningEntry) -> bool:
+        """Quarantined entries (e.g. the duplicated fan-in ghosts of 2026-07)
+        must never be injected back into agent prompts as past experience."""
+        return bool((entry.metadata or {}).get("quarantined"))
+
     def search(self, agent_name: str, query: str, limit: int = 5) -> List[ReasoningEntry]:
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
-        matches = [entry for entry in reversed(entries) if entry.matches(query)]
+        matches = [
+            entry
+            for entry in reversed(entries)
+            if not self._is_quarantined(entry) and entry.matches(query)
+        ]
         return matches[:limit]
     
     def get_relevant_context(
@@ -386,6 +396,8 @@ class ReasoningBank:
         # Calcular similitud y filtrar
         scored_entries = []
         for entry in entries:
+            if self._is_quarantined(entry):
+                continue
             score = entry.similarity_score(current_prompt, current_embedding)
             if score >= min_similarity:
                 # Boost para experiencias exitosas

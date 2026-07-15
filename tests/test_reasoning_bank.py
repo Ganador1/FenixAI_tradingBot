@@ -276,5 +276,125 @@ class TestReasoningBankPersistence:
         assert len(recent) >= 1
 
 
+class TestQuarantine:
+    """Quarantined ghost entries must never re-enter agent prompts."""
+
+    @pytest.fixture
+    def bank(self, tmp_path):
+        from src.memory.reasoning_bank import ReasoningBank
+
+        return ReasoningBank(
+            storage_dir=str(tmp_path / "reasoning_bank"),
+            max_entries_per_agent=100,
+            use_embeddings=False,
+        )
+
+    def _store(self, bank, prompt, quarantined=False):
+        entry = bank.store_entry(
+            agent_name="decision",
+            prompt=prompt,
+            normalized_result={"action": "BUY", "confidence": 0.7},
+            raw_response="BUY momentum breakout confirmed",
+            backend="ollama",
+            latency_ms=100.0,
+        )
+        if quarantined:
+            entry.metadata["quarantined"] = "fanin-duplicate-2026-07"
+        return entry
+
+    def test_quarantined_excluded_from_relevant_context(self, bank):
+        self._store(bank, "momentum breakout long ETHUSDC", quarantined=True)
+        clean = self._store(bank, "momentum breakout long ETHUSDC again")
+
+        results = bank.get_relevant_context(
+            agent_name="decision",
+            current_prompt="momentum breakout long ETHUSDC",
+            limit=5,
+            min_similarity=0.1,
+        )
+
+        digests = [entry.prompt_digest for entry in results]
+        assert clean.prompt_digest in digests
+        assert len(results) == 1
+
+    def test_quarantined_excluded_from_search(self, bank):
+        self._store(bank, "capitulation wick reversal", quarantined=True)
+
+        assert bank.search("decision", "capitulation") == []
+
+    def test_null_metadata_is_tolerated(self, bank):
+        entry = self._store(bank, "null metadata entry")
+        entry.metadata = None
+
+        results = bank.search("decision", "null metadata")
+        assert len(results) == 1
+
+
+class TestQuarantineScript:
+    """Duplicate detection for the 2026-07 fan-in ghost entries."""
+
+    def _record(self, digest, created_at, agent="decision", quarantined=False):
+        import json
+
+        metadata = {"quarantined": "x"} if quarantined else {}
+        return json.dumps(
+            {
+                "agent": agent,
+                "prompt_digest": digest,
+                "prompt": "p",
+                "reasoning": "r",
+                "action": "BUY",
+                "confidence": 0.7,
+                "backend": "ollama",
+                "latency_ms": 1.0,
+                "metadata": metadata,
+                "created_at": created_at,
+            }
+        )
+
+    def test_dry_run_counts_and_apply_marks(self, tmp_path):
+        import json
+
+        from scripts.quarantine_reasoning_bank_duplicates import process_file
+
+        jsonl = tmp_path / "decision_agent.jsonl"
+        jsonl.write_text(
+            "\n".join(
+                [
+                    self._record("dup-1", "2026-07-09T10:00:00+00:00"),
+                    self._record("dup-1", "2026-07-09T10:00:02+00:00"),
+                    self._record("unique-1", "2026-07-09T10:15:00+00:00"),
+                    # Same digest but hours apart: a legitimate re-analysis.
+                    self._record("dup-1", "2026-07-09T22:00:00+00:00"),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        dry = process_file(jsonl, window_sec=300.0, apply=False)
+        assert dry["duplicates"] == 1
+        assert dry["applied"] is False
+        # Dry run must not modify the file.
+        assert "quarantined" not in jsonl.read_text(encoding="utf-8")
+
+        applied = process_file(jsonl, window_sec=300.0, apply=True)
+        assert applied["duplicates"] == 1
+        assert applied["applied"] is True
+
+        records = [
+            json.loads(line)
+            for line in jsonl.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(records) == 4
+        flags = [bool((r.get("metadata") or {}).get("quarantined")) for r in records]
+        assert flags == [False, True, False, False]
+
+        # Idempotent: a second pass finds nothing new.
+        again = process_file(jsonl, window_sec=300.0, apply=True)
+        assert again["duplicates"] == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
