@@ -159,6 +159,13 @@ class AutoEvaluator:
             for entry in entries:
                 if entry.success is not None:
                     continue  # Already evaluated
+                if entry.metadata.get("auto_evaluator_status") == "not_evaluable":
+                    continue
+                if entry.trade_id:
+                    # A real order was accepted for this decision. Its actual
+                    # exchange-reconciled close is authoritative; a fixed
+                    # horizon paper label must not overwrite it.
+                    continue
                 digest_key = (entry.agent, entry.prompt_digest)
                 if digest_key in evaluated_digests:
                     continue
@@ -183,6 +190,17 @@ class AutoEvaluator:
 
     async def evaluate_entry(self, entry: ReasoningEntry, start_time: datetime, end_time: datetime):
         """Compare prediction with actual price movement."""
+
+        action = self._normalize_direction(entry.action)
+        if action == "UNKNOWN":
+            action = self._normalize_direction(self._resolve_sentiment_action(entry))
+        if action == "UNKNOWN":
+            self.bank.mark_entry_not_evaluable(
+                entry.agent,
+                entry.prompt_digest,
+                reason="unknown_or_non_directional_action",
+            )
+            return
 
         # Fetch price at start and end
         # We use get_klines to find the closest candles
@@ -220,15 +238,6 @@ class AutoEvaluator:
             f"Price moved {price_change_pct:.2f}% ({start_price} -> {end_price}) "
             f"[cost threshold {self.cost_pct:.2f}%]"
         )
-
-        action = self._normalize_direction(entry.action)
-
-        # Sentiment entries may store action=UNKNOWN; derive direction from the
-        # overall_sentiment field inside the raw reasoning JSON instead.
-        if action == "UNKNOWN":
-            action = self._normalize_direction(self._resolve_sentiment_action(entry))
-            if action == "UNKNOWN":
-                return  # Not directionally evaluable; leave unlabeled.
 
         if action == "BUY":
             success = price_change_pct > self.cost_pct

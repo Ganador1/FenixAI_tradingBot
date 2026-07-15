@@ -460,12 +460,70 @@ async def test_execute_trade_skips_same_side_position_by_default(monkeypatch):
     engine.executor = executor
 
     decision_data = {
-        "risk_assessment": {"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0}
+        "risk_assessment": {"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0},
+        "_reasoning_digest": "entry-is-pending-outcome",
     }
 
     await engine._execute_trade("BUY", "HIGH", decision_data)
 
     executor.execute_market_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_live_entry_without_stop_loss_fails_closed(monkeypatch):
+    monkeypatch.setenv("FENIX_REQUIRE_LIVE_STOP_LOSS", "1")
+    engine = _build_minimal_engine(timeframe="15m")
+    engine.on_agent_event = AsyncMock()
+    engine.executor.execute_market_order = AsyncMock()
+
+    await engine._execute_trade(
+        "BUY",
+        "HIGH",
+        {"risk_assessment": {"entry_price": 100.0, "take_profit": 103.0}},
+    )
+
+    engine.executor.execute_market_order.assert_not_awaited()
+    assert any(
+        call.args[0] == "filter:blocked"
+        and call.args[1].get("filter") == "MISSING_STOP_LOSS"
+        for call in engine.on_agent_event.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_notional_is_capped_by_actual_stop_loss_risk(monkeypatch):
+    monkeypatch.setenv("FENIX_DETERMINISTIC_SIZING", "0")
+    monkeypatch.setenv("FENIX_MAX_RISK_PER_TRADE", "0.01")
+    monkeypatch.setenv("FENIX_ESTIMATED_ROUND_TRIP_FEE_PCT", "0.0008")
+    engine = _build_minimal_engine(timeframe="15m")
+    engine.executor.get_balance.return_value = 100.0
+    engine.executor.min_notional = 1.0
+    engine.executor.service.get_symbol_config.return_value = None
+    engine.executor.get_position.return_value = {"positionAmt": "0"}
+    engine.executor.execute_market_order = AsyncMock(
+        return_value=SimpleNamespace(
+            success=False,
+            status="EXPECTED_TEST_STOP",
+            message="expected test stop",
+        )
+    )
+
+    await engine._execute_trade(
+        "BUY",
+        "HIGH",
+        {
+            "position_size": 500.0,
+            "risk_assessment": {
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "take_profit": 110.0,
+            },
+        },
+    )
+
+    submitted = engine.executor.execute_market_order.await_args.kwargs
+    expected_notional = 1.0 / (0.05 + 0.0008)
+    assert submitted["quantity"] * 100.0 == pytest.approx(expected_notional)
 
 
 @pytest.mark.asyncio
@@ -528,6 +586,19 @@ async def test_execute_trade_reconciles_stale_local_position_before_opening_live
             order_id="stale-cleared-1",
         )
     )
+    executor.get_recent_trades.return_value = [
+        {
+            "id": 456,
+            "orderId": 123,
+            "side": "BUY",
+            "price": "100.0",
+            "qty": "0.2",
+            "realizedPnl": "0.0",
+            "commission": "0.008",
+            "commissionAsset": "USDT",
+            "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+        }
+    ]
     engine.executor = executor
 
     decision_data = {
@@ -2235,6 +2306,13 @@ async def test_execute_trade_allows_add_when_flag_enabled(monkeypatch):
 
     engine = _build_minimal_engine(timeframe="1m")
     engine.on_agent_event = AsyncMock()
+    engine._append_live_ledger_record = AsyncMock()
+    engine.trade_manager.get_position.return_value = SimpleNamespace(
+        side="LONG",
+        quantity=0.5,
+        entry_price=99.9,
+        entry_count=1,
+    )
     persist_order_fill = AsyncMock()
     persist_open_position = AsyncMock()
     monkeypatch.setattr(engine_module, "persist_order_fill", persist_order_fill, raising=False)
@@ -2256,10 +2334,24 @@ async def test_execute_trade_allows_add_when_flag_enabled(monkeypatch):
             message="ok",
         )
     )
+    executor.get_recent_trades.return_value = [
+        {
+            "id": 456,
+            "orderId": 123,
+            "side": "BUY",
+            "price": "100.0",
+            "qty": "0.2",
+            "realizedPnl": "0.0",
+            "commission": "0.008",
+            "commissionAsset": "USDT",
+            "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+        }
+    ]
     engine.executor = executor
 
     decision_data = {
-        "risk_assessment": {"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0}
+        "risk_assessment": {"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0},
+        "_reasoning_digest": "entry-is-pending-outcome",
     }
 
     await engine._execute_trade("BUY", "HIGH", decision_data)
@@ -2272,6 +2364,14 @@ async def test_execute_trade_allows_add_when_flag_enabled(monkeypatch):
     assert persist_order_fill.await_args.kwargs["symbol"] == "BTCUSDT"
     assert persist_order_fill.await_args.kwargs["side"] == "BUY"
     assert persist_order_fill.await_args.kwargs["order_id"] == "123"
+    engine.reasoning_bank.update_entry_outcome.assert_not_called()
+    engine.reasoning_bank.attach_trade_reference.assert_called_once_with(
+        "decision_agent", "entry-is-pending-outcome", "123"
+    )
+    ledger_payload = engine._append_live_ledger_record.await_args.args[0]
+    assert ledger_payload["entry_fill_reconciled"] is True
+    assert ledger_payload["entry_commission"] == pytest.approx(0.008)
+    assert ledger_payload["entry_fills"][0]["order_id"] == "123"
 
 
 @pytest.mark.asyncio
@@ -2664,6 +2764,12 @@ async def test_execute_trade_blocks_same_side_short_add_when_exchange_exposure_c
     engine = _build_minimal_engine(symbol="ETHUSDT", timeframe="3m")
     engine.on_agent_event = AsyncMock()
     engine._engine_leverage = 6.0
+    engine.trade_manager.get_position.return_value = SimpleNamespace(
+        side="SHORT",
+        quantity=0.216,
+        entry_price=1969.0,
+        entry_count=1,
+    )
 
     risk_manager = MagicMock()
     risk_manager.update_balance.return_value = None
@@ -2767,6 +2873,7 @@ async def test_stop_cleanup_closes_exchange_and_syncs_local_state():
     executor.cancel_all_orders = AsyncMock(return_value=True)
     executor.get_position.side_effect = [
         {"positionAmt": "-0.037", "markPrice": "2078.10"},
+        {"positionAmt": "0.000", "markPrice": "2078.05"},
         {"positionAmt": "0.000", "markPrice": "2078.05"},
     ]
     executor.execute_market_order = AsyncMock(

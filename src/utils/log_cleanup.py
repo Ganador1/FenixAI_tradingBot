@@ -7,17 +7,37 @@ Run as cron job or scheduled task.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# First-level directories under logs/ that retention must never touch:
+# live_ledger holds the durable per-trade audit trail; the runtime dirs hold
+# active locks and instance heartbeats.
+PROTECTED_DIRS = {"live_ledger", "runtime_locks", "runtime_instances", "locks"}
+
+# Recursive coverage for the runtime retention pass. The top-level-only
+# default patterns miss where the volume actually accumulates: the
+# llm_responses* trees held ~43k .json/.txt agent logs (of 47k total files)
+# when retention was first found broken on 2026-07-10.
+RETENTION_PATTERNS = [
+    "*.log",
+    "*.jsonl",
+    "**/*.log",
+    "**/*.jsonl",
+    "llm_responses*/**/*.json",
+    "llm_responses*/**/*.txt",
+]
+
 
 def clean_old_logs(
     log_dir: str = "logs",
-    days_old: int = 30,
+    days_old: float = 30,
     dry_run: bool = False,
     patterns: list | None = None,
+    exclude_dirs: set | None = None,
 ) -> dict:
     """
     Clean log files older than specified days.
@@ -26,13 +46,16 @@ def clean_old_logs(
         log_dir: Directory containing logs
         days_old: Delete files older than this many days
         dry_run: If True, only report what would be deleted
-        patterns: List of glob patterns to match (default: all log files)
+        patterns: List of glob patterns to match (default: top-level log files)
+        exclude_dirs: First-level subdirectory names to skip
+            (default: PROTECTED_DIRS)
 
     Returns:
         Dict with 'deleted', 'kept', 'bytes_freed' counts
     """
     if patterns is None:
         patterns = ["*.log", "*.jsonl"]
+    excluded = PROTECTED_DIRS if exclude_dirs is None else set(exclude_dirs)
 
     log_path = Path(log_dir)
     if not log_path.exists():
@@ -41,24 +64,35 @@ def clean_old_logs(
 
     cutoff = datetime.now() - timedelta(days=days_old)
     stats = {"deleted": 0, "kept": 0, "bytes_freed": 0}
+    seen: set = set()
 
     for pattern in patterns:
         for filepath in log_path.glob(pattern):
-            if not filepath.is_file():
+            if filepath in seen or not filepath.is_file():
+                continue
+            seen.add(filepath)
+
+            relative = filepath.relative_to(log_path)
+            if relative.parts and relative.parts[0] in excluded:
                 continue
 
-            mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
-            size = filepath.stat().st_size
+            try:
+                file_stat = filepath.stat()
+            except OSError:
+                continue
+            mtime = datetime.fromtimestamp(file_stat.st_mtime)
+            size = file_stat.st_size
 
             if mtime < cutoff:
                 if dry_run:
                     logger.info(
-                        f"[DRY RUN] Would delete: {filepath.name} ({size / 1024:.1f} KB, {mtime.date()})"
+                        f"[DRY RUN] Would delete: {relative} ({size / 1024:.1f} KB, {mtime.date()})"
                     )
                 else:
                     try:
-                        filepath.unlink()
-                        logger.info(f"Deleted: {filepath.name} ({size / 1024:.1f} KB)")
+                        # Concurrent instances may race on the same file;
+                        # a vanished path is a benign outcome, not an error.
+                        filepath.unlink(missing_ok=True)
                     except Exception as e:
                         logger.error(f"Failed to delete {filepath}: {e}")
                         continue
@@ -72,6 +106,26 @@ def clean_old_logs(
         f"{stats['bytes_freed'] / (1024 * 1024):.2f} MB freed"
     )
     return stats
+
+
+def run_retention_pass(log_dir: str = "logs", days_old: float | None = None) -> dict:
+    """One recursive retention pass with the protected-directory exclusions.
+
+    Intended for the runtime (bot/API startup + daily repeat). Retention days
+    come from FENIX_LOG_RETENTION_DAYS (default 30; <=0 disables).
+    """
+    if days_old is None:
+        try:
+            days_old = float(os.getenv("FENIX_LOG_RETENTION_DAYS", "30") or 30)
+        except ValueError:
+            days_old = 30.0
+    if days_old <= 0:
+        return {"deleted": 0, "kept": 0, "bytes_freed": 0, "disabled": True}
+    return clean_old_logs(
+        log_dir=log_dir,
+        days_old=days_old,
+        patterns=RETENTION_PATTERNS,
+    )
 
 
 def clean_empty_logs(log_dir: str = "logs", dry_run: bool = False) -> dict:

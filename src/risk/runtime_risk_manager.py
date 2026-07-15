@@ -105,6 +105,10 @@ class RuntimeRiskManager:
         self._exposure_leverage_multiplier: float = 1.0
         self._open_positions: dict[str, dict[str, Any]] = {}
         self._active_trades: dict[str, TradeRecord] = {}
+        # Live engines receive exchange equity snapshots through update_balance().
+        # In that mode a realized PnL must not be applied to current_balance a
+        # second time when the trade is recorded.
+        self._balance_is_authoritative: bool = False
 
         # Métricas de drawdown
         self._peak_balance: float = 0.0
@@ -227,6 +231,11 @@ class RuntimeRiskManager:
     def update_balance(self, balance: float) -> None:
         """Actualiza balance y recalcula drawdown."""
         balance = float(balance)
+        # Capture BEFORE any re-anchor mutation: otherwise the save condition
+        # below compares the balance against itself and the stale/zero state
+        # stays on disk until a trade closes (Codex review, PR #12).
+        prev_persisted = self._current_balance
+        reanchored = False
 
         # Re-anchor stale persisted baselines to the first real balance observed for this runtime.
         # This avoids phantom drawdown when a previous session stored a much larger peak balance.
@@ -241,6 +250,7 @@ class RuntimeRiskManager:
                 or self._current_balance > (balance * 1.5)
             )
         ):
+            reanchored = True
             self._current_balance = balance
             self._peak_balance = balance
             self._daily_pnl = 0.0
@@ -272,7 +282,6 @@ class RuntimeRiskManager:
                 balance,
             )
 
-        prev_persisted = self._current_balance
         self._current_balance = balance
 
         # Reset diario si es nuevo día
@@ -296,7 +305,12 @@ class RuntimeRiskManager:
         # for an instance that never calls record_trade. Otherwise a stale/zero
         # baseline (the SOL current_balance=-0.33 bug) lingers on disk until the
         # next closed trade. A 1% threshold avoids writing on every price tick.
-        if prev_persisted <= 0 or abs(balance - prev_persisted) > max(0.01, prev_persisted * 0.01):
+        # A re-anchor always persists immediately.
+        if (
+            reanchored
+            or prev_persisted <= 0
+            or abs(balance - prev_persisted) > max(0.01, prev_persisted * 0.01)
+        ):
             self._save_state()
 
     def set_max_exposure_pct(self, max_exposure_pct: float) -> None:
@@ -304,6 +318,15 @@ class RuntimeRiskManager:
 
     def set_exposure_leverage_multiplier(self, multiplier: float) -> None:
         self._exposure_leverage_multiplier = max(1.0, float(multiplier))
+
+    def set_authoritative_balance_mode(self, enabled: bool) -> None:
+        """Use externally supplied equity as the sole current-balance source.
+
+        Standalone simulations keep the historical behavior where record_trade()
+        advances a synthetic balance. Live engines enable this mode because
+        update_balance() already receives Binance futures equity.
+        """
+        self._balance_is_authoritative = bool(enabled)
 
     def update_open_position(
         self,
@@ -470,8 +493,11 @@ class RuntimeRiskManager:
         self._trades.append(trade)
         self._daily_pnl += trade.pnl
 
-        # Recalcular balance
-        self._current_balance += trade.pnl
+        # Synthetic simulations derive balance from trade outcomes. Live mode
+        # receives authoritative exchange equity via update_balance(), so adding
+        # realized PnL here would double count every close.
+        if not self._balance_is_authoritative:
+            self._current_balance += trade.pnl
 
         # Auto-reevaluar riesgo después de cada trade, LUEGO persistir. The
         # evaluation is what arms _cooldown_start / current_mode, so saving after

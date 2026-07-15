@@ -16,6 +16,9 @@ Use these first when running or testing the current engine.
 | `run_fenix_live_slot.py` | Run one engine-first slot in paper, testnet, or live mode. | Preferred for controlled live-like tests. Writes `logs/live_slot_events_*.jsonl` and `logs/live_slot_summary_*.json`. |
 | `run_fenix_live_suite.py` | Run a JSON plan of engine-first slots. | Useful for sequential model/timeframe comparison. Plan files can now declare lite/MTF guard settings explicitly. |
 | `run_hybrid_live_paper.py` | Multi-timeframe hybrid paper/live comparison runner. | Useful for MTF research; not the primary live runner. |
+| `testnet_order_lifecycle_smoke.py` | Submit one minimum-notional protected Testnet entry, verify monitoring, then cancel and flatten it. | Testnet-only; refuses existing symbol exposure and writes a JSON cleanup report. |
+| `testnet_fault_injection.py` | Run controlled fault-injection tests against Testnet (submission timeout, delayed fill, protective rejection, WebSocket disconnect, process kill during save, simultaneous signals). | Testnet-only; always attempts cleanup; writes `logs/testnet_fault_injection_report.json`. |
+| `migrate_sqlite_to_postgres.py` | Migrate trading data from SQLite to PostgreSQL. | Idempotent; preserves primary keys; verifies row counts. |
 | `run_chart_service.py` | Start chart service tooling. | Support utility for visual/chart workflows. |
 
 ## Current Internal Live Canary Template

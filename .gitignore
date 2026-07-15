@@ -83,9 +83,14 @@ dist/
 # Database
 # ============================================================================
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 fenix_trading.db
+fenix_trading.db-shm
+fenix_trading.db-wal
+fenix_trading.db.bak_*
 
 # ============================================================================
 # Logs & Monitoring
@@ -264,8 +269,7 @@ run_nanofenixv1.py
 run_nanofenixv2.py
 run_nanofenix_live.py
 
-# Temporary inference patch (decide later if it ships)
-src/inference/dual_key_patch.py
+# Dual-key inference support is production source and must remain reviewable.
 
 # Tests that exercise ignored experimental codebases
 tests/test_nanofenix.py

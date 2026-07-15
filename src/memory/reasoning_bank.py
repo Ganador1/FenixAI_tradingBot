@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 from collections import deque
 from dataclasses import dataclass, asdict, field
@@ -137,9 +138,27 @@ class ReasoningBank:
 
     def _save_stats(self) -> None:
         try:
-            self._stats_path.write_text(json.dumps(self._stats, indent=2))
+            self._atomic_write_text(self._stats_path, json.dumps(self._stats, indent=2))
         except Exception as exc:
             logger.debug("ReasoningBank: error guardando index: %s", exc)
+
+    @staticmethod
+    def _atomic_write_text(path: Path, content: str) -> None:
+        """Replace a state file atomically after flushing its complete contents."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+        except Exception:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise
 
     def _get_embedding_model(self) -> Optional[Any]:
         if not self.use_embeddings or self._embedding_backend is not None:
@@ -330,9 +349,19 @@ class ReasoningBank:
                     return []
             return list(agent_cache)[-limit:]
 
+    @staticmethod
+    def _is_quarantined(entry: ReasoningEntry) -> bool:
+        """Quarantined entries (e.g. the duplicated fan-in ghosts of 2026-07)
+        must never be injected back into agent prompts as past experience."""
+        return bool((entry.metadata or {}).get("quarantined"))
+
     def search(self, agent_name: str, query: str, limit: int = 5) -> List[ReasoningEntry]:
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
-        matches = [entry for entry in reversed(entries) if entry.matches(query)]
+        matches = [
+            entry
+            for entry in reversed(entries)
+            if not self._is_quarantined(entry) and entry.matches(query)
+        ]
         return matches[:limit]
     
     def get_relevant_context(
@@ -367,6 +396,8 @@ class ReasoningBank:
         # Calcular similitud y filtrar
         scored_entries = []
         for entry in entries:
+            if self._is_quarantined(entry):
+                continue
             score = entry.similarity_score(current_prompt, current_embedding)
             if score >= min_similarity:
                 # Boost para experiencias exitosas
@@ -433,6 +464,63 @@ class ReasoningBank:
                 return True
             return False
 
+    def attach_trade_reference(
+        self,
+        agent_name: str,
+        prompt_digest: str,
+        trade_id: str,
+    ) -> bool:
+        """Associate a pending memory entry with a real exchange trade.
+
+        This does not assign success or reward. The live engine writes the
+        realized outcome at close, while AutoEvaluator skips an open trade.
+        """
+        if not trade_id:
+            return False
+        with self._lock:
+            agent_cache = self._cache.get(agent_name)
+            if not agent_cache:
+                self.get_recent(agent_name, self.max_entries_per_agent)
+                agent_cache = self._cache.get(agent_name)
+            if not agent_cache:
+                return False
+
+            for entry in reversed(agent_cache):
+                if (
+                    entry.prompt_digest == prompt_digest
+                    and entry.success is None
+                    and not entry.trade_id
+                ):
+                    entry.trade_id = str(trade_id)
+                    return self._rewrite_agent_file(agent_name, agent_cache)
+        return False
+
+    def mark_entry_not_evaluable(
+        self,
+        agent_name: str,
+        prompt_digest: str,
+        *,
+        reason: str,
+    ) -> bool:
+        """Persist a terminal evaluator skip without inventing a success label."""
+        with self._lock:
+            agent_cache = self._cache.get(agent_name)
+            if not agent_cache:
+                self.get_recent(agent_name, self.max_entries_per_agent)
+                agent_cache = self._cache.get(agent_name)
+            if not agent_cache:
+                return False
+            updated = False
+            marked_at = datetime.now(timezone.utc).isoformat()
+            for entry in agent_cache:
+                if entry.prompt_digest == prompt_digest:
+                    entry.metadata = dict(entry.metadata or {})
+                    entry.metadata["auto_evaluator_status"] = "not_evaluable"
+                    entry.metadata["auto_evaluator_reason"] = reason
+                    entry.metadata["auto_evaluator_marked_at"] = marked_at
+                    updated = True
+            return bool(updated and self._rewrite_agent_file(agent_name, agent_cache))
+
     def attach_judge_feedback(
         self,
         agent_name: str,
@@ -482,9 +570,8 @@ class ReasoningBank:
         """Persiste todas las entradas del agente nuevamente en disco."""
         agent_file = self.storage_dir / f"{agent_name}.jsonl"
         try:
-            with agent_file.open("w", encoding="utf-8") as fh:
-                for entry in agent_cache:
-                    fh.write(json.dumps(asdict(entry)) + "\n")
+            content = "".join(json.dumps(asdict(entry)) + "\n" for entry in agent_cache)
+            self._atomic_write_text(agent_file, content)
             return True
         except Exception as exc:
             logger.error(f"ReasoningBank: Failed to persist file for {agent_name}: {exc}")

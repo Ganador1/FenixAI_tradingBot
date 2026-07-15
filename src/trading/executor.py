@@ -15,14 +15,31 @@ import asyncio
 import logging
 import math
 import os
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production deployment is POSIX.
+    fcntl = None
 
 from src.services.binance_service import BinanceService, get_binance_service
 from src.trading.order_monitor import get_order_monitor
 
 logger = logging.getLogger("FenixOrderExecutor")
+
+
+async def _alert_safety(event_type: str, message: str, context: dict[str, Any] | None = None) -> None:
+    """Fire-and-forget safety alert; never blocks execution flow."""
+    try:
+        from src.risk.safety_alerts import alert_safety_event
+        await alert_safety_event(event_type, message, context)
+    except Exception:
+        logger.debug("Safety alert delivery failed for %s", event_type, exc_info=True)
 
 
 @dataclass
@@ -136,6 +153,7 @@ class OrderExecutor:
         self.testnet = testnet
 
         self._service: BinanceService | None = None
+        self._last_protective_prices: tuple[float | None, float | None] = (None, None)
         disable_cb_env = os.getenv("DISABLE_CIRCUIT_BREAKER", "").lower() in ("1", "true", "yes")
         cb_enabled = not (self.testnet or disable_cb_env)
         self.circuit_breaker = CircuitBreaker(enabled=cb_enabled)
@@ -234,6 +252,224 @@ class OrderExecutor:
             direction=direction,
         )
 
+    def _new_client_order_id(self, purpose: str) -> str:
+        """Return a Binance-compatible idempotency key (maximum 36 chars)."""
+        clean_symbol = "".join(ch for ch in self.symbol.lower() if ch.isalnum())[:10]
+        clean_purpose = "".join(ch for ch in purpose.lower() if ch.isalnum())[:5]
+        return f"fenix-{clean_symbol}-{clean_purpose}-{uuid.uuid4().hex[:10]}"[:36]
+
+    def _resolve_order_monitor(self):
+        """Return the global monitor, initializing it with this executor's service."""
+        monitor = get_order_monitor()
+        if monitor is None:
+            try:
+                monitor = get_order_monitor(self.service)
+            except TypeError:
+                # Some test doubles intentionally expose only the no-argument form.
+                monitor = None
+        return monitor
+
+    async def _query_by_client_order_id(self, client_order_id: str) -> dict[str, Any] | None:
+        reader = getattr(self.service, "get_order_by_client_id", None)
+        if not callable(reader):
+            return None
+        try:
+            result = await asyncio.to_thread(reader, self.symbol, client_order_id)
+            return result if isinstance(result, dict) and result.get("orderId") else None
+        except Exception as exc:
+            logger.warning(
+                "Order reconciliation failed for clientOrderId=%s: %s",
+                client_order_id,
+                exc,
+            )
+            return None
+
+    async def _resolve_fill_values(
+        self,
+        filled_order: dict[str, Any],
+        order_id: int,
+    ) -> tuple[float, float]:
+        """Resolve a non-zero fill price and quantity from Binance evidence."""
+        executed_qty = float(filled_order.get("executedQty", 0.0) or 0.0)
+        entry_price = float(filled_order.get("avgPrice", 0.0) or 0.0)
+        cumulative_quote = float(
+            filled_order.get("cumQuote", filled_order.get("cumQuoteQty", 0.0)) or 0.0
+        )
+        if entry_price <= 0 and executed_qty > 0 and cumulative_quote > 0:
+            entry_price = cumulative_quote / executed_qty
+
+        if entry_price <= 0 or executed_qty <= 0:
+            try:
+                trades = await asyncio.to_thread(
+                    self.service.get_account_trades,
+                    self.symbol,
+                    limit=50,
+                )
+                matching = [
+                    trade
+                    for trade in trades or []
+                    if str(trade.get("orderId")) == str(order_id)
+                ]
+                trade_qty = sum(float(trade.get("qty", 0.0) or 0.0) for trade in matching)
+                trade_quote = sum(
+                    float(trade.get("qty", 0.0) or 0.0)
+                    * float(trade.get("price", 0.0) or 0.0)
+                    for trade in matching
+                )
+                if trade_qty > 0:
+                    executed_qty = trade_qty
+                    entry_price = trade_quote / trade_qty
+            except Exception as exc:
+                logger.warning("Could not resolve fill %s from account trades: %s", order_id, exc)
+
+        if entry_price <= 0:
+            try:
+                position = await asyncio.to_thread(self.service.get_position, self.symbol)
+                entry_price = float(position.get("entryPrice", 0.0) or 0.0)
+            except Exception as exc:
+                logger.warning("Could not resolve fill %s from position state: %s", order_id, exc)
+
+        if entry_price <= 0:
+            entry_price = float(
+                await asyncio.to_thread(self.service.get_ticker_price, self.symbol) or 0.0
+            )
+            if entry_price > 0:
+                logger.warning(
+                    "Fill %s had no exchange average price; using current ticker %.8f",
+                    order_id,
+                    entry_price,
+                )
+
+        if entry_price <= 0 or executed_qty <= 0:
+            raise RuntimeError(
+                f"Binance reported FILLED for order {order_id} without usable price/quantity"
+            )
+        return entry_price, executed_qty
+
+    def _acquire_account_order_lock(self):
+        """Serialize entry submissions across Fenix processes on one account."""
+        if fcntl is None:
+            raise RuntimeError("Account order locking requires a POSIX host")
+        path = Path(
+            os.getenv(
+                "FENIX_ACCOUNT_ORDER_LOCK_PATH",
+                "logs/runtime_locks/binance_account_order.lock",
+            )
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+", encoding="utf-8")
+        timeout = max(0.1, float(os.getenv("FENIX_ACCOUNT_ORDER_LOCK_TIMEOUT_SEC", "15")))
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return handle
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    handle.close()
+                    raise TimeoutError(f"Timed out waiting for account order lock {path}")
+                time.sleep(0.05)
+
+    @staticmethod
+    def _release_account_order_lock(handle) -> None:
+        if handle is None:
+            return
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+    @staticmethod
+    def _extract_symbol_leverage(account: dict[str, Any], symbol: str) -> float | None:
+        """Read the per-symbol leverage from a futures_account() payload."""
+        for position in account.get("positions", []) or []:
+            if str(position.get("symbol", "")).upper() != symbol.upper():
+                continue
+            try:
+                exchange_leverage = float(position.get("leverage", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return None
+            return exchange_leverage if exchange_leverage > 0 else None
+        return None
+
+    def get_exchange_leverage(self) -> float | None:
+        """Return the exchange-configured leverage for this symbol, or None.
+
+        None means "could not be determined" (no service, request failed, or
+        the symbol is absent from the account payload) — callers must fall
+        back to their configured assumption rather than treating it as 1x.
+        """
+        account_reader = getattr(type(self.service), "get_account_info", None)
+        if not callable(account_reader):
+            return None
+        try:
+            account = self.service.get_account_info()
+        except Exception:
+            logger.warning("Could not read account info for exchange leverage", exc_info=True)
+            return None
+        if not isinstance(account, dict):
+            return None
+        return self._extract_symbol_leverage(account, self.symbol)
+
+    def _resolve_account_leverage(self, account: dict[str, Any]) -> float:
+        """Prefer the exchange's own configured leverage for this symbol.
+
+        FENIX_LEVERAGE is a local sizing assumption; if it drifts from what is
+        actually configured on Binance (changed manually, or never applied —
+        the live launcher does not call futures_change_leverage), the margin
+        projection below would be wrong precisely when it matters: a real
+        leverage lower than assumed makes projected_margin an underestimate,
+        so the guard could wave through an entry that consumes more margin
+        than calculated. futures_account() already returns this per-symbol,
+        so no extra request is needed.
+        """
+        configured = max(1.0, float(os.getenv("FENIX_LEVERAGE", "1") or 1.0))
+        exchange_leverage = self._extract_symbol_leverage(account, self.symbol)
+        if exchange_leverage is None:
+            return configured
+        if abs(exchange_leverage - configured) > 0.01:
+            logger.warning(
+                "FENIX_LEVERAGE=%s does not match the exchange-configured "
+                "leverage %sx for %s; using the exchange value for the "
+                "margin guard",
+                configured,
+                exchange_leverage,
+                self.symbol,
+            )
+        return exchange_leverage
+
+    def _check_global_account_margin(self, quantity: float) -> tuple[bool, str]:
+        """Fail closed when a new entry would breach the account margin cap."""
+        # MagicMock-based unit executors have no concrete service method; the
+        # exchange-backed implementation is checked strictly in production.
+        account_reader = getattr(type(self.service), "get_account_info", None)
+        if not callable(account_reader):
+            return True, "account guard unavailable on test double"
+        account = self.service.get_account_info()
+        if not isinstance(account, dict):
+            return False, "Binance account state is unavailable"
+        equity = float(account.get("totalMarginBalance", 0.0) or 0.0)
+        initial_margin = float(account.get("totalInitialMargin", 0.0) or 0.0)
+        if initial_margin <= 0:
+            initial_margin = float(account.get("totalPositionInitialMargin", 0.0) or 0.0)
+            initial_margin += float(account.get("totalOpenOrderInitialMargin", 0.0) or 0.0)
+        mark_price = float(self.service.get_ticker_price(self.symbol) or 0.0)
+        leverage = self._resolve_account_leverage(account)
+        if equity <= 0 or mark_price <= 0:
+            return False, "Binance equity or mark price is unavailable"
+        projected_margin = initial_margin + (abs(float(quantity)) * mark_price / leverage)
+        max_margin_pct = min(
+            1.0,
+            max(0.0, float(os.getenv("FENIX_MAX_ACCOUNT_MARGIN_PCT", "0.50") or 0.50)),
+        )
+        cap = equity * max_margin_pct
+        if cap > 0 and projected_margin > cap:
+            return (
+                False,
+                f"projected initial margin {projected_margin:.2f} exceeds cap {cap:.2f}",
+            )
+        return True, "within account margin cap"
+
     async def execute_market_order(
         self,
         side: Literal["BUY", "SELL"],
@@ -256,6 +492,8 @@ class OrderExecutor:
             OrderResult with execution details.
         """
         timestamp = datetime.now(timezone.utc).isoformat()
+        entry_client_order_id = self._new_client_order_id("entry")
+        account_lock = None
 
         # Check circuit breaker. Always allow reduce-only (close) orders so an
         # open circuit breaker never traps an exposed position.
@@ -268,6 +506,32 @@ class OrderExecutor:
             )
 
         try:
+            account_guard_enabled = (
+                not reduce_only
+                and os.getenv("FENIX_GLOBAL_PORTFOLIO_GUARD", "1").strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
+            if account_guard_enabled:
+                account_lock = await asyncio.to_thread(self._acquire_account_order_lock)
+                account_allowed, account_reason = await asyncio.to_thread(
+                    self._check_global_account_margin,
+                    quantity,
+                )
+                if not account_allowed:
+                    self.circuit_breaker.record_failure()
+                    logger.critical("Global portfolio guard blocked %s: %s", self.symbol, account_reason)
+                    await _alert_safety(
+                        "ACCOUNT_MARGIN_CAP",
+                        f"Entry blocked for {self.symbol}",
+                        {"reason": account_reason, "symbol": self.symbol, "quantity": quantity},
+                    )
+                    return OrderResult(
+                        success=False,
+                        status="ACCOUNT_MARGIN_CAP",
+                        message=account_reason,
+                        timestamp=timestamp,
+                    )
+
             # Format quantity.
             formatted_qty = self.format_quantity(quantity)
             if float(formatted_qty) <= 0:
@@ -284,6 +548,7 @@ class OrderExecutor:
                 and os.getenv("FENIX_USE_LIMIT_ENTRY", "0") == "1"
             )
             limit_price: float | None = None
+            submission_client_order_id = entry_client_order_id
 
             if use_limit:
                 try:
@@ -307,6 +572,8 @@ class OrderExecutor:
                     use_limit = False
 
             if use_limit and limit_price:
+                limit_client_order_id = self._new_client_order_id("limit")
+                submission_client_order_id = limit_client_order_id
                 logger.info(
                     f"Executing LIMIT {side} {formatted_qty} {self.symbol} @ {limit_price}"
                 )
@@ -318,6 +585,7 @@ class OrderExecutor:
                         quantity=float(formatted_qty),
                         price=limit_price,
                         reduce_only=reduce_only,
+                        client_order_id=limit_client_order_id,
                     )
                     # GTX limit: if not filled immediately, cancel and use market.
                     limit_status = (response or {}).get("status", "")
@@ -385,32 +653,132 @@ class OrderExecutor:
                             use_limit = False
                             response = None
                 except Exception as e:
-                    # GTX rejection or other limit failure -> fall back to market
-                    logger.info("Limit order rejected (%s), falling back to market", e)
-                    use_limit = False
+                    # Transport failures may happen after Binance accepted the
+                    # limit. Reconcile and cancel it before any market fallback.
+                    recovered = await self._query_by_client_order_id(limit_client_order_id)
+                    if recovered is None:
+                        self.circuit_breaker.record_failure()
+                        await _alert_safety(
+                            "LIMIT_CANCEL_UNCONFIRMED",
+                            f"Limit submission uncertain for {self.symbol}; market fallback blocked",
+                            {"symbol": self.symbol, "side": side, "error": str(e)},
+                        )
+                        return OrderResult(
+                            success=False,
+                            status="LIMIT_OUTCOME_UNCERTAIN",
+                            message=(
+                                "Limit submission could not be reconciled; market fallback "
+                                f"was blocked to avoid duplicate exposure: {e}"
+                            ),
+                            timestamp=timestamp,
+                        )
+                    if recovered.get("status") == "FILLED":
+                        response = recovered
+                        logger.warning(
+                            "Recovered filled limit via clientOrderId=%s",
+                            limit_client_order_id,
+                        )
+                    else:
+                        recovered_id = recovered.get("orderId")
+                        try:
+                            await asyncio.to_thread(
+                                self.service.cancel_order,
+                                self.symbol,
+                                recovered_id,
+                            )
+                        except Exception as cancel_error:
+                            self.circuit_breaker.record_failure()
+                            await _alert_safety(
+                                "LIMIT_CANCEL_UNCONFIRMED",
+                                f"Limit cancel failed for {self.symbol}; market fallback blocked",
+                                {"symbol": self.symbol, "order_id": str(recovered_id), "error": str(cancel_error)},
+                            )
+                            return OrderResult(
+                                success=False,
+                                status="LIMIT_CANCEL_UNCONFIRMED",
+                                order_id=recovered_id,
+                                message=(
+                                    "Recovered limit could not be cancelled; market fallback "
+                                    f"was blocked: {cancel_error}"
+                                ),
+                                timestamp=timestamp,
+                            )
+                        use_limit = False
+                        response = None
 
             if not use_limit or not limit_price:
+                submission_client_order_id = entry_client_order_id
                 logger.info(f"Executing MARKET {side} {formatted_qty} {self.symbol}")
-                response = await asyncio.to_thread(
-                    self.service.place_market_order,
-                    symbol=self.symbol,
-                    side=side,
-                    quantity=float(formatted_qty),
-                    reduce_only=reduce_only,
-                )
+                try:
+                    response = await asyncio.to_thread(
+                        self.service.place_market_order,
+                        symbol=self.symbol,
+                        side=side,
+                        quantity=float(formatted_qty),
+                        reduce_only=reduce_only,
+                        client_order_id=entry_client_order_id,
+                    )
+                except Exception as submission_error:
+                    # A timeout after Binance accepted the request is not a safe
+                    # reason to retry. Query the deterministic client ID first.
+                    response = await self._query_by_client_order_id(entry_client_order_id)
+                    if response is None:
+                        self.circuit_breaker.record_failure()
+                        await _alert_safety(
+                            "ORDER_OUTCOME_UNCERTAIN",
+                            f"Ambiguous market entry for {self.symbol}; could not confirm submission",
+                            {"symbol": self.symbol, "side": side, "client_order_id": entry_client_order_id, "error": str(submission_error)},
+                        )
+                        return OrderResult(
+                            success=False,
+                            status="ORDER_OUTCOME_UNCERTAIN",
+                            message=(
+                                "Entry submission failed and Binance could not confirm "
+                                f"clientOrderId={entry_client_order_id}: {submission_error}"
+                            ),
+                            timestamp=timestamp,
+                        )
+                    logger.warning(
+                        "Recovered ambiguous entry submission via clientOrderId=%s",
+                        entry_client_order_id,
+                    )
 
+            response = response if isinstance(response, dict) else {}
             order_id = response.get("orderId")
             if not order_id:
-                self.circuit_breaker.record_failure()
-                return OrderResult(
-                    success=False,
-                    status="NO_ORDER_ID",
-                    message="Market order failed to return order ID",
-                    timestamp=timestamp,
-                )
+                reconciled = await self._query_by_client_order_id(submission_client_order_id)
+                if reconciled is not None:
+                    response = reconciled
+                    order_id = response.get("orderId")
+                if not order_id:
+                    self.circuit_breaker.record_failure()
+                    await _alert_safety(
+                        "ORDER_OUTCOME_UNCERTAIN",
+                        f"No order ID returned for {self.symbol}; reconciliation failed",
+                        {"symbol": self.symbol, "side": side, "client_order_id": submission_client_order_id},
+                    )
+                    return OrderResult(
+                        success=False,
+                        status="ORDER_OUTCOME_UNCERTAIN",
+                        message=(
+                            "Entry response contained no order ID and reconciliation "
+                            f"failed for clientOrderId={submission_client_order_id}"
+                        ),
+                        timestamp=timestamp,
+                    )
 
             # Fetch order status.
-            filled_order = await self._wait_for_fill(order_id)
+            response_has_fill_values = (
+                float(response.get("avgPrice", 0.0) or 0.0) > 0
+                and float(response.get("executedQty", 0.0) or 0.0) > 0
+            )
+            filled_order = (
+                response
+                if response.get("status") == "FILLED" and response_has_fill_values
+                else None
+            )
+            if filled_order is None:
+                filled_order = await self._wait_for_fill(order_id)
 
             if not filled_order or filled_order.get("status") != "FILLED":
                 self.circuit_breaker.record_failure()
@@ -422,8 +790,7 @@ class OrderExecutor:
                     timestamp=timestamp,
                 )
 
-            entry_price = float(filled_order.get("avgPrice", 0))
-            executed_qty = float(filled_order.get("executedQty", 0))
+            entry_price, executed_qty = await self._resolve_fill_values(filled_order, order_id)
 
             order_kind = "LIMIT" if use_limit and limit_price else "MARKET"
             logger.info(f"✅ {order_kind} order FILLED: {side} {executed_qty} @ {entry_price}")
@@ -461,6 +828,18 @@ class OrderExecutor:
                         order_id,
                         close_status,
                     )
+                    await _alert_safety(
+                        "PROTECTION_NOT_VERIFIED",
+                        f"SL/TP not verified for {self.symbol} order {order_id}; fail-safe close attempted",
+                        {
+                            "symbol": self.symbol,
+                            "order_id": str(order_id),
+                            "side": side,
+                            "close_status": str(close_status),
+                            "sl_order_id": str(sl_order_id) if sl_order_id else None,
+                            "tp_order_id": str(tp_order_id) if tp_order_id else None,
+                        },
+                    )
                     return OrderResult(
                         success=False,
                         status="PROTECTION_NOT_VERIFIED",
@@ -476,11 +855,39 @@ class OrderExecutor:
                         timestamp=timestamp,
                     )
 
+            protection_position_id = None
+            if protection_requested:
+                protection_position_id = f"{self.symbol}:{order_id}"
+                monitor = self._resolve_order_monitor()
+                if monitor is None or not hasattr(monitor, "register_position"):
+                    logger.critical(
+                        "Verified protection for %s cannot be registered with OrderMonitor",
+                        protection_position_id,
+                    )
+                    protection_position_id = None
+                else:
+                    effective_sl, effective_tp = self._last_protective_prices
+                    effective_sl = effective_sl if effective_sl is not None else stop_loss
+                    effective_tp = effective_tp if effective_tp is not None else take_profit
+                    monitor.register_position(
+                        position_id=protection_position_id,
+                        symbol=self.symbol,
+                        entry_order_id=int(order_id),
+                        entry_side=side,
+                        quantity=executed_qty,
+                        entry_price=entry_price,
+                        sl_order_id=sl_order_id,
+                        tp_order_id=tp_order_id,
+                        sl_price=effective_sl,
+                        tp_price=effective_tp,
+                    )
+
             self.circuit_breaker.record_success()
 
             return OrderResult(
                 success=True,
                 status="FILLED_WITH_PROTECTION" if sl_order_id else "FILLED",
+                position_id=protection_position_id,
                 order_id=order_id,
                 entry_price=entry_price,
                 executed_qty=executed_qty,
@@ -499,6 +906,9 @@ class OrderExecutor:
                 message=str(e),
                 timestamp=timestamp,
             )
+        finally:
+            if account_lock is not None:
+                await asyncio.to_thread(self._release_account_order_lock, account_lock)
 
     async def _wait_for_position_confirmation(
         self,
@@ -700,6 +1110,7 @@ class OrderExecutor:
 
         sl_order_id = None
         tp_order_id = None
+        self._last_protective_prices = (stop_loss, take_profit)
 
         if stop_loss is None and take_profit is None:
             return sl_order_id, tp_order_id
@@ -765,7 +1176,7 @@ class OrderExecutor:
         success = True
 
         try:
-            monitor = get_order_monitor()
+            monitor = self._resolve_order_monitor()
             if monitor is not None and hasattr(monitor, "cancel_all_for_symbol"):
                 monitor_success = await monitor.cancel_all_for_symbol(self.symbol)
                 success = success and bool(monitor_success)
@@ -785,7 +1196,7 @@ class OrderExecutor:
     def list_monitored_positions(self) -> list[dict[str, Any]]:
         """Return active positions tracked by the order monitor."""
         try:
-            monitor = get_order_monitor()
+            monitor = self._resolve_order_monitor()
             if monitor is None or not hasattr(monitor, "list_active_positions"):
                 return []
             positions = monitor.list_active_positions()
@@ -797,7 +1208,7 @@ class OrderExecutor:
     def get_monitor_stats(self) -> dict[str, Any]:
         """Return order-monitor stats when the monitor is active."""
         try:
-            monitor = get_order_monitor()
+            monitor = self._resolve_order_monitor()
             if monitor is None or not hasattr(monitor, "get_stats"):
                 return {"monitoring_active": False}
             return dict(monitor.get_stats() or {})
@@ -836,7 +1247,7 @@ class OrderExecutor:
         timestamp = datetime.now(timezone.utc).isoformat()
 
         try:
-            monitor = get_order_monitor()
+            monitor = self._resolve_order_monitor()
             if monitor is None:
                 return OrderResult(
                     success=False,
@@ -916,6 +1327,9 @@ class OrderExecutor:
             )
 
             if hasattr(monitor, "register_position"):
+                effective_sl, effective_tp = self._last_protective_prices
+                effective_sl = effective_sl if effective_sl is not None else stop_loss
+                effective_tp = effective_tp if effective_tp is not None else take_profit
                 monitor.register_position(
                     position_id=position_id,
                     symbol=self.symbol,
@@ -925,8 +1339,8 @@ class OrderExecutor:
                     entry_price=resolved_entry_price,
                     sl_order_id=sl_order_id,
                     tp_order_id=tp_order_id,
-                    sl_price=stop_loss,
-                    tp_price=take_profit,
+                    sl_price=effective_sl,
+                    tp_price=effective_tp,
                 )
 
             return OrderResult(
@@ -951,10 +1365,24 @@ class OrderExecutor:
                 timestamp=timestamp,
             )
 
+    def get_position_snapshot(self) -> dict[str, Any]:
+        """Return a verified exchange position snapshot or raise.
+
+        Callers that reconcile risk state must distinguish a flat account from
+        a failed account query.  Returning ``{}`` on failure is kept only in
+        the legacy convenience method below.
+        """
+        position = self.service.get_position(self.symbol)
+        if not isinstance(position, dict):
+            raise RuntimeError(
+                f"Invalid position snapshot for {self.symbol}: {type(position).__name__}"
+            )
+        return position
+
     def get_position(self) -> dict[str, Any]:
-        """Return the current position."""
+        """Return the current position, preserving the legacy empty fallback."""
         try:
-            return self.service.get_position(self.symbol)
+            return self.get_position_snapshot()
         except Exception as e:
             logger.error(f"Failed to get position: {e}")
             return {}
@@ -1003,4 +1431,12 @@ class OrderExecutor:
             return self.service.get_balance_usdt()
         except Exception as e:
             logger.error(f"Failed to get balance: {e}")
+            return None
+
+    def get_available_balance(self) -> float | None:
+        """Return free USDT collateral available for a new position."""
+        try:
+            return self.service.get_available_balance_usdt()
+        except Exception as e:
+            logger.error("Failed to get available balance: %s", e)
             return None
