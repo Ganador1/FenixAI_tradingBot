@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦅 FenixAI Trading Bot v2.5.0
+# 🦅 FenixAI Trading Bot v2.7.0
 
 ### Autonomous Multi-Agent Cryptocurrency Trading System with Self-Evolving Memory
 
@@ -17,6 +17,21 @@
 [![Socket.IO](https://img.shields.io/badge/Realtime-Socket.IO-010101.svg)](https://socket.io/)
 
 *An advanced trading system powered by multiple specialized AI agents that collaborate to analyze markets, manage risk, and execute trades on Binance Futures. Features ReasoningBank memory system for self-evolving agent capabilities.*
+
+</div>
+
+> [!WARNING]
+> ### 🛡️ FenixAI is 100% free and open source — beware of scams
+> FenixAI is free software released under the [Apache 2.0 license](LICENSE). **Nobody sells it, licenses it, or charges for access.** If anyone asks you to pay, "activate" a copy, join a paid group, or deposit funds into any wallet or exchange account to "unlock" Fenix, **it is a scam impersonating this project** — do not send them anything.
+>
+> The **only** official channels are:
+> - 📦 This repository: [github.com/Ganador1/FenixAI_tradingBot](https://github.com/Ganador1/FenixAI_tradingBot)
+> - ☕ The project's official Ko-fi (linked from this repository)
+> - ✉️ Private contact: **hyperionganador@proton.me**
+>
+> There are **no** official Telegram groups, Discord servers, paid signal channels, or "resellers". Anything else claiming to be FenixAI is not us.
+
+<div align="center">
 
 ![Fenix Dashboard Preview](./Dashboard%20Fenix.png)
 
