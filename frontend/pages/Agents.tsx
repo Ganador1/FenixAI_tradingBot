@@ -223,12 +223,17 @@ export const Agents: React.FC = () => {
   };
 
   const handleReasoningUpdate = (entry: ReasoningEntry) => {
-    // New reasoning log — add to local list
-    setAgentOutputs(prev => [entry, ...prev.slice(0, 99)]);
+    // New reasoning log — add to local list (guard against the same output
+    // arriving again on the agentOutput channel)
+    setAgentOutputs(prev =>
+      entry.id && prev.some(o => o.id === entry.id) ? prev : [entry, ...prev.slice(0, 99)]
+    );
   };
 
   const handleAgentOutput = (output: ReasoningEntry) => {
-    setAgentOutputs(prev => [output, ...prev]);
+    setAgentOutputs(prev =>
+      output.id && prev.some(o => o.id === output.id) ? prev : [output, ...prev]
+    );
     // Also push to live terminal feed
     const isSummary = (output.agent_name || '').includes('Summary');
     const line: FeedLine = {
@@ -240,7 +245,9 @@ export const Agents: React.FC = () => {
       reasoning: (output.reasoning || '').slice(0, 300),
       isSummary,
     };
-    setFeedLines(prev => [...prev.slice(-199), line]);
+    setFeedLines(prev =>
+      line.id && prev.some(l => l.id === line.id) ? prev : [...prev.slice(-199), line]
+    );
   };
 
   // Auto-scroll terminal to bottom when new lines arrive

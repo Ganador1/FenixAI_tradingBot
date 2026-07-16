@@ -43,7 +43,7 @@ from src.models.db_models import AgentOutput, Order, Position, Trade
 from src.models.user import User
 from src.trading.binance_client import BinanceClient
 from src.trading.engine import TradingEngine
-from src.trading.engine import _env_flag as _engine_env_flag
+from src.trading.engine import env_flag as _engine_env_flag
 from src.trading.operational_audit import read_runtime_instances
 
 # ============ Pydantic Schemas ============
