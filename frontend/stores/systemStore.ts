@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Socket } from 'socket.io-client';
 import { getSocket, releaseSocket } from '../lib/socket';
+import { useAuthStore } from './authStore';
 
 export interface SystemMetrics {
   cpu: number;
@@ -43,6 +44,9 @@ export interface SystemState {
     enable_visual_agent: boolean;
     enable_sentiment_agent: boolean;
   } | null;
+  riskFlags: {
+    macro_riskoff_enabled: boolean;
+  } | null;
   isLoading: boolean;
   error: string | null;
   socket: Socket | null;
@@ -53,6 +57,8 @@ export interface SystemState {
   fetchConnections: () => Promise<void>;
   fetchEngineConfig: () => Promise<void>;
   updateEngineConfig: (changes: Partial<SystemState['engineConfig']>) => Promise<void>;
+  fetchRiskFlags: () => Promise<void>;
+  updateRiskFlags: (changes: Partial<SystemState['riskFlags']>) => Promise<void>;
   clearError: () => void;
 }
 
@@ -70,6 +76,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
   alerts: [],
   connections: [],
   engineConfig: null,
+  riskFlags: null,
   isLoading: false,
   error: null,
   socket: null,
@@ -172,9 +179,13 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     set({ isLoading: true, error: null });
 
     try {
+      const token = useAuthStore.getState().token;
       const response = await fetch('/api/engine/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(changes),
       });
       const data = await response.json();
@@ -185,6 +196,50 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to update engine config',
+        isLoading: false,
+      });
+    }
+  },
+
+  fetchRiskFlags: async () => {
+    set({ isLoading: true, error: null });
+
+    try {
+      const response = await fetch('/api/engine/risk-flags');
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch risk flags');
+      }
+      set({ riskFlags: data, isLoading: false });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to fetch risk flags',
+        isLoading: false,
+      });
+    }
+  },
+
+  updateRiskFlags: async (changes) => {
+    set({ isLoading: true, error: null });
+
+    try {
+      const token = useAuthStore.getState().token;
+      const response = await fetch('/api/engine/risk-flags', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ ...get().riskFlags, ...changes }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to update risk flags');
+      }
+      set({ riskFlags: data, isLoading: false });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to update risk flags',
         isLoading: false,
       });
     }

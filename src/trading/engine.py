@@ -89,6 +89,10 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    return _env_flag(name, default)
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         return float(value)

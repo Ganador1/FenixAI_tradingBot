@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Brain, TrendingUp, Activity, Target, AlertCircle, RefreshCw } from 'lucide-react';
 // import { useAuthStore } from '../stores/authStore';
@@ -22,6 +22,15 @@ const AGENT_COLORS = {
   risk: '#f97316'
 };
 
+const AGENT_DISPLAY_NAMES: Record<string, string> = {
+  sentiment: 'Sentiment',
+  technical: 'Technical',
+  visual: 'Visual',
+  qabba: 'QABBA',
+  decision: 'Decision',
+  risk: 'Risk',
+};
+
 export const Agents: React.FC = () => {
   // const { user } = useAuthStore();
   const { agents, reasoningLogs, socket, fetchAgents, fetchReasoningLogs, fetchScorecards } = useAgentStore();
@@ -35,15 +44,113 @@ export const Agents: React.FC = () => {
   const [filteredOutputs, setFilteredOutputs] = useState<ReasoningEntry[]>([]);
   const [configDraft, setConfigDraft] = useState({ symbol: 'BTCUSDT', timeframe: '15m', enable_visual_agent: true, enable_sentiment_agent: true, paper_trading: true, allow_live_trading: false });
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [selectedLogAgent, setSelectedLogAgent] = useState<string | null>(null);
+
+  // Live terminal feed
+  type FeedLine = { id: string; ts: string; agent: string; signal: string; confidence: number; reasoning: string; isSummary?: boolean };
+
+  const interpretFeedLine = (line: FeedLine): string => {
+    const raw = line.reasoning || '';
+    const signal = line.signal;
+    const conf = line.confidence;
+
+    // Parse common technical indicators from the reasoning string
+    const rsi  = parseFloat((raw.match(/RSI[=:]\s*([\d.]+)/i)       || [])[1] ?? 'NaN');
+    const macd = parseFloat((raw.match(/MACD_hist[=:]\s*([+-]?[\d.]+)/i) || [])[1] ?? 'NaN');
+    const atr  = parseFloat((raw.match(/ATR[=:]\s*([\d.]+)/i)       || [])[1] ?? 'NaN');
+    const ema  = raw.match(/EMA[_\s]?(fast|slow|cross|bull|bear)/i);
+    const bb   = raw.match(/BB[_\s]?(squeeze|expand|upper|lower|mid)/i);
+
+    const parts: string[] = [];
+
+    // RSI
+    if (!isNaN(rsi)) {
+      if (rsi < 20)       parts.push(`RSI at ${rsi.toFixed(0)} is extremely oversold — market is exhausted to the downside`);
+      else if (rsi < 30)  parts.push(`RSI at ${rsi.toFixed(0)} is oversold — potential bounce zone`);
+      else if (rsi > 80)  parts.push(`RSI at ${rsi.toFixed(0)} is extremely overbought — rally may be overextended`);
+      else if (rsi > 70)  parts.push(`RSI at ${rsi.toFixed(0)} is overbought — momentum slowing`);
+      else if (rsi > 55)  parts.push(`RSI at ${rsi.toFixed(0)} leans bullish`);
+      else if (rsi < 45)  parts.push(`RSI at ${rsi.toFixed(0)} leans bearish`);
+      else                parts.push(`RSI at ${rsi.toFixed(0)} is neutral`);
+    }
+
+    // MACD histogram
+    if (!isNaN(macd)) {
+      if (Math.abs(macd) < 0.0005) parts.push('MACD histogram is flat — momentum has stalled');
+      else if (macd > 0)            parts.push(`MACD histogram positive — upward momentum building`);
+      else                          parts.push(`MACD histogram negative — downward pressure`);
+    }
+
+    // ATR (volatility)
+    if (!isNaN(atr)) {
+      if (atr > 500)       parts.push(`extreme market volatility (ATR ${atr.toFixed(0)}) — risk is very high`);
+      else if (atr > 200)  parts.push(`elevated volatility (ATR ${atr.toFixed(0)}) — wider stops needed`);
+      else if (atr < 50)   parts.push(`low volatility (ATR ${atr.toFixed(0)}) — market is consolidating`);
+    }
+
+    // EMA context
+    if (ema) {
+      const ctx = ema[1].toLowerCase();
+      if (ctx === 'bull' || ctx === 'fast') parts.push('EMAs are bullishly aligned');
+      else if (ctx === 'bear' || ctx === 'slow') parts.push('EMAs are bearishly aligned');
+      else if (ctx === 'cross') parts.push('EMA crossover detected');
+    }
+
+    // BB context
+    if (bb) {
+      const ctx = bb[1].toLowerCase();
+      if (ctx === 'squeeze') parts.push('Bollinger Bands squeezing — breakout likely soon');
+      else if (ctx === 'expand') parts.push('Bollinger Bands expanding — volatility rising');
+    }
+
+    // Conviction label
+    const conviction = conf < 0.4 ? 'weak conviction' : conf < 0.65 ? 'moderate conviction' : 'high conviction';
+
+    // Signal conclusion
+    let conclusion = '';
+    if (!signal || signal === '—') {
+      conclusion = 'no clear signal';
+    } else if (signal === 'HOLD' || signal === 'WAIT') {
+      if (parts.some(p => p.includes('oversold')))
+        conclusion = 'oversold but no reversal confirmed — waiting for a trigger before entering long';
+      else if (parts.some(p => p.includes('stalled') || p.includes('flat')))
+        conclusion = 'momentum has stalled in both directions — no edge to trade right now';
+      else if (parts.some(p => p.includes('overbought')))
+        conclusion = 'overbought but no breakdown signal — staying out until price action clarifies';
+      else
+        conclusion = 'mixed signals — no high-probability setup at this time';
+    } else if (signal === 'BUY') {
+      conclusion = 'conditions align for a long entry';
+    } else if (signal === 'SELL') {
+      conclusion = 'conditions favor a short or exit from longs';
+    }
+
+    if (parts.length === 0) {
+      // No recognizable indicators — show cleaned text
+      const cleaned = raw.replace(/[A-Z_]+=[\d.+-]+\s*[|→]*\s*/g, '').trim();
+      return cleaned.slice(0, 200) || conclusion;
+    }
+
+    return `${parts.join('; ')}. ${conclusion} (${conviction}).`;
+  };
+  const [feedLines, setFeedLines] = useState<FeedLine[]>([]);
+  const feedRef = useRef<HTMLDivElement>(null);
+  const [nextCycleAt, setNextCycleAt] = useState<Date | null>(null);
+  const [countdown, setCountdown] = useState<string>('');
 
   useEffect(() => {
     fetchAgentsData();
     fetchEngineConfig();
-    
+
+    const handleCycleSummary = (data: { next_cycle_at?: string }) => {
+      if (data?.next_cycle_at) setNextCycleAt(new Date(data.next_cycle_at));
+    };
+
     if (socket) {
       socket.on('agentOutput', handleAgentOutput);
       socket.on('agent:reasoning', handleReasoningUpdate);
       socket.on('agent:scorecard', handleAgentUpdate);
+      socket.on('cycle:summary', handleCycleSummary);
     }
 
     return () => {
@@ -51,10 +158,26 @@ export const Agents: React.FC = () => {
         socket.off('agentOutput', handleAgentOutput);
         socket.off('agent:reasoning', handleReasoningUpdate);
         socket.off('agent:scorecard', handleAgentUpdate);
+        socket.off('cycle:summary', handleCycleSummary);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, selectedAgent, selectedTimeframe]);
+
+  // Countdown ticker
+  useEffect(() => {
+    const tick = () => {
+      if (!nextCycleAt) { setCountdown(''); return; }
+      const diffMs = nextCycleAt.getTime() - Date.now();
+      if (diffMs <= 0) { setCountdown('launching…'); return; }
+      const m = Math.floor(diffMs / 60000);
+      const s = Math.floor((diffMs % 60000) / 1000);
+      setCountdown(`${m}:${String(s).padStart(2, '0')}`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [nextCycleAt]);
 
   useEffect(() => {
     if (engineConfig) {
@@ -100,13 +223,39 @@ export const Agents: React.FC = () => {
   };
 
   const handleReasoningUpdate = (entry: ReasoningEntry) => {
-    // New reasoning log — add to local list
-    setAgentOutputs(prev => [entry, ...prev.slice(0, 99)]);
+    // New reasoning log — add to local list (guard against the same output
+    // arriving again on the agentOutput channel)
+    setAgentOutputs(prev =>
+      entry.id && prev.some(o => o.id === entry.id) ? prev : [entry, ...prev.slice(0, 99)]
+    );
   };
 
   const handleAgentOutput = (output: ReasoningEntry) => {
-    setAgentOutputs(prev => [output, ...prev]);
+    setAgentOutputs(prev =>
+      output.id && prev.some(o => o.id === output.id) ? prev : [output, ...prev]
+    );
+    // Also push to live terminal feed
+    const isSummary = (output.agent_name || '').includes('Summary');
+    const line: FeedLine = {
+      id: output.id || crypto.randomUUID(),
+      ts: new Date(output.timestamp || Date.now()).toLocaleTimeString(),
+      agent: output.agent_name || 'Agent',
+      signal: output.decision || '—',
+      confidence: output.confidence ?? 0,
+      reasoning: (output.reasoning || '').slice(0, 300),
+      isSummary,
+    };
+    setFeedLines(prev =>
+      line.id && prev.some(l => l.id === line.id) ? prev : [...prev.slice(-199), line]
+    );
   };
+
+  // Auto-scroll terminal to bottom when new lines arrive
+  useEffect(() => {
+    if (feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
+  }, [feedLines]);
 
   useEffect(() => {
     // Filter outputs based on selected agent
@@ -623,12 +772,122 @@ export const Agents: React.FC = () => {
       </Card>
 
       {/* Agent Outputs and Reasoning */}
-      <Tabs defaultValue="outputs" className="space-y-4">
+      <Tabs defaultValue="live" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="live">Live Feed</TabsTrigger>
           <TabsTrigger value="outputs">Agent Outputs</TabsTrigger>
           <TabsTrigger value="reasoning">Reasoning Bank</TabsTrigger>
           <TabsTrigger value="agents">Agent Status</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="live">
+          {/* 6 Agent Boxes */}
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-3">
+            {(Object.entries(AGENT_COLORS) as [string, string][]).map(([type, color]) => {
+              const lastLine = [...feedLines].reverse().find(l =>
+                l.agent.toLowerCase().includes(type)
+              );
+              const agentRecord = agents.find(a => a.type === type);
+              const sigColor =
+                lastLine?.signal === 'BUY' ? 'text-green-400' :
+                lastLine?.signal === 'SELL' ? 'text-red-400' : 'text-yellow-400';
+              return (
+                <button
+                  key={type}
+                  onClick={() => setSelectedLogAgent(type)}
+                  className="relative rounded-lg border border-gray-700 bg-gray-900 p-2 text-left hover:border-gray-500 transition-all focus:outline-none"
+                  style={{ borderLeftColor: color, borderLeftWidth: 3 }}
+                  title={`View ${AGENT_DISPLAY_NAMES[type]} agent logs`}
+                >
+                  <div className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+                    style={{ background: agentRecord?.status === 'active' ? '#4ade80' : '#6b7280' }}
+                  />
+                  <div className="text-xs font-semibold text-gray-200">{AGENT_DISPLAY_NAMES[type]}</div>
+                  {lastLine ? (
+                    <>
+                      <div className={`text-xs font-bold mt-0.5 ${sigColor}`}>{lastLine.signal}</div>
+                      <div className="text-[10px] text-gray-500">{(lastLine.confidence * 100).toFixed(0)}% conf</div>
+                    </>
+                  ) : (
+                    <div className="text-[10px] text-gray-600 mt-0.5">no data yet</div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <Card className="bg-gray-950 border-gray-800">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-green-400 font-mono text-sm tracking-widest">
+                ● AGENT LIVE FEED
+              </CardTitle>
+              <div className="flex items-center gap-4">
+                {nextCycleAt && (
+                  <span className="font-mono text-xs text-gray-400">
+                    next cycle{' '}
+                    <span className="text-cyan-400 font-bold">{countdown}</span>
+                    <span className="text-gray-600 ml-1">
+                      ({nextCycleAt.toLocaleTimeString()})
+                    </span>
+                  </span>
+                )}
+                <button
+                  onClick={() => setFeedLines([])}
+                  className="text-xs text-gray-500 hover:text-gray-300 font-mono"
+                >
+                  clear
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div
+                ref={feedRef}
+                className="font-mono text-xs bg-gray-950 text-gray-200 h-96 overflow-y-auto px-4 py-2 space-y-1"
+              >
+                {feedLines.length === 0 ? (
+                  <p className="text-gray-600 mt-4">
+                    Waiting for agent events… (starts on next analysis cycle)
+                  </p>
+                ) : (
+                  feedLines.map(line => {
+                    if (line.isSummary) {
+                      return (
+                        <div key={line.id} className="border-t border-gray-700 mt-2 pt-2 mb-2 leading-5">
+                          <span className="text-gray-500">[{line.ts}]</span>{' '}
+                          <span className="text-purple-400 font-bold">{line.agent}</span>
+                          <div className="text-gray-300 pl-4 text-[11px] mt-0.5 italic">
+                            ↳ {interpretFeedLine(line)}
+                          </div>
+                        </div>
+                      );
+                    }
+                    const sigColor =
+                      line.signal === 'BUY'
+                        ? 'text-green-400'
+                        : line.signal === 'SELL'
+                        ? 'text-red-400'
+                        : 'text-yellow-400';
+                    const confPct = (line.confidence * 100).toFixed(0);
+                    return (
+                      <div key={line.id} className="leading-5 mb-1">
+                        <div>
+                          <span className="text-gray-500">[{line.ts}]</span>{' '}
+                          <span className="text-blue-400">{line.agent}</span>{' '}
+                          <span className="text-gray-400">→</span>{' '}
+                          <span className={`font-bold ${sigColor}`}>{line.signal}</span>{' '}
+                          <span className="text-gray-500">({confPct}%)</span>
+                        </div>
+                        <div className="text-gray-400 pl-4 text-[11px] italic">
+                          ↳ {interpretFeedLine(line)}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="outputs" className="space-y-4">
           <Card>
@@ -750,6 +1009,107 @@ export const Agents: React.FC = () => {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Agent Log Modal */}
+      {selectedLogAgent && (() => {
+        const color = AGENT_COLORS[selectedLogAgent as keyof typeof AGENT_COLORS];
+        const label = AGENT_DISPLAY_NAMES[selectedLogAgent] || selectedLogAgent;
+
+        const liveLogs = [...feedLines]
+          .filter(l => l.agent.toLowerCase().includes(selectedLogAgent))
+          .reverse();
+
+        const storedLogs = agentOutputs
+          .filter(o =>
+            (o.agent_name || '').toLowerCase().includes(selectedLogAgent) ||
+            (o.agent_id || '').toLowerCase().includes(selectedLogAgent)
+          )
+          .slice(0, 30);
+
+        const hasLive = liveLogs.length > 0;
+        const hasStored = storedLogs.length > 0;
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            onClick={() => setSelectedLogAgent(null)}
+          >
+            <div
+              className="bg-gray-950 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ background: color }} />
+                  <span className="text-white font-semibold font-mono">{label} Agent — Logs</span>
+                </div>
+                <button
+                  onClick={() => setSelectedLogAgent(null)}
+                  className="text-gray-400 hover:text-white text-lg leading-none"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="overflow-y-auto flex-1 px-4 py-3 font-mono text-xs space-y-3">
+                {!hasLive && !hasStored && (
+                  <p className="text-gray-600 text-center py-8">No logs yet for this agent.</p>
+                )}
+
+                {hasLive && (
+                  <div>
+                    <div className="text-gray-500 text-[10px] uppercase tracking-widest mb-2">Live feed</div>
+                    <div className="space-y-2">
+                      {liveLogs.map(line => {
+                        const sigColor =
+                          line.signal === 'BUY' ? 'text-green-400' :
+                          line.signal === 'SELL' ? 'text-red-400' : 'text-yellow-400';
+                        return (
+                          <div key={line.id} className="border-b border-gray-800 pb-2">
+                            <div>
+                              <span className="text-gray-500">[{line.ts}]</span>{' '}
+                              <span className={`font-bold ${sigColor}`}>{line.signal}</span>{' '}
+                              <span className="text-gray-500">({(line.confidence * 100).toFixed(0)}%)</span>
+                            </div>
+                            <div className="text-gray-400 mt-0.5 italic pl-3">↳ {line.reasoning}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {hasStored && (
+                  <div>
+                    <div className="text-gray-500 text-[10px] uppercase tracking-widest mb-2">Stored outputs</div>
+                    <div className="space-y-2">
+                      {storedLogs.map(o => {
+                        const sigColor =
+                          o.decision === 'BUY' ? 'text-green-400' :
+                          o.decision === 'SELL' ? 'text-red-400' : 'text-yellow-400';
+                        return (
+                          <div key={o.id} className="border-b border-gray-800 pb-2">
+                            <div>
+                              <span className="text-gray-500">[{new Date(o.timestamp).toLocaleTimeString()}]</span>{' '}
+                              <span className={`font-bold ${sigColor}`}>{o.decision || '—'}</span>{' '}
+                              <span className="text-gray-500">({((o.confidence || 0) * 100).toFixed(0)}%)</span>
+                            </div>
+                            {o.reasoning && (
+                              <div className="text-gray-400 mt-0.5 italic pl-3">↳ {o.reasoning.slice(0, 400)}</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
