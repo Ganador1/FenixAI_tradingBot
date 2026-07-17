@@ -2,6 +2,7 @@ import React, { ReactNode } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { MiniTvWidget } from './MiniTvWidget';
 import { useAuthStore } from '@/stores/authStore';
 
 interface LayoutProps {
@@ -27,6 +28,7 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </main>
       </div>
+      <MiniTvWidget />
     </div>
   );
 }
