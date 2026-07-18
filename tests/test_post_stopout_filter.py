@@ -133,5 +133,32 @@ class TestQabbaCapitulationPrompt:
         assert "chasing the sweep" in QABBA_ANALYST_SYSTEM
 
 
+class TestOrderFlowPromptFixes:
+    """Guard the 2026-07-18 fixes (QABBA 0/6, decision 1/10): OBI is noise on
+    this timeframe, CVD leads, and the decision must discount low-accuracy
+    agents and QABBA's internal OBI/CVD contradictions."""
+
+    def test_qabba_prompt_makes_cvd_primary_over_obi(self):
+        from src.prompts.agent_prompts import QABBA_ANALYST_SYSTEM
+
+        assert "CVD is the PRIMARY directional signal" in QABBA_ANALYST_SYSTEM
+        # OBI must be described as an imbalance, not equated with direction.
+        assert "NEVER issue BUY/SELL on OBI alone" in QABBA_ANALYST_SYSTEM
+        assert "ABSORBED by buyers" in QABBA_ANALYST_SYSTEM
+        # The old "OBI low == selling pressure" wording must be gone.
+        assert "Strong selling pressure" not in QABBA_ANALYST_SYSTEM
+
+    def test_decision_prompt_prioritizes_track_record_and_flags_contradiction(self):
+        from src.prompts.agent_prompts import DECISION_AGENT_SYSTEM
+
+        assert "TRACK RECORD OVERRIDES BASE WEIGHTS" in DECISION_AGENT_SYSTEM
+        assert "worse than a coin flip" in DECISION_AGENT_SYSTEM
+        # Must not fabricate accuracy numbers.
+        assert "do not invent accuracy numbers" in DECISION_AGENT_SYSTEM
+        # OBI/CVD contradiction guard and sentiment-as-context.
+        assert "QABBA INTERNAL CONTRADICTION" in DECISION_AGENT_SYSTEM
+        assert "SENTIMENT IS CONTEXT" in DECISION_AGENT_SYSTEM
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
