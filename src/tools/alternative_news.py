@@ -27,11 +27,11 @@ logger = logging.getLogger(__name__)
 
 class AlternativeNewsProvider:
     """Proveedor alternativo de noticias cuando APIs premium fallan."""
-    
+
     def __init__(self):
         self.cache_file = Path("cache/alternative_news.json")
         self.cache_file.parent.mkdir(exist_ok=True)
-        
+
         # RSS feeds gratuitos
         self.rss_feeds = {
             "coindesk": "https://feeds.feedburner.com/CoinDesk",
@@ -39,23 +39,23 @@ class AlternativeNewsProvider:
             "decrypt": "https://decrypt.co/feed",
             "coindesk_markets": "https://feeds.feedburner.com/CoinDeskMarkets"
         }
-        
+
         # Reddit endpoints públicos
         self.reddit_urls = [
             "https://www.reddit.com/r/cryptocurrency/.json?limit=25",
             "https://www.reddit.com/r/bitcoin/.json?limit=15",
             "https://www.reddit.com/r/solana/.json?limit=10"
         ]
-    
-    def fetch_rss_news(self, max_items: int = 15) -> List[Dict[str, Any]]:
+
+    def fetch_rss_news(self, max_items: int = 15) -> list[dict[str, Any]]:
         """Fetch news from RSS feeds."""
         news_items = []
-        
+
         for source, url in self.rss_feeds.items():
             try:
                 feed = feedparser.parse(url)
                 logger.info(f"Fetched {len(feed.entries)} items from {source}")
-                
+
                 for entry in feed.entries[:max_items//len(self.rss_feeds)]:
                     news_items.append({
                         "title": entry.get("title", ""),
@@ -66,27 +66,27 @@ class AlternativeNewsProvider:
                         "created_at": datetime.now().isoformat(),
                         "domain": {"name": source.title()}
                     })
-                    
+
             except Exception as e:
                 logger.warning(f"Failed to fetch RSS from {source}: {e}")
-        
+
         return news_items[:max_items]
-    
-    def fetch_reddit_posts(self, max_items: int = 10) -> List[Dict[str, Any]]:
+
+    def fetch_reddit_posts(self, max_items: int = 10) -> list[dict[str, Any]]:
         """Fetch posts from Reddit crypto communities."""
         reddit_items = []
-        
+
         headers = {
             "User-Agent": "FenixBot/1.0 (Alternative News Aggregator)"
         }
-        
+
         for url in self.reddit_urls:
             try:
                 response = requests.get(url, headers=headers, timeout=10)
                 if response.status_code == 200:
                     data = response.json()
                     posts = data.get("data", {}).get("children", [])
-                    
+
                     for post in posts[:max_items//len(self.reddit_urls)]:
                         post_data = post.get("data", {})
                         if post_data.get("title"):
@@ -102,13 +102,13 @@ class AlternativeNewsProvider:
                                 "domain": {"name": "Reddit"},
                                 "upvotes": post_data.get("ups", 0)
                             })
-                            
+
             except Exception as e:
                 logger.warning(f"Failed to fetch Reddit data from {url}: {e}")
-        
+
         return reddit_items[:max_items]
-    
-    def generate_synthetic_news(self, count: int = 5) -> List[Dict[str, Any]]:
+
+    def generate_synthetic_news(self, count: int = 5) -> list[dict[str, Any]]:
         """Generate synthetic news for testing when all sources fail."""
         base_news = [
             {
@@ -137,7 +137,7 @@ class AlternativeNewsProvider:
                 "summary": "Economic indicators suggest potential volatility"
             }
         ]
-        
+
         synthetic_news = []
         for i, news in enumerate(base_news[:count]):
             synthetic_news.append({
@@ -150,15 +150,15 @@ class AlternativeNewsProvider:
                 "domain": {"name": "Synthetic News"},
                 "sentiment_hint": news["sentiment"]
             })
-        
+
         return synthetic_news
-    
-    def get_alternative_news(self, limit: int = 20) -> List[Dict[str, Any]]:
+
+    def get_alternative_news(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get news from all alternative sources."""
         all_news = []
-        
+
         logger.info("Fetching news from alternative sources...")
-        
+
         # Try RSS feeds first
         try:
             rss_news = self.fetch_rss_news(max_items=limit//2)
@@ -166,7 +166,7 @@ class AlternativeNewsProvider:
             logger.info(f"✅ Fetched {len(rss_news)} items from RSS feeds")
         except Exception as e:
             logger.warning(f"RSS feeds failed: {e}")
-        
+
         # Try Reddit
         try:
             reddit_news = self.fetch_reddit_posts(max_items=limit//3)
@@ -174,13 +174,13 @@ class AlternativeNewsProvider:
             logger.info(f"✅ Fetched {len(reddit_news)} items from Reddit")
         except Exception as e:
             logger.warning(f"Reddit failed: {e}")
-        
+
         # If we don't have enough news, add synthetic
         if len(all_news) < limit//2:
             synthetic_news = self.generate_synthetic_news(count=limit//4)
             all_news.extend(synthetic_news)
             logger.info(f"✅ Added {len(synthetic_news)} synthetic news items")
-        
+
         # Save to cache
         try:
             cache_data = {
@@ -193,10 +193,10 @@ class AlternativeNewsProvider:
             logger.info(f"💾 Cached {len(all_news)} news items")
         except Exception as e:
             logger.warning(f"Failed to cache news: {e}")
-        
+
         return all_news[:limit]
 
-def get_news_alternative(limit: int = 20) -> List[Dict[str, Any]]:
+def get_news_alternative(limit: int = 20) -> list[dict[str, Any]]:
     """Main function to get alternative news."""
     provider = AlternativeNewsProvider()
     return provider.get_alternative_news(limit=limit)
@@ -205,13 +205,13 @@ if __name__ == "__main__":
     # Test the alternative news provider
     print("🧪 Testing Alternative News Provider")
     print("=" * 50)
-    
+
     news = get_news_alternative(limit=10)
-    
+
     print(f"✅ Fetched {len(news)} news items:")
     for i, item in enumerate(news[:5], 1):
         print(f"{i}. {item['title'][:60]}...")
         print(f"   Source: {item['source']} | {item['published_at'][:10]}")
-    
+
     print(f"\n📊 Total news items available: {len(news)}")
     print("🎉 Alternative news system working!")

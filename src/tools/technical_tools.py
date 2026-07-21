@@ -63,19 +63,19 @@ MIN_CANDLES_FOR_RELIABLE_CALC = 30 # Stricter minimum for reliable indicator cal
 _buffer_lock = threading.RLock()
 
 # Primary data buffers
-close_buf: Deque[float] = deque(maxlen=MAXLEN)
-high_buf: Deque[float] = deque(maxlen=MAXLEN)
-low_buf: Deque[float] = deque(maxlen=MAXLEN)
-vol_buf: Deque[float] = deque(maxlen=MAXLEN)
-open_buf: Deque[float] = deque(maxlen=MAXLEN)  # Added for chart generation
-timestamp_buf: Deque[int] = deque(maxlen=MAXLEN)  # Unix timestamp in milliseconds
+close_buf: deque[float] = deque(maxlen=MAXLEN)
+high_buf: deque[float] = deque(maxlen=MAXLEN)
+low_buf: deque[float] = deque(maxlen=MAXLEN)
+vol_buf: deque[float] = deque(maxlen=MAXLEN)
+open_buf: deque[float] = deque(maxlen=MAXLEN)  # Added for chart generation
+timestamp_buf: deque[int] = deque(maxlen=MAXLEN)  # Unix timestamp in milliseconds
 
 # Buffers for calculated indicator values (stores only the latest value)
 # These are updated by _calculate_and_store_all_indicators
 # For sequences, we'll slice from the primary buffers or re-calculate on demand.
-_latest_indicators_cache: Dict[str, Any] = {}
+_latest_indicators_cache: dict[str, Any] = {}
 # Rate-limited indicator warning timestamps (indicator_name -> last_log_time)
-_indicator_warning_timestamps: Dict[str, float] = {}
+_indicator_warning_timestamps: dict[str, float] = {}
 _INDICATOR_WARNING_COOLDOWN = 300  # seconds
 
 
@@ -105,7 +105,7 @@ def _rsi(values: np.ndarray, period: int = 14) -> np.ndarray:
     return np.concatenate([np.full(period, np.nan), rsi])
 
 
-def _macd(values: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[np.ndarray, np.ndarray]:
+def _macd(values: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[np.ndarray, np.ndarray]:
     if len(values) < slow + signal:
         return np.array([]), np.array([])
     ema_fast = _ema(values, fast)
@@ -133,11 +133,11 @@ def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14)
 # Buffers for indicator sequences (if you want to store sequences of indicators)
 # This can consume more memory. Alternatively, calculate sequences on-demand.
 # For now, let's keep them if LLM4FTS or other consumers need sequences.
-rsi_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
-macd_line_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
-macd_signal_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
-adx_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
-atr_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
+rsi_seq_buf: deque[float] = deque(maxlen=MAXLEN)
+macd_line_seq_buf: deque[float] = deque(maxlen=MAXLEN)
+macd_signal_seq_buf: deque[float] = deque(maxlen=MAXLEN)
+adx_seq_buf: deque[float] = deque(maxlen=MAXLEN)
+atr_seq_buf: deque[float] = deque(maxlen=MAXLEN)
 # obv_seq_buf: Deque[float] = deque(maxlen=MAXLEN) # OBV is cumulative, storing sequence might be less useful than latest
 # ma50_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
 # upper_band_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
@@ -145,7 +145,7 @@ atr_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
 # lower_band_seq_buf: Deque[float] = deque(maxlen=MAXLEN)
 
 
-def _validate_float(value: Any, name: str, positive: bool = False, non_negative: bool = False) -> Optional[float]:
+def _validate_float(value: Any, name: str, positive: bool = False, non_negative: bool = False) -> float | None:
     """Helper to validate and convert a value to float."""
     if not isinstance(value, (int, float)):
         logger.warning(f"Invalid type for {name}: {type(value)}. Expected float or int.")
@@ -171,7 +171,7 @@ def validate_kline_data(close: float, high: float, low: float, volume: float) ->
 
     if None in [c, h, lo, v]: # Type or basic value error
         return False
-    
+
     # Ensure type hinting knows these are floats now
     # Type narrowing for static checkers
     assert c is not None and h is not None and lo is not None and v is not None
@@ -183,11 +183,11 @@ def validate_kline_data(close: float, high: float, low: float, volume: float) ->
     return True
 
 def add_kline(close: float, high: float, low: float, volume: float, 
-              open_price: Optional[float] = None, timestamp: Optional[int] = None) -> bool:
+              open_price: float | None = None, timestamp: int | None = None) -> bool:
     """
     Adds a new k-line data point to the buffers and recalculates indicators.
     Thread-safe. Returns True if successful, False otherwise.
-    
+
     Args:
         close: Close price
         high: High price
@@ -199,10 +199,10 @@ def add_kline(close: float, high: float, low: float, volume: float,
     if not validate_kline_data(close, high, low, volume):
         logger.error(f"Invalid k-line data provided to add_kline: C={close}, H={high}, L={low}, V={volume}")
         return False
-    
+
     # Ensure values are float after validation
     close_f, high_f, low_f, vol_f = float(close), float(high), float(low), float(volume)
-    
+
     # Handle open price - synthesize from previous close if not provided
     if open_price is not None:
         open_f = float(open_price)
@@ -210,7 +210,7 @@ def add_kline(close: float, high: float, low: float, volume: float,
         open_f = float(close_buf[-1])  # Use previous close as open
     else:
         open_f = close_f  # First candle: open = close
-    
+
     # Handle timestamp - use current time if not provided
     if timestamp is not None:
         ts = int(timestamp)
@@ -253,10 +253,10 @@ def _calculate_and_store_all_indicators() -> None:
     low_arr = np.array(low_buf, dtype=np.float64)
     vol_arr = np.array(vol_buf, dtype=np.float64)
 
-    temp_cache: Dict[str, Any] = {}
+    temp_cache: dict[str, Any] = {}
 
     # Helper to safely get last valid value from a TA-Lib output array
-    def get_last_valid(arr: np.ndarray, name: str) -> Optional[float]:
+    def get_last_valid(arr: np.ndarray, name: str) -> float | None:
         if arr is not None and len(arr) > 0:
             val = arr[-1]
             if val is not None and np.isfinite(val): # Checks for NaN and Inf
@@ -279,12 +279,12 @@ def _calculate_and_store_all_indicators() -> None:
                 rsi_val = get_last_valid(talib.RSI(close_arr, timeperiod=14), "RSI")
             else:
                 rsi_val = get_last_valid(_rsi(close_arr, 14), "RSI")
-            
+
             if rsi_val is not None:
                 temp_cache["rsi"] = rsi_val
         except Exception as e:
             logger.warning(f"Error calculating RSI: {e}")
-    
+
     # MACD
     if current_len >= 26 + 9 -1:
         try:
@@ -292,11 +292,11 @@ def _calculate_and_store_all_indicators() -> None:
                 macd, macdsignal, _ = talib.MACD(close_arr, fastperiod=12, slowperiod=26, signalperiod=9)
             else:
                 macd, macdsignal = _macd(close_arr, 12, 26, 9)
-            
+
             macd_line_val = get_last_valid(macd, "MACD Line")
             if macd_line_val is not None:
                 temp_cache["macd_line"] = macd_line_val
-            
+
             signal_line_val = get_last_valid(macdsignal, "MACD Signal")
             if signal_line_val is not None:
                 temp_cache["signal_line"] = signal_line_val
@@ -308,19 +308,19 @@ def _calculate_and_store_all_indicators() -> None:
         try:
             # Llamada sin matype para máxima compatibilidad
             upper, middle, lower = talib.BBANDS(close_arr, timeperiod=20, nbdevup=2, nbdevdn=2)
-            
+
             upper_val = get_last_valid(upper, "BB Upper")
             middle_val = get_last_valid(middle, "BB Middle")
             lower_val = get_last_valid(lower, "BB Lower")
             current_price = close_arr[-1]
-            
+
             if upper_val is not None:
                 temp_cache["upper_band"] = upper_val
             if middle_val is not None:
                 temp_cache["middle_band"] = middle_val
             if lower_val is not None:
                 temp_cache["lower_band"] = lower_val
-                
+
             # Calcular percent_b y bandwidth si tenemos todas las bandas
             # Inicializar valores por defecto
             percent_b = 0.5
@@ -336,7 +336,7 @@ def _calculate_and_store_all_indicators() -> None:
             if bandwidth is not None:
                 temp_cache["bandwidth"] = float(bandwidth)
                 temp_cache["bandwidth_pct"] = float(bandwidth * 100)
-                
+
                 # Squeeze detection: bandwidth menor al percentil 20 de los últimos 20 períodos
                 if len(close_buf) >= 20:
                     # Calcular bandwidth histórico para detectar squeeze
@@ -353,7 +353,7 @@ def _calculate_and_store_all_indicators() -> None:
                                         historical_bandwidths.append(hist_bw)
                                 except Exception:
                                     continue
-                    
+
                     if historical_bandwidths:
                         squeeze_threshold = np.percentile(historical_bandwidths, 20)
                         temp_cache["squeeze_status"] = bool(bandwidth is not None and bandwidth < squeeze_threshold)
@@ -361,7 +361,7 @@ def _calculate_and_store_all_indicators() -> None:
                     else:
                         temp_cache["squeeze_status"] = False
                         temp_cache["bollinger_squeeze"] = False
-                
+
                 # Band position
                 if percent_b <= 0:
                     temp_cache["band_position"] = "BELOW_LOWER"
@@ -373,9 +373,9 @@ def _calculate_and_store_all_indicators() -> None:
                     temp_cache["band_position"] = "UPPER"
                 else:
                     temp_cache["band_position"] = "MIDDLE"
-                    
+
                 temp_cache["bollinger_position"] = temp_cache["band_position"]
-                
+
         except Exception as e:
             logger.warning(f"Error calculating Bollinger Bands: {e}")
 
@@ -385,7 +385,7 @@ def _calculate_and_store_all_indicators() -> None:
             temp_cache["ma50"] = get_last_valid(talib.SMA(close_arr, timeperiod=50), "MA50")
         except Exception as e:
             logger.warning(f"Error calculating MA50: {e}")
-    
+
     # ADX
     if talib and current_len >= 14 * 2 - 1 and np.all(np.isfinite(high_arr)) and np.all(np.isfinite(low_arr)) and np.all(np.isfinite(close_arr)):
         try:
@@ -408,7 +408,7 @@ def _calculate_and_store_all_indicators() -> None:
             temp_cache["obv"] = get_last_valid(talib.OBV(close_arr, vol_arr), "OBV")
         except Exception as e:
             logger.warning(f"Error calculating OBV: {e}")
-    
+
     # ATR
     if current_len >= 14 + 1:
         try:
@@ -538,7 +538,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["vpvr_value_area_low"] = float(min(value_area_prices))
         except Exception as e:
             logger.warning(f"Error calculating VPVR: {e}")
-    
+
     # Update indicator sequence buffers (optional, if needed elsewhere)
     if temp_cache.get("rsi") is not None and isinstance(temp_cache["rsi"], float):
         rsi_seq_buf.append(temp_cache["rsi"])
@@ -550,7 +550,7 @@ def _calculate_and_store_all_indicators() -> None:
         adx_seq_buf.append(temp_cache["adx"])
     if temp_cache.get("atr") is not None and isinstance(temp_cache["atr"], float):
         atr_seq_buf.append(temp_cache["atr"])
-    
+
     # NOTE: Cache will be updated at the end of the method after all indicators are calculated
 
     # EMA 9
@@ -562,7 +562,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["ema_9"] = get_last_valid(_ema(close_arr, 9), "EMA 9")
         except Exception as e:
             logger.warning(f"Error calculating EMA 9: {e}")
-    
+
     # EMA 20 (faltante)
     if current_len >= 20:
         try:
@@ -572,7 +572,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["ema_20"] = get_last_valid(_ema(close_arr, 20), "EMA 20")
         except Exception as e:
             logger.warning(f"Error calculating EMA 20: {e}")
-    
+
     # EMA 21
     if current_len >= 21:
         try:
@@ -582,7 +582,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["ema_21"] = get_last_valid(_ema(close_arr, 21), "EMA 21")
         except Exception as e:
             logger.warning(f"Error calculating EMA 21: {e}")
-    
+
     # SMA 20 (faltante)
     if current_len >= 20:
         try:
@@ -592,7 +592,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["sma_20"] = float(np.mean(close_arr[-20:]))
         except Exception as e:
             logger.warning(f"Error calculating SMA 20: {e}")
-    
+
     # MA 50 (faltante)
     if current_len >= 50:
         try:
@@ -602,7 +602,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["ma_50"] = float(np.mean(close_arr[-50:]))
         except Exception as e:
             logger.warning(f"Error calculating MA 50: {e}")
-    
+
     # MA 200 (faltante)
     if current_len >= 200:
         try:
@@ -612,7 +612,7 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["ma_200"] = float(np.mean(close_arr[-200:]))
         except Exception as e:
             logger.warning(f"Error calculating MA 200: {e}")
-    
+
     # Williams %R (faltante - OSCILLATORS)
     if current_len >= 14:
         try:
@@ -631,7 +631,7 @@ def _calculate_and_store_all_indicators() -> None:
                     logger.debug("Not enough data for manual Williams %R")
         except Exception as e:
             logger.warning(f"Error calculating Williams %R: {e}")
-    
+
     # CCI - Commodity Channel Index (faltante - OSCILLATORS)
     if current_len >= 20:
         try:
@@ -647,7 +647,7 @@ def _calculate_and_store_all_indicators() -> None:
                     temp_cache["cci"] = float(cci)
         except Exception as e:
             logger.warning(f"Error calculating CCI: {e}")
-    
+
     # ROC - Rate of Change (faltante - OSCILLATORS)
     if current_len >= 10:
         try:
@@ -662,7 +662,7 @@ def _calculate_and_store_all_indicators() -> None:
                     temp_cache["roc"] = float(roc)
         except Exception as e:
             logger.warning(f"Error calculating ROC: {e}")
-    
+
     # Stochastic Oscillator (faltante - MOMENTUM)
     if current_len >= 14:
         try:
@@ -706,7 +706,7 @@ def _calculate_and_store_all_indicators() -> None:
                     logger.debug("Not enough data for manual Stochastic calculation")
         except Exception as e:
             logger.warning(f"Error calculating Stochastic: {e}")
-    
+
     # MACD completo (faltante - MOMENTUM)
     if current_len >= 26:
         try:
@@ -726,7 +726,7 @@ def _calculate_and_store_all_indicators() -> None:
                     temp_cache["macd_histogram"] = macd_result[2]
         except Exception as e:
             logger.warning(f"Error calculating complete MACD: {e}")
-    
+
     # Bollinger Bands completas (faltante - VOLATILITY)
     if current_len >= 20:
         try:
@@ -735,19 +735,19 @@ def _calculate_and_store_all_indicators() -> None:
                 temp_cache["bollinger_upper"] = get_last_valid(bb_upper, "Bollinger Upper")
                 temp_cache["bollinger_middle"] = get_last_valid(bb_middle, "Bollinger Middle")
                 temp_cache["bollinger_lower"] = get_last_valid(bb_lower, "Bollinger Lower")
-                
+
                 # Calcular ancho de bandas
                 upper_val = get_last_valid(bb_upper, "Bollinger Upper")
                 lower_val = get_last_valid(bb_lower, "Bollinger Lower")
                 middle_val = get_last_valid(bb_middle, "Bollinger Middle")
-                
+
                 if upper_val is not None and lower_val is not None and middle_val is not None:
                     temp_cache["bollinger_width"] = float((upper_val - lower_val) / middle_val * 100)
             else:
                 # Implementación manual de Bollinger Bands
                 sma_20 = np.mean(close_arr[-20:])
                 std_20 = np.std(close_arr[-20:])
-                
+
                 temp_cache["bollinger_middle"] = float(sma_20)
                 temp_cache["bollinger_upper"] = float(sma_20 + (2 * std_20))
                 temp_cache["bollinger_lower"] = float(sma_20 - (2 * std_20))
@@ -820,14 +820,14 @@ def _calculate_and_store_all_indicators() -> None:
                 period=10,
                 multiplier=3.0
             )
-            
+
             if supertrend_result and supertrend_result.get('supertrend') is not None:
                 temp_cache["supertrend"] = supertrend_result['supertrend']
                 temp_cache["supertrend_direction"] = supertrend_result['direction']
                 temp_cache["supertrend_signal"] = supertrend_result['signal']
                 temp_cache["supertrend_color"] = supertrend_result['trend_color']
                 temp_cache["supertrend_price_position"] = supertrend_result['price_vs_supertrend']
-                
+
                 # Agregar información adicional para el análisis
                 if supertrend_result.get('atr'):
                     temp_cache["supertrend_atr"] = supertrend_result['atr']
@@ -835,14 +835,14 @@ def _calculate_and_store_all_indicators() -> None:
                     temp_cache["supertrend_upper_band"] = supertrend_result['upper_band']
                 if supertrend_result.get('lower_band'):
                     temp_cache["supertrend_lower_band"] = supertrend_result['lower_band']
-                    
+
         except Exception as e:
             logger.warning(f"Error calculating SuperTrend: {e}")
 
     # Update the main cache
     _latest_indicators_cache = temp_cache
 
-def get_current_indicators() -> Dict[str, Any]:
+def get_current_indicators() -> dict[str, Any]:
     """
     Returns a dictionary of the latest calculated technical indicators.
     Always returns basic data (price, volume) if available, even with insufficient data for complex indicators.
@@ -851,31 +851,31 @@ def get_current_indicators() -> Dict[str, Any]:
     with _buffer_lock:
         # Always try to provide basic data first
         indicators = {}
-        
+
         # Add essential non-TA-Lib data if we have at least one candle
         if len(close_buf) > 0 and len(vol_buf) > 0:
             try:
                 indicators["last_price"] = float(close_buf[-1])
                 indicators["curr_vol"] = float(vol_buf[-1])
-                
+
                 vol_period = min(20, len(vol_buf))
                 if vol_period > 0:
                     vol_slice = list(vol_buf)[-vol_period:]
                     indicators["avg_vol_20"] = float(np.mean(vol_slice))
                 else:
                     indicators["avg_vol_20"] = 0.0
-                    
+
                 logger.debug(f"Basic indicators available: last_price={indicators['last_price']}, curr_vol={indicators['curr_vol']}")
-                    
+
             except (IndexError, ValueError) as e:
                 logger.error(f"Error accessing basic data: {e}")
                 return {}  # Critical basic data missing
-        
+
         # Check if we have enough data for complex indicators
         if len(close_buf) < MIN_CANDLES_FOR_RELIABLE_CALC:
             logger.debug(f"Not enough data for complex indicators: {len(close_buf)}/{MIN_CANDLES_FOR_RELIABLE_CALC}, returning basic data only")
             return indicators
-        
+
         # If cache is empty but we have enough data, try to calculate complex indicators
         if not _latest_indicators_cache and len(close_buf) >= MIN_CANDLES_FOR_CALC:
             _calculate_and_store_all_indicators()
@@ -914,7 +914,7 @@ def get_current_indicators() -> Dict[str, Any]:
         # Filter out any None values before returning, consumers should handle missing keys
         return {k: v for k, v in indicators.items() if v is not None}
 
-def get_indicator_sequences(sequence_length: int = 10) -> Dict[str, List[float]]:
+def get_indicator_sequences(sequence_length: int = 10) -> dict[str, list[float]]:
     """
     Returns recent sequences of specified indicators. Thread-safe.
     """
@@ -927,10 +927,10 @@ def get_indicator_sequences(sequence_length: int = 10) -> Dict[str, List[float]]
         if not _latest_indicators_cache and len(close_buf) >= MIN_CANDLES_FOR_CALC:
              _calculate_and_store_all_indicators()
 
-        sequences: Dict[str, List[float]] = {}
-        
+        sequences: dict[str, list[float]] = {}
+
         # Helper to safely get sequence
-        def _get_seq(buf: Deque[float], name: str) -> List[float]:
+        def _get_seq(buf: deque[float], name: str) -> list[float]:
             if len(buf) >= sequence_length:
                 seq = list(buf)[-sequence_length:]
                 if all(isinstance(x, (int, float)) and np.isfinite(x) for x in seq):
@@ -949,7 +949,7 @@ def get_indicator_sequences(sequence_length: int = 10) -> Dict[str, List[float]]
         sequences["macd_signal_seq"] = _get_seq(macd_signal_seq_buf, "macd_signal")
         sequences["adx_seq"] = _get_seq(adx_seq_buf, "adx")
         sequences["atr_seq"] = _get_seq(atr_seq_buf, "atr")
-        
+
         return {k: v for k, v in sequences.items() if v} # Return only non-empty sequences
 
 def clear_all_buffers() -> None:
@@ -959,17 +959,17 @@ def clear_all_buffers() -> None:
         high_buf.clear()
         low_buf.clear()
         vol_buf.clear()
-        
+
         rsi_seq_buf.clear()
         macd_line_seq_buf.clear()
         macd_signal_seq_buf.clear()
         adx_seq_buf.clear()
         atr_seq_buf.clear()
-        
+
         _latest_indicators_cache.clear()
         logger.info("All technical tool buffers and cache cleared.")
 
-def get_buffer_status() -> Dict[str, int]:
+def get_buffer_status() -> dict[str, int]:
     """Returns the current length of primary data buffers."""
     with _buffer_lock:
         return {
@@ -989,45 +989,45 @@ calc_indicators = get_current_indicators
 def calculate_supertrend(high_prices, low_prices, close_prices, period=10, multiplier=3.0):
     """
     Calcula el indicador SuperTrend correctamente.
-    
+
     Args:
         high_prices: Lista de precios máximos
         low_prices: Lista de precios mínimos  
         close_prices: Lista de precios de cierre
         period: Período para el ATR (default: 10)
         multiplier: Multiplicador para el ATR (default: 3.0)
-    
+
     Returns:
         dict con 'supertrend', 'direction', 'signal', 'trend_color'
     """
     if len(high_prices) < period + 2:
         return {'supertrend': None, 'direction': 'neutral', 'signal': 'HOLD', 'trend_color': 'neutral'}
-    
+
     try:
         # Convertir a numpy arrays para cálculos más eficientes
         highs = np.array(high_prices)
         lows = np.array(low_prices)
         closes = np.array(close_prices)
-        
+
         # Calcular True Range
         tr1 = highs[1:] - lows[1:]
         tr2 = np.abs(highs[1:] - closes[:-1])
         tr3 = np.abs(lows[1:] - closes[:-1])
         tr = np.maximum(tr1, np.maximum(tr2, tr3))
-        
+
         # Calcular ATR usando media móvil simple
         atr_values = []
         for i in range(len(tr)):
             start_idx = max(0, i - period + 1)
             atr_values.append(np.mean(tr[start_idx:i+1]))
-        
+
         # Calcular líneas base (HL2)
         hl2 = (highs + lows) / 2
-        
+
         # Calcular bandas superiores e inferiores
         upper_bands = []
         lower_bands = []
-        
+
         for i in range(len(atr_values)):
             idx = i + 1  # Ajustar índice porque ATR empieza desde el segundo elemento
             if idx < len(hl2):
@@ -1035,21 +1035,21 @@ def calculate_supertrend(high_prices, low_prices, close_prices, period=10, multi
                 lower_band = hl2[idx] - (multiplier * atr_values[i])
                 upper_bands.append(upper_band)
                 lower_bands.append(lower_band)
-        
+
         if not upper_bands or not lower_bands:
             return {'supertrend': None, 'direction': 'neutral', 'signal': 'HOLD', 'trend_color': 'neutral'}
-        
+
         # Calcular SuperTrend final
         supertrend_values = []
         trend_directions = []
-        
+
         for i in range(len(upper_bands)):
             close_idx = i + 1  # Ajustar índice
             if close_idx >= len(closes):
                 break
-                
+
             current_close = closes[close_idx]
-            
+
             if i == 0:
                 # Primera iteración
                 if current_close > upper_bands[i]:
@@ -1062,7 +1062,7 @@ def calculate_supertrend(high_prices, low_prices, close_prices, period=10, multi
                 # Iteraciones siguientes
                 prev_supertrend = supertrend_values[-1]
                 prev_direction = trend_directions[-1]
-                
+
                 # Lógica del SuperTrend
                 if prev_direction == 'bullish':
                     if current_close < lower_bands[i]:
@@ -1082,25 +1082,25 @@ def calculate_supertrend(high_prices, low_prices, close_prices, period=10, multi
                         new_supertrend = min(upper_bands[i], prev_supertrend)
                         supertrend_values.append(new_supertrend)
                         trend_directions.append('bearish')
-        
+
         if not supertrend_values or not trend_directions:
             return {'supertrend': None, 'direction': 'neutral', 'signal': 'HOLD', 'trend_color': 'neutral'}
-        
+
         # Obtener valores finales
         final_supertrend = supertrend_values[-1]
         final_direction = trend_directions[-1]
         current_price = closes[-1]
-        
+
         # Determinar señal basada en cambio de tendencia
         signal = 'HOLD'
         if len(trend_directions) > 1:
             prev_direction = trend_directions[-2]
             if prev_direction != final_direction:
                 signal = 'BUY' if final_direction == 'bullish' else 'SELL'
-        
+
         # Determinar color de la línea
         trend_color = 'green' if final_direction == 'bullish' else 'red'
-        
+
         return {
             'supertrend': round(final_supertrend, 4),
             'direction': final_direction,
@@ -1111,7 +1111,7 @@ def calculate_supertrend(high_prices, low_prices, close_prices, period=10, multi
             'lower_band': round(lower_bands[-1], 4) if lower_bands else 0,
             'price_vs_supertrend': 'above' if current_price > final_supertrend else 'below'
         }
-        
+
     except Exception as e:
         logger.error(f"Error calculating SuperTrend: {e}")
         return {'supertrend': None, 'direction': 'neutral', 'signal': 'HOLD', 'trend_color': 'neutral'}

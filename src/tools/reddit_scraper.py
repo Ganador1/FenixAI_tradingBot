@@ -20,14 +20,14 @@ logger = logging.getLogger(__name__)
 # Caché módulo-level: Reddit limita ~1 req/s por IP en RSS y el engine da un
 # presupuesto de 10s por fuente (FENIX_SENTIMENT_FETCH_TIMEOUT_SEC), así que
 # se reusan títulos recientes entre ciclos de análisis.
-_TITLE_CACHE: Dict[str, tuple[float, List[str]]] = {}
+_TITLE_CACHE: dict[str, tuple[float, list[str]]] = {}
 # Último intento (éxito o no) por subreddit, para rotar de forma justa aunque
 # haya 429s repetidos.
-_LAST_ATTEMPT: Dict[str, float] = {}
+_LAST_ATTEMPT: dict[str, float] = {}
 # A 429 must be treated as a degraded source, not as an invitation to retry on
 # every analysis cycle.  The backoff is shared by all scraper instances in one
 # bot process, exactly like the title cache.
-_BACKOFF_UNTIL: Dict[str, float] = {}
+_BACKOFF_UNTIL: dict[str, float] = {}
 
 class RedditScraper(BaseTool):
     name: str = "RedditPostTitleScraper" # More descriptive name
@@ -40,7 +40,7 @@ class RedditScraper(BaseTool):
         super().__init__(**kwargs)
         self._mlx_model_name = get_agent_model('sentiment')
 
-    def get_source_health(self) -> Dict[str, object]:
+    def get_source_health(self) -> dict[str, object]:
         """Expose cache/backoff state so sentiment can discount unavailable Reddit data."""
         now = time.time()
         blocked = {
@@ -56,9 +56,9 @@ class RedditScraper(BaseTool):
 
     def _run(
         self,
-        subreddits: Optional[List[str]] = None,
+        subreddits: list[str] | None = None,
         limit_per_subreddit: int = 25 # Reduced default for efficiency
-    ) -> Dict[str, List[str]]:
+    ) -> dict[str, list[str]]:
         """
         Args:
             subreddits: List of subreddits (without 'r/' prefix). 
@@ -73,13 +73,13 @@ class RedditScraper(BaseTool):
             # Lista corta de alta señal: con el rate limit de Reddit (~1 req/s en
             # RSS) y el presupuesto de 10s del engine no caben 8 subreddits.
             subreddits = ["CryptoCurrency", "bitcoin", "ethereum", "CryptoMarkets"]
-        
+
         # Reddit bloquea los endpoints JSON públicos (403 con HTML) desde ~2026;
         # el feed RSS/Atom sigue abierto, así que se usa ese con feedparser.
         headers = {
             "User-Agent": "FenixAI-sentiment/1.0 (crypto news aggregator)"
         }
-        all_titles_by_subreddit: Dict[str, List[str]] = {}
+        all_titles_by_subreddit: dict[str, list[str]] = {}
         request_timeout = 8 # seconds
         try:
             cache_ttl = float(os.getenv("FENIX_REDDIT_CACHE_TTL_SEC", "600"))
@@ -106,7 +106,7 @@ class RedditScraper(BaseTool):
         except ValueError:
             transient_backoff = 120.0
 
-        def _cached_titles(sub_name: str, max_age: float) -> Optional[List[str]]:
+        def _cached_titles(sub_name: str, max_age: float) -> list[str] | None:
             entry = _TITLE_CACHE.get(sub_name)
             if entry and (time.time() - entry[0]) < max_age:
                 return entry[1][:limit_per_subreddit]
@@ -199,7 +199,7 @@ class RedditScraper(BaseTool):
                 logger.error(f"[RedditScraper] Unexpected error scraping /r/{subreddit_name_cleaned}: {e}", exc_info=True)
                 _BACKOFF_UNTIL[subreddit_name_cleaned] = time.time() + transient_backoff
                 all_titles_by_subreddit[subreddit_name_cleaned] = _cached_titles(subreddit_name_cleaned, float("inf")) or []
-        
+
         total_titles_scraped = sum(len(t) for t in all_titles_by_subreddit.values())
         logger.info(f"[RedditScraper] Reddit scraping complete. Total titles fetched: {total_titles_scraped}")
         return all_titles_by_subreddit
@@ -207,11 +207,11 @@ class RedditScraper(BaseTool):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     scraper = RedditScraper()
-    
+
     # Example usage:
     # specific_subs = ["wallstreetbets", "stocks"]
     # results = scraper._run(subreddits=specific_subs, limit_per_subreddit=5)
-    
+
     results = scraper._run(limit_per_subreddit=3) # Test with default subreddits
 
     for subreddit, titles_list in results.items():

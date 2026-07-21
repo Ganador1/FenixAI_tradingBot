@@ -27,7 +27,7 @@ async def lctool_get_smart_money_signals(
         signals = await get_smart_money_signals(chain_id=chain_id, signal_type=signal_type)
         if not signals:
             return "No smart money signals found currently for this network."
-        
+
         return format_smart_money_for_agent(signals, max_items=8)
     except Exception as e:
         logger.error(f"Error fetching smart money signals: {e}")

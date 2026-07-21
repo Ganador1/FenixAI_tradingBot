@@ -15,7 +15,7 @@ class FearGreedTool(BaseTool):
     name: str = "FearGreedIndexTool" # Renamed for clarity
     description: str = "Fetches the latest Crypto Fear & Greed Index value from Alternative.me API."
 
-    def _run(self, limit: int = 1) -> Optional[str]: # Return type is string value or None
+    def _run(self, limit: int = 1) -> str | None: # Return type is string value or None
         """
         Fetches the Fear & Greed Index.
 
@@ -29,9 +29,9 @@ class FearGreedTool(BaseTool):
         try:
             response = requests.get(url, timeout=10) # Added timeout
             response.raise_for_status()  # Raise HTTPError for bad responses (4XX or 5XX)
-            
-            data: Dict[str, Any] = response.json()
-            
+
+            data: dict[str, Any] = response.json()
+
             if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                 latest_entry = data["data"][0]
                 if "value" in latest_entry:
@@ -42,7 +42,7 @@ class FearGreedTool(BaseTool):
                     logger.warning("Fear & Greed API response 'data' entry missing 'value' field.")
             else:
                 logger.warning("Fear & Greed API response missing 'data' list or data is empty.")
-                
+
         except requests.exceptions.Timeout:
             logger.error(f"Timeout while fetching Fear & Greed Index from {url}.")
         except requests.exceptions.HTTPError as http_err:
@@ -53,10 +53,10 @@ class FearGreedTool(BaseTool):
             logger.error(f"Error decoding JSON response from Fear & Greed API: {json_err}")
         except Exception as e:
             logger.error(f"Unexpected error fetching Fear & Greed Index: {e}", exc_info=True)
-            
+
         return None # Return None on any error
 
-    def get_value_with_trend(self) -> Optional[str]:
+    def get_value_with_trend(self) -> str | None:
         """Fetch today's and yesterday's F&G and return a trend-aware string.
 
         "27" is ambiguous; "27 (yesterday 41, change -14)" reveals a macro
@@ -66,7 +66,7 @@ class FearGreedTool(BaseTool):
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
-            data: Dict[str, Any] = response.json()
+            data: dict[str, Any] = response.json()
             entries = data.get("data") or []
             if not entries or "value" not in entries[0]:
                 return None

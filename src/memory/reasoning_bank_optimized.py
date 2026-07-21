@@ -14,7 +14,8 @@ import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional
+from collections.abc import Callable
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -45,22 +46,22 @@ def _keyword_tokens(text: str) -> set[str]:
 class ReasoningBankOptimized:
     """
     ReasoningBank con backend SQLite optimizado.
-    
+
     Mejoras:
     - SQLite + índices en lugar de re-escritura O(n)
     - Append-only para inserts (O(1))
     - Updates por digest (O(log n) con índice)
     - Búsquedas por similitud aceleradas
     """
-    
+
     def __init__(
         self,
         storage_dir: str = "logs/reasoning_bank",
         max_entries_per_agent: int = 500,
         use_embeddings: bool = True,
         embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        embedding_device: Optional[str] = None,
-        embedding_backend: Optional[Callable[[str], List[float]]] = None,
+        embedding_device: str | None = None,
+        embedding_backend: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -71,16 +72,16 @@ class ReasoningBankOptimized:
         self.use_embeddings = bool(
             embedding_backend is not None or (use_embeddings and SentenceTransformer is not None)
         )
-        self._embedding_model: Optional[Any] = None
+        self._embedding_model: Any | None = None
         self._embedding_lock = threading.Lock()
         self._lock = threading.RLock()
-        
+
         # SQLite path
         self.db_path = self.storage_dir / "reasoning_bank.db"
-        
+
         # Inicializar schema
         self._init_db()
-    
+
     def _init_db(self) -> None:
         """Inicializa el schema SQLite."""
         with sqlite3.connect(self.db_path) as conn:
@@ -115,14 +116,14 @@ class ReasoningBankOptimized:
                     judged_at TEXT
                 )
             """)
-            
+
             # Índices para queries comunes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent ON reasoning_entries(agent)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_digest ON reasoning_entries(prompt_digest)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON reasoning_entries(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_created ON reasoning_entries(agent, created_at)")
-    
-    def _embed_text(self, text: str) -> Optional[List[float]]:
+
+    def _embed_text(self, text: str) -> list[float] | None:
         """Genera embedding para el texto."""
         if not text or not self.use_embeddings:
             return None
@@ -133,11 +134,11 @@ class ReasoningBankOptimized:
             except Exception as exc:
                 logger.warning(f"Embedding backend failed: {exc}")
                 return None
-        
+
         # Cargar modelo SentenceTransformer si no está disponible
         if SentenceTransformer is None:
             return None
-        
+
         with self._embedding_lock:
             if self._embedding_model is None:
                 try:
@@ -149,27 +150,27 @@ class ReasoningBankOptimized:
                     logger.warning(f"Could not load embedding model: {exc}")
                     self.use_embeddings = False
                     return None
-            
+
             try:
                 vector = self._embedding_model.encode(text, normalize_embeddings=True)
                 return vector.tolist() if hasattr(vector, "tolist") else list(vector)
             except Exception as exc:
                 logger.warning(f"Could not generate embedding: {exc}")
                 return None
-    
+
     def store_entry(
         self,
         agent_name: str,
         prompt: str,
-        normalized_result: Dict[str, Any],
+        normalized_result: dict[str, Any],
         raw_response: str,
         backend: str,
-        latency_ms: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> "ReasoningEntryOptimized":
+        latency_ms: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ReasoningEntryOptimized:
         """Almacena una entry (O(1) append-only)."""
         digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
-        
+
         # Extraer campos del resultado
         action_value = str(normalized_result.get("action", "") or "")
         if not action_value:
@@ -178,7 +179,7 @@ class ReasoningBankOptimized:
                 or normalized_result.get("signal")
                 or "UNKNOWN"
             )
-        
+
         confidence_value = normalized_result.get("confidence")
         if confidence_value is None:
             conf_str = str(normalized_result.get("confidence_in_decision", "")).upper()
@@ -188,18 +189,18 @@ class ReasoningBankOptimized:
             confidence_value = float(confidence_value)
         except (TypeError, ValueError):
             confidence_value = 0.5
-        
+
         reasoning_text = (
             normalized_result.get("reason")
             or normalized_result.get("reasoning")
             or normalized_result.get("combined_reasoning")
             or raw_response[:500]
         )
-        
+
         # Timestamps
         now = datetime.now()
         created_at_iso = now.astimezone().isoformat()
-        
+
         # Generar embedding
         embedding_text = f"{prompt}\n{reasoning_text}".strip()
         embedding_json = None
@@ -207,7 +208,7 @@ class ReasoningBankOptimized:
             emb_vec = self._embed_text(embedding_text)
             if emb_vec:
                 embedding_json = json.dumps(emb_vec)
-        
+
         # Insertar en SQLite
         with self._lock:
             with sqlite3.connect(self.db_path) as conn:
@@ -233,7 +234,7 @@ class ReasoningBankOptimized:
                     """, (str(reasoning_text), action_value, confidence_value, backend,
                           latency_ms, json.dumps(metadata or {}), created_at_iso, embedding_json,
                           agent_name, digest))
-                
+
                 # Prune si supera límite por agente
                 conn.execute("""
                     DELETE FROM reasoning_entries WHERE agent = ? AND prompt_digest NOT IN (
@@ -241,9 +242,9 @@ class ReasoningBankOptimized:
                         WHERE agent = ? ORDER BY created_at DESC LIMIT ?
                     )
                 """, (agent_name, agent_name, self.max_entries_per_agent))
-        
+
         logger.info(f"ReasoningBank: Stored entry for {agent_name} with digest {digest[:8]}")
-        
+
         return ReasoningEntryOptimized(
             agent=agent_name,
             prompt_digest=digest,
@@ -257,8 +258,8 @@ class ReasoningBankOptimized:
             created_at=created_at_iso,
             embedding=embedding_json,
         )
-    
-    def get_recent(self, agent_name: str, limit: int = 5) -> List["ReasoningEntryOptimized"]:
+
+    def get_recent(self, agent_name: str, limit: int = 5) -> list[ReasoningEntryOptimized]:
         """Obtiene entries recientes (O(log n) con índice)."""
         with self._lock:
             with sqlite3.connect(self.db_path) as conn:
@@ -269,11 +270,11 @@ class ReasoningBankOptimized:
                     ORDER BY created_at DESC
                     LIMIT ?
                 """, (agent_name, limit))
-                
+
                 rows = cursor.fetchall()
                 return [self._row_to_entry(row) for row in rows]
-    
-    def _row_to_entry(self, row: sqlite3.Row) -> "ReasoningEntryOptimized":
+
+    def _row_to_entry(self, row: sqlite3.Row) -> ReasoningEntryOptimized:
         """Convierte un row SQLite a ReasoningEntry."""
         return ReasoningEntryOptimized(
             agent=row["agent"],
@@ -303,17 +304,17 @@ class ReasoningBankOptimized:
             judge_success_estimate=bool(row["judge_success_estimate"]) if row["judge_success_estimate"] is not None else None,
             judged_at=row["judged_at"],
         )
-    
+
     def update_entry_outcome(
         self,
         agent_name: str,
         prompt_digest: str,
         success: bool,
         reward: float,
-        trade_id: Optional[str] = None,
-        reward_signal: Optional[float] = None,
-        near_miss: Optional[bool] = None,
-        reward_notes: Optional[str] = None,
+        trade_id: str | None = None,
+        reward_signal: float | None = None,
+        near_miss: bool | None = None,
+        reward_notes: str | None = None,
     ) -> bool:
         """Actualiza outcome de una entry (O(log n) con índice)."""
         with self._lock:
@@ -329,19 +330,19 @@ class ReasoningBankOptimized:
                     reward_notes, datetime.utcnow().isoformat(),
                     agent_name, prompt_digest
                 ))
-                
+
                 if cursor.rowcount > 0:
                     logger.info(f"ReasoningBank: Updated outcome for {prompt_digest[:8]}")
                     return True
                 else:
                     logger.warning(f"ReasoningBank: Entry not found: {prompt_digest[:8]}")
                     return False
-    
+
     def attach_judge_feedback(
         self,
         agent_name: str,
         prompt_digest: str,
-        judge_payload: Dict[str, Any]
+        judge_payload: dict[str, Any]
     ) -> bool:
         """Atacha feedback del LLM-as-Judge."""
         with self._lock:
@@ -364,13 +365,13 @@ class ReasoningBankOptimized:
                     datetime.utcnow().isoformat(),
                     agent_name, prompt_digest
                 ))
-                
+
                 if cursor.rowcount > 0:
                     logger.info(f"ReasoningBank: Judge feedback attached to {prompt_digest[:8]}")
                     return True
                 return False
-    
-    def search(self, agent_name: str, query: str, limit: int = 5) -> List["ReasoningEntryOptimized"]:
+
+    def search(self, agent_name: str, query: str, limit: int = 5) -> list[ReasoningEntryOptimized]:
         """Búsqueda por keywords (full-scan, optimizado con índice)."""
         query_lower = f"%{query.lower()}%"
         with self._lock:
@@ -385,10 +386,10 @@ class ReasoningBankOptimized:
                     ORDER BY created_at DESC
                     LIMIT ?
                 """, (agent_name, query_lower, query_lower, limit))
-                
+
                 rows = cursor.fetchall()
                 return [self._row_to_entry(row) for row in rows]
-    
+
     def get_relevant_context(
         self,
         agent_name: str,
@@ -396,18 +397,18 @@ class ReasoningBankOptimized:
         limit: int = 3,
         min_similarity: float = 0.3,
         prefer_successful: bool = True
-    ) -> List["ReasoningEntryOptimized"]:
+    ) -> list[ReasoningEntryOptimized]:
         """Recupera contexto relevante con similitud."""
         # Obtener embedding del prompt actual
         current_embedding = None
         if self.use_embeddings:
             current_embedding = self._embed_text(current_prompt)
-        
+
         # Obtener entradas recientes
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
         if not entries:
             return []
-        
+
         # Calcular similitud
         scored = []
         for entry in entries:
@@ -417,16 +418,16 @@ class ReasoningBankOptimized:
                 if prefer_successful and entry.success is True:
                     score *= 1.5
                 scored.append((score, entry))
-        
+
         # Ordenar y retornar top N
         scored.sort(key=lambda x: x[0], reverse=True)
         return [entry for _, entry in scored[:limit]]
-    
+
     def _calculate_similarity(
         self,
         current_prompt: str,
-        current_embedding: Optional[List[float]],
-        entry: "ReasoningEntryOptimized"
+        current_embedding: list[float] | None,
+        entry: ReasoningEntryOptimized
     ) -> float:
         """Calcula similitud entre embeddings o usa fallback."""
         if current_embedding and entry.embedding:
@@ -441,7 +442,7 @@ class ReasoningBankOptimized:
                         return dot / (norm_curr * norm_entry)
             except Exception:
                 pass
-        
+
         # Fallback: keyword overlap
         current_words = _keyword_tokens(str(current_prompt))
         entry_text = f"{entry.prompt or ''} {entry.reasoning or ''}"
@@ -451,8 +452,8 @@ class ReasoningBankOptimized:
             intersection = current_words & entry_words
             return len(intersection) / len(overlap)
         return 0.0
-    
-    def get_success_rate(self, agent_name: str, lookback: int = 50) -> Dict[str, Any]:
+
+    def get_success_rate(self, agent_name: str, lookback: int = 50) -> dict[str, Any]:
         """Calcula tasa de éxito para un agente."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
@@ -461,14 +462,14 @@ class ReasoningBankOptimized:
                 ORDER BY created_at DESC
                 LIMIT ?
             """, (agent_name, lookback))
-            
+
             rows = cursor.fetchall()
             if not rows:
                 return {"total_evaluated": 0, "success_rate": 0.0, "avg_reward": 0.0}
-            
+
             successful = sum(1 for r in rows if r[0] == 1)
             total_reward = sum(r[1] or 0.0 for r in rows)
-            
+
             return {
                 "total_evaluated": len(rows),
                 "successful": successful,
@@ -488,33 +489,33 @@ class ReasoningEntryOptimized:
     action: str
     confidence: float
     backend: str
-    latency_ms: Optional[float]
-    metadata: Dict[str, Any]
+    latency_ms: float | None
+    metadata: dict[str, Any]
     created_at: str
-    embedding: Optional[str] = None  # JSON string
-    
+    embedding: str | None = None  # JSON string
+
     # Outcome fields
-    success: Optional[bool] = None
-    reward: Optional[float] = None
-    reward_signal: Optional[float] = None
-    near_miss: Optional[bool] = None
-    reward_notes: Optional[str] = None
-    evaluated_at: Optional[str] = None
-    trade_id: Optional[str] = None
-    
+    success: bool | None = None
+    reward: float | None = None
+    reward_signal: float | None = None
+    near_miss: bool | None = None
+    reward_notes: str | None = None
+    evaluated_at: str | None = None
+    trade_id: str | None = None
+
     # Judge feedback fields
-    judge_verdict: Optional[str] = None
-    judge_score: Optional[float] = None
-    judge_confidence: Optional[float] = None
-    judge_notes: Optional[str] = None
-    judge_tags: Optional[str] = None
-    judge_metadata: Optional[str] = None
-    judge_success_estimate: Optional[bool] = None
-    judged_at: Optional[str] = None
+    judge_verdict: str | None = None
+    judge_score: float | None = None
+    judge_confidence: float | None = None
+    judge_notes: str | None = None
+    judge_tags: str | None = None
+    judge_metadata: str | None = None
+    judge_success_estimate: bool | None = None
+    judged_at: str | None = None
 
 
 # Singleton
-_reasoning_bank_opt: Optional[ReasoningBankOptimized] = None
+_reasoning_bank_opt: ReasoningBankOptimized | None = None
 _reasoning_lock = threading.Lock()
 
 
