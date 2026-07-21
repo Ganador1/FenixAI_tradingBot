@@ -13,7 +13,7 @@ class TradeMemory:
         self.memory_file = Path(memory_file)
         self.memory_file.parent.mkdir(parents=True, exist_ok=True)
         self.max_trades = max_trades
-        self.trades: List[Dict[str, Any]] = []
+        self.trades: list[dict[str, Any]] = []
         # Parámetros de reward shaping inspirados en ReasoningBank paper
         self.reward_clip = 2.0
         self.reward_scale_pct = 0.25  # 0.25% de movimiento = reward 1.0
@@ -21,12 +21,12 @@ class TradeMemory:
         self.near_miss_pct = 0.15  # +/-0.15% se considera near miss
         self.near_miss_abs = 5.0   # o +/-$5 cuando no hay entry_price
         self._load_memory()
-    
+
     def _load_memory(self):
         """Carga trades anteriores del archivo"""
         if self.memory_file.exists():
             try:
-                with open(self.memory_file, 'r') as f:
+                with open(self.memory_file) as f:
                     data = json.load(f)
                     self.trades = data.get('trades', [])
                     # Mantener solo los últimos max_trades
@@ -34,8 +34,8 @@ class TradeMemory:
             except Exception as e:
                 logger.error(f"Error cargando memoria de trades: {e}")
                 self.trades = []
-    
-    def save_trade(self, trade_data: Dict[str, Any]):
+
+    def save_trade(self, trade_data: dict[str, Any]):
         """Guarda un nuevo trade en memoria"""
         trade_record = {
             'timestamp': datetime.now().isoformat(),
@@ -54,18 +54,18 @@ class TradeMemory:
             'risk_assessment': trade_data.get('decision_context', {}).get('risk_assessment', {}),
             'market_conditions': trade_data.get('market_conditions', {})
         }
-        
+
         self.trades.append(trade_record)
         if len(self.trades) > self.max_trades:
             self.trades = self.trades[-self.max_trades:]
-        
+
         self._save_to_file()
         # Nuevo: Etiquetado automático de ReasoningBank (self-judgment)
         try:
             self._label_reasoning_entries(trade_record)
         except Exception as e:
             logger.debug(f"Error etiquetando ReasoningBank: {e}")
-    
+
     def _save_to_file(self):
         """Guarda la memoria en archivo"""
         try:
@@ -77,7 +77,7 @@ class TradeMemory:
         except Exception as e:
             logger.error(f"Error guardando memoria: {e}")
 
-    def _label_reasoning_entries(self, trade_record: Dict[str, Any]):
+    def _label_reasoning_entries(self, trade_record: dict[str, Any]):
         """Etiqueta las entradas relevantes del ReasoningBank con el outcome del trade.
 
         Busca la última entrada por agente y la actualiza con success/reward/trade_id.
@@ -141,10 +141,10 @@ class TradeMemory:
 
     def _compute_reward_annotations(
         self,
-        entry_price: Optional[float],
+        entry_price: float | None,
         pnl: float,
     ) -> tuple[float, bool, str]:
-        percent_move: Optional[float] = None
+        percent_move: float | None = None
         if entry_price:
             try:
                 percent_move = (pnl / entry_price) * 100.0
@@ -168,8 +168,8 @@ class TradeMemory:
             notes.append("near_miss=True")
         notes.append(f"reward_signal={reward_signal:.3f}")
         return reward_signal, near_miss, ";".join(notes)
-    
-    def get_recent_trades(self, hours: int = 24) -> List[Dict[str, Any]]:
+
+    def get_recent_trades(self, hours: int = 24) -> list[dict[str, Any]]:
         """Obtiene trades recientes"""
         cutoff = datetime.now() - timedelta(hours=hours)
         recent = []
@@ -181,16 +181,16 @@ class TradeMemory:
             except (KeyError, TypeError, ValueError):
                 continue
         return recent
-    
-    def get_performance_summary(self) -> Dict[str, Any]:
+
+    def get_performance_summary(self) -> dict[str, Any]:
         """Resumen de performance basado en memoria"""
         if not self.trades:
             return {'total_trades': 0, 'win_rate': 0, 'avg_pnl': 0}
-        
+
         wins = sum(1 for t in self.trades if t.get('pnl', 0) > 0)
         total = len(self.trades)
         total_pnl = sum(t.get('pnl', 0) for t in self.trades)
-        
+
         return {
             'total_trades': total,
             'win_rate': (wins / total) * 100 if total > 0 else 0,
@@ -198,21 +198,21 @@ class TradeMemory:
             'total_pnl': total_pnl,
             'recent_trades': self.get_recent_trades(24)
         }
-    
-    def get_similar_contexts(self, current_context: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:
+
+    def get_similar_contexts(self, current_context: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
         """Encuentra trades anteriores con contexto similar"""
         similar_trades = []
-        
+
         current_sentiment = current_context.get('sentiment_analysis', {}).get('overall_sentiment')
         current_technical = current_context.get('numerical_technical_analysis', {}).get('signal')
-        
+
         for trade in reversed(self.trades):  # Más recientes primero
             trade_sentiment = trade.get('decision_context', {}).get('sentiment', {}).get('overall_sentiment')
             trade_technical = trade.get('decision_context', {}).get('technical', {}).get('signal')
-            
+
             if trade_sentiment == current_sentiment and trade_technical == current_technical:
                 similar_trades.append(trade)
                 if len(similar_trades) >= limit:
                     break
-        
+
         return similar_trades

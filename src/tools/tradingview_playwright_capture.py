@@ -47,7 +47,7 @@ class TradingViewPlaywrightCapture:
             await self.playwright.stop()
         logger.info("🔒 Navegador y Playwright cerrados.")
 
-    async def capture_chart_from_url(self, url: str, timeframe: str, symbol: str) -> Optional[bytes]:
+    async def capture_chart_from_url(self, url: str, timeframe: str, symbol: str) -> bytes | None:
         if not self.browser:
             raise RuntimeError("El navegador no está inicializado. Usa 'async with TradingViewPlaywrightCapture() as capture:' .")
         context = None
@@ -63,7 +63,7 @@ class TradingViewPlaywrightCapture:
             }
             if SESSION_FILE.exists() and SESSION_FILE.stat().st_size > 0:
                 try:
-                    with open(SESSION_FILE, 'r') as f:
+                    with open(SESSION_FILE) as f:
                         storage_state = json.load(f)
                     logger.info("🔄 Usando sesión guardada para el nuevo contexto.")
                     context = await self.browser.new_context(storage_state=storage_state, **context_params)
@@ -91,31 +91,31 @@ class TradingViewPlaywrightCapture:
             if viewport_size:
                 await page.mouse.move(viewport_size['width'] / 2, viewport_size['height'] / 2)
                 await page.mouse.click(viewport_size['width'] / 2, viewport_size['height'] / 2)
-            
+
             # Esperar más tiempo para la carga inicial
             await asyncio.sleep(2)
-            
+
             # Esperar a que aparezcan elementos del gráfico
             await page.wait_for_selector('canvas, [class*="chart"]', timeout=45000)
             logger.info("✅ Elementos del gráfico detectados.")
-            
+
             # Cerrar publicidad antes de ocultar elementos UI
             await self._close_advertisements(page)
-            
+
             # Esperar un poco más para que se cierre completamente cualquier modal
             await asyncio.sleep(2)
-            
+
             # Ocultar elementos UI
             await self._hide_ui_elements(page)
-            
+
             # Esperar a que el gráfico se renderice completamente
             logger.info("⏳ Esperando a que el gráfico se renderice completamente...")
-            
+
             # Verificar que hay datos en el gráfico usando JavaScript
             chart_ready = False
             max_attempts = 10
             attempt = 0
-            
+
             while not chart_ready and attempt < max_attempts:
                 try:
                     chart_ready = await page.evaluate("""
@@ -123,14 +123,14 @@ class TradingViewPlaywrightCapture:
                             // Buscar canvas del gráfico
                             const canvases = document.querySelectorAll('canvas');
                             if (canvases.length === 0) return false;
-                            
+
                             // Verificar que hay contenido en el canvas
                             for (let canvas of canvases) {
                                 const ctx = canvas.getContext('2d');
                                 if (ctx) {
                                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                                     const data = imageData.data;
-                                    
+
                                     // Verificar que no es solo transparente/blanco
                                     let hasContent = false;
                                     for (let i = 0; i < data.length; i += 4) {
@@ -138,22 +138,22 @@ class TradingViewPlaywrightCapture:
                                         const g = data[i + 1];
                                         const b = data[i + 2];
                                         const a = data[i + 3];
-                                        
+
                                         // Si encontramos píxeles que no son blancos/transparentes
                                         if (a > 0 && (r < 250 || g < 250 || b < 250)) {
                                             hasContent = true;
                                             break;
                                         }
                                     }
-                                    
+
                                     if (hasContent) return true;
                                 }
                             }
-                            
+
                             return false;
                         }
                     """)
-                    
+
                     if chart_ready:
                         logger.info("✅ Gráfico renderizado con contenido detectado")
                         break
@@ -161,15 +161,15 @@ class TradingViewPlaywrightCapture:
                         logger.info(f"⏳ Esperando renderizado del gráfico... (intento {attempt + 1}/{max_attempts})")
                         await asyncio.sleep(1)
                         attempt += 1
-                        
+
                 except Exception as e:
                     logger.debug(f"Error verificando renderizado: {e}")
                     await asyncio.sleep(1)
                     attempt += 1
-            
+
             if not chart_ready:
                 logger.warning("⚠️ El gráfico puede no estar completamente renderizado")
-            
+
             # Esperar adicional para estabilización
             await asyncio.sleep(2)
             screenshot_bytes = await page.screenshot(type='png', full_page=False)
@@ -202,7 +202,7 @@ class TradingViewPlaywrightCapture:
         """Detecta y cierra publicidad/modales en TradingView"""
         try:
             logger.info("🚫 Buscando y cerrando publicidad...")
-            
+
             # Lista de selectores comunes para botones de cerrar publicidad
             close_selectors = [
                 # Botón X genérico
@@ -213,7 +213,7 @@ class TradingViewPlaywrightCapture:
                 '.close-button',
                 '.modal-close',
                 '.popup-close',
-                
+
                 # Selectores específicos de TradingView
                 '.tv-dialog__close',
                 '.tv-popup__close',
@@ -222,13 +222,13 @@ class TradingViewPlaywrightCapture:
                 '[data-role="button"][aria-label*="Close"]',
                 '[data-role="button"][aria-label*="cerrar"]',
                 '[data-role="button"][aria-label*="Cerrar"]',
-                
+
                 # Selectores para modales de promoción/publicidad
                 '.promo-popup .close',
                 '.advertisement .close',
                 '.banner .close',
                 '.offer-modal .close',
-                
+
                 # Selectores específicos para popup de LATAM sale y similares
                 'div[style*="position: fixed"] button',
                 'div[style*="z-index"] button[style*="position: absolute"]',
@@ -236,28 +236,28 @@ class TradingViewPlaywrightCapture:
                 'div[class*="promo"] button',
                 'div[class*="offer"] button',
                 'div[class*="discount"] button',
-                
+
                 # Selectores más específicos basados en la estructura común de TradingView
                 'div[class*="dialog"] button[class*="close"]',
                 'div[class*="modal"] button[class*="close"]',
                 'div[class*="popup"] button[class*="close"]',
-                
+
                 # Selector para el botón X en la esquina superior derecha
                 'button:has-text("×")',
                 'button:has-text("✕")',
                 'span:has-text("×")',
                 'span:has-text("✕")',
-                
+
                 # Selectores CSS más amplios para elementos que contengan X
                 '[role="button"]:has-text("×")',
                 '[role="button"]:has-text("✕")',
-                
+
                 # Selectores específicos para overlay de publicidad
                 'div[style*="position: fixed"][style*="top: 0"] button',
                 'div[style*="position: fixed"][style*="left: 0"] button',
                 'div[style*="background"] button[style*="top"]',
             ]
-            
+
             # Intentar cerrar cualquier modal/publicidad visible
             for selector in close_selectors:
                 try:
@@ -276,7 +276,7 @@ class TradingViewPlaywrightCapture:
                 except Exception as e:
                     # Continuar con el siguiente selector si este falla
                     continue
-            
+
             # Método alternativo: buscar por texto específico en botones
             try:
                 # Buscar botones que contengan texto de cerrar
@@ -294,7 +294,7 @@ class TradingViewPlaywrightCapture:
                         continue
             except Exception as e:
                 logger.debug(f"Método de texto falló: {e}")
-            
+
             # Método adicional: buscar elementos con posición típica de botón cerrar (esquina superior derecha)
             try:
                 # Ejecutar JavaScript para encontrar elementos en la esquina superior derecha
@@ -303,11 +303,11 @@ class TradingViewPlaywrightCapture:
                     const elements = document.querySelectorAll('*');
                     const closeButtons = [];
                     const modalOverlays = [];
-                    
+
                     elements.forEach(el => {
                         const rect = el.getBoundingClientRect();
                         const style = window.getComputedStyle(el);
-                        
+
                         // Buscar overlays de modal (fondo oscuro/transparente que cubre toda la pantalla)
                         if (style.position === 'fixed' && 
                             rect.width > window.innerWidth * 0.8 && 
@@ -315,7 +315,7 @@ class TradingViewPlaywrightCapture:
                             (style.backgroundColor.includes('rgba') || style.background.includes('rgba'))) {
                             modalOverlays.push(el);
                         }
-                        
+
                         // Buscar elementos en la esquina superior derecha que podrían ser botones de cerrar
                         if (rect.right > window.innerWidth - 100 && 
                             rect.top < 100 && 
@@ -327,7 +327,7 @@ class TradingViewPlaywrightCapture:
                              el.className.toLowerCase().includes('close'))) {
                             closeButtons.push(el);
                         }
-                        
+
                         // Buscar botones dentro de elementos con position fixed (popups)
                         if (style.position === 'fixed' && el.tagName === 'BUTTON') {
                             const parentRect = el.parentElement?.getBoundingClientRect();
@@ -342,7 +342,7 @@ class TradingViewPlaywrightCapture:
                                 }
                             }
                         }
-                        
+
                         // Buscar elementos que contengan texto relacionado con ofertas/promociones
                         if (style.position === 'fixed' && 
                             (el.textContent.toLowerCase().includes('sale') ||
@@ -356,18 +356,18 @@ class TradingViewPlaywrightCapture:
                             }
                         }
                     });
-                    
+
                     // Si encontramos overlays de modal, intentar cerrarlos haciendo clic
                     modalOverlays.forEach(overlay => {
                         if (overlay.style.zIndex > 1000) {
                             closeButtons.push(overlay);
                         }
                     });
-                    
+
                     return closeButtons;
                 }
                 """
-                
+
                 close_buttons = await page.evaluate(js_code)
                 if close_buttons:
                     logger.info(f"🎯 Encontrados {len(close_buttons)} posibles botones de cerrar por posición")
@@ -375,10 +375,10 @@ class TradingViewPlaywrightCapture:
                     await page.evaluate("arguments[0].click()", close_buttons[0])
                     logger.info("✅ Publicidad cerrada usando detección por posición")
                     await asyncio.sleep(0.5)
-                    
+
             except Exception as e:
                 logger.debug(f"Método de JavaScript falló: {e}")
-            
+
             # Método adicional: usar tecla ESC para cerrar modales
             try:
                 logger.info("⌨️ Intentando cerrar popup con tecla ESC...")
@@ -390,7 +390,7 @@ class TradingViewPlaywrightCapture:
                 logger.info("✅ Tecla ESC enviada para cerrar popups")
             except Exception as e:
                 logger.debug(f"Método de ESC falló: {e}")
-            
+
             # Método final: forzar cierre de elementos con alta z-index
             try:
                 logger.info("🔨 Método agresivo: ocultando elementos con z-index alto...")
@@ -398,11 +398,11 @@ class TradingViewPlaywrightCapture:
                     () => {
                         const allElements = document.querySelectorAll('*');
                         let hiddenCount = 0;
-                        
+
                         allElements.forEach(el => {
                             const style = window.getComputedStyle(el);
                             const zIndex = parseInt(style.zIndex);
-                            
+
                             // Ocultar elementos con z-index muy alto que probablemente sean popups
                             if (zIndex > 9999 || 
                                 (style.position === 'fixed' && zIndex > 1000)) {
@@ -411,7 +411,7 @@ class TradingViewPlaywrightCapture:
                                 el.style.opacity = '0';
                                 hiddenCount++;
                             }
-                            
+
                             // Ocultar elementos que contengan texto de ofertas/promociones
                             if (el.textContent && 
                                 (el.textContent.toLowerCase().includes('latam sale') ||
@@ -423,16 +423,16 @@ class TradingViewPlaywrightCapture:
                                 hiddenCount++;
                             }
                         });
-                        
+
                         return hiddenCount;
                     }
                 """)
                 logger.info("✅ Elementos de alta prioridad ocultados forzosamente")
             except Exception as e:
                 logger.debug(f"Método agresivo falló: {e}")
-            
+
             logger.info("🔍 Búsqueda de publicidad completada")
-            
+
         except Exception as e:
             logger.warning(f"Error cerrando publicidad: {e}")
 
@@ -500,7 +500,7 @@ async def get_chart_path_async(url: str, timeframe: str, symbol: str):
     if not url or not isinstance(url, str):
         logger.error("El parámetro 'url' es obligatorio y debe ser una cadena no vacía.")
         return None
-    
+
     async with TradingViewPlaywrightCapture() as capture:
         img_bytes = await capture.capture_chart_from_url(url, timeframe, symbol)
         if img_bytes:
@@ -524,7 +524,7 @@ def get_chart_path(url: str, timeframe: str, symbol: str):
     if not url or not isinstance(url, str):
         logger.error("El parámetro 'url' es obligatorio y debe ser una cadena no vacía.")
         return None
-    
+
     try:
         # Verificar si ya hay un event loop corriendo
         try:
@@ -534,7 +534,7 @@ def get_chart_path(url: str, timeframe: str, symbol: str):
         except RuntimeError:
             # No hay event loop, podemos usar asyncio.run()
             pass
-        
+
         async def _get():
             async with TradingViewPlaywrightCapture() as capture:
                 img_bytes = await capture.capture_chart_from_url(url, timeframe, symbol)
@@ -545,7 +545,7 @@ def get_chart_path(url: str, timeframe: str, symbol: str):
                     if screenshots:
                         return str(screenshots[0])
                 return None
-        
+
         return asyncio.run(_get())
     except Exception as e:
         logger.error(f"Error en get_chart_path: {e}")

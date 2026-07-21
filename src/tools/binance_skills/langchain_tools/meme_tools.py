@@ -27,7 +27,7 @@ async def lctool_get_meme_rush_ranklist(
         rank_data = await get_meme_rush_rank(chain_id=chain_id, rank_type=rank_type, limit=k_limit)
         if not rank_data:
             return "No trending meme tokens found for the specified criteria."
-        
+
         return format_meme_rush_for_agent(rank_data, max_items=k_limit)
     except Exception as e:
         logger.error(f"Error fetching meme rush signals: {e}")

@@ -19,9 +19,9 @@ Combina dos fuentes de charts para dar al Visual Agent información más rica:
 
 Uso:
     from src.tools.dual_chart_system import get_dual_analysis_charts
-    
+
     charts = await get_dual_analysis_charts("BTCUSDT", "4h")
-    
+
     # Para el Visual Agent:
     generated_chart = charts["generated"]  # EMAs, BB, RSI, MACD
     liquidation_chart = charts["liquidation"]  # Heatmap de liquidaciones
@@ -49,30 +49,30 @@ logger = logging.getLogger(__name__)
 class DualChartAnalysis:
     """
     Contenedor para análisis dual de charts.
-    
+
     Combina el chart generado (técnico) con capturas externas (derivados).
     """
     symbol: str
     timeframe: str
     timestamp: datetime
-    
+
     # Chart generado con Plotly (indicadores técnicos)
     generated: ChartSnapshot | None = None
     generated_indicators: list[str] | None = None
-    
+
     # Chart de TradingView (indicadores adicionales)
     tradingview: ExternalChartSnapshot | None = None
     tradingview_indicators: list[str] | None = None
-    
+
     # Chart de Coinglass (liquidaciones/derivados)
     liquidation: ExternalChartSnapshot | None = None
     open_interest: ExternalChartSnapshot | None = None
     funding_rate: ExternalChartSnapshot | None = None
-    
+
     @property
     def has_generated(self) -> bool:
         return self.generated is not None and self.generated.image_b64
-    
+
     @property
     def has_external(self) -> bool:
         return any([
@@ -80,7 +80,7 @@ class DualChartAnalysis:
             self.liquidation and self.liquidation.image_b64,
             self.open_interest and self.open_interest.image_b64,
         ])
-    
+
     @property
     def chart_count(self) -> int:
         count = 0
@@ -95,7 +95,7 @@ class DualChartAnalysis:
         if self.funding_rate and self.funding_rate.image_b64:
             count += 1
         return count
-    
+
     def get_all_images_b64(self) -> dict[str, str]:
         """Retorna todos los charts como dict source -> base64."""
         images = {}
@@ -110,15 +110,15 @@ class DualChartAnalysis:
         if self.funding_rate and self.funding_rate.image_b64:
             images["coinglass_funding"] = self.funding_rate.image_b64
         return images
-    
+
     def get_analysis_prompt_context(self) -> str:
         """
         Genera contexto para el prompt del Visual Agent.
-        
+
         Describe qué charts están disponibles y qué indicadores muestran.
         """
         context_parts = []
-        
+
         if self.has_generated:
             indicators = ", ".join(self.generated_indicators or ["EMA", "BB", "RSI", "MACD"])
             context_parts.append(
@@ -126,7 +126,7 @@ class DualChartAnalysis:
                 f"   Indicadores: {indicators}\n"
                 f"   Muestra: Velas, volumen, y análisis técnico clásico."
             )
-        
+
         if self.tradingview and self.tradingview.image_b64:
             tv_indicators = ", ".join(self.tradingview_indicators or ["RSI", "MACD", "BB"])
             context_parts.append(
@@ -134,7 +134,7 @@ class DualChartAnalysis:
                 f"   Indicadores: {tv_indicators}\n"
                 f"   Muestra: Vista alternativa con indicadores de TradingView."
             )
-        
+
         if self.liquidation and self.liquidation.image_b64:
             context_parts.append(
                 f"🔥 **Liquidation Heatmap** ({self.symbol}):\n"
@@ -142,7 +142,7 @@ class DualChartAnalysis:
                 f"   Muestra: Zonas de liquidación, clusters de stops, "
                 f"niveles de alta actividad."
             )
-        
+
         if self.open_interest and self.open_interest.image_b64:
             context_parts.append(
                 f"📉 **Open Interest Chart** ({self.symbol}):\n"
@@ -150,7 +150,7 @@ class DualChartAnalysis:
                 f"   Muestra: Posiciones abiertas por exchange, "
                 f"cambios en OI que indican acumulación/distribución."
             )
-        
+
         if self.funding_rate and self.funding_rate.image_b64:
             context_parts.append(
                 f"💰 **Funding Rate History** ({self.symbol}):\n"
@@ -158,19 +158,19 @@ class DualChartAnalysis:
                 f"   Muestra: Historial de funding rates, "
                 f"sentimiento del mercado de futuros."
             )
-        
+
         return "\n\n".join(context_parts)
 
 
 class DualChartSystem:
     """
     Sistema dual de captura de charts.
-    
+
     Combina:
     - ProfessionalChartGenerator (Plotly) para análisis técnico
     - ExternalChartCapturer (Playwright) para datos de derivados
     """
-    
+
     def __init__(
         self,
         symbols: list[str] | None = None,
@@ -181,17 +181,17 @@ class DualChartSystem:
         self.symbols = symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         self.timeframes = timeframes or ["15m", "1h", "4h"]
         self.enable_external = enable_external
-        
+
         # Sistema interno de charts generados
         self._scheduler = ChartCaptureScheduler(
             symbols=self.symbols,
             timeframes=self.timeframes,
         )
-        
+
         # Sistema externo (lazy loading)
         self._external_capturer: ExternalChartCapturer | None = None
         self._external_headless = external_headless
-    
+
     @property
     def external_capturer(self) -> ExternalChartCapturer:
         """Lazy loading del capturador externo."""
@@ -201,17 +201,17 @@ class DualChartSystem:
                 cache_dir="cache/external_charts",
             )
         return self._external_capturer
-    
+
     def start(self) -> None:
         """Inicia el scheduler de charts generados."""
         self._scheduler.start()
-    
+
     async def stop(self) -> None:
         """Detiene todos los sistemas."""
         self._scheduler.stop()
         if self._external_capturer:
             await self._external_capturer.close()
-    
+
     async def get_dual_analysis(
         self,
         symbol: str,
@@ -225,7 +225,7 @@ class DualChartSystem:
     ) -> DualChartAnalysis:
         """
         Obtiene análisis dual de charts.
-        
+
         Args:
             symbol: Símbolo (BTCUSDT, ETHUSDT, etc.)
             timeframe: Timeframe para análisis
@@ -235,7 +235,7 @@ class DualChartSystem:
             include_oi: Incluir chart de Open Interest
             include_funding: Incluir chart de Funding Rates
             tradingview_indicators: Indicadores para TradingView
-        
+
         Returns:
             DualChartAnalysis con todos los charts solicitados
         """
@@ -244,20 +244,20 @@ class DualChartSystem:
             timeframe=timeframe,
             timestamp=datetime.now(timezone.utc),
         )
-        
+
         tasks = []
         task_names = []
-        
+
         # 1. Chart generado (sync, rápido)
         if include_generated:
             generated = self._scheduler.get_fresh_chart(symbol, timeframe)
             analysis.generated = generated
             analysis.generated_indicators = ["ema_9", "ema_21", "bb_bands", "rsi", "vwap"]
-        
+
         # 2. Charts externos (async, paralelos)
         if self.enable_external:
             tradingview_indicators = tradingview_indicators or ["rsi", "macd", "bb", "volume", "ichimoku"]
-            
+
             if include_tradingview:
                 tasks.append(
                     self.external_capturer.capture_tradingview_widget(
@@ -266,7 +266,7 @@ class DualChartSystem:
                 )
                 task_names.append("tradingview")
                 analysis.tradingview_indicators = tradingview_indicators
-            
+
             if include_liquidation:
                 tasks.append(
                     self.external_capturer.capture_coinglass(
@@ -274,7 +274,7 @@ class DualChartSystem:
                     )
                 )
                 task_names.append("liquidation")
-            
+
             if include_oi:
                 tasks.append(
                     self.external_capturer.capture_coinglass(
@@ -282,7 +282,7 @@ class DualChartSystem:
                     )
                 )
                 task_names.append("oi")
-            
+
             if include_funding:
                 tasks.append(
                     self.external_capturer.capture_coinglass(
@@ -290,12 +290,12 @@ class DualChartSystem:
                     )
                 )
                 task_names.append("funding")
-        
+
         # Ejecutar capturas externas en paralelo
         if tasks:
             logger.info("📸 Capturando %d charts externos...", len(tasks))
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             for i, result in enumerate(results):
                 name = task_names[i]
                 if isinstance(result, Exception):
@@ -309,14 +309,14 @@ class DualChartSystem:
                         analysis.open_interest = result
                     elif name == "funding":
                         analysis.funding_rate = result
-        
+
         logger.info(
             "✅ Análisis dual completado: %d charts para %s %s",
             analysis.chart_count, symbol, timeframe
         )
-        
+
         return analysis
-    
+
     async def get_quick_dual(
         self,
         symbol: str,
@@ -324,7 +324,7 @@ class DualChartSystem:
     ) -> DualChartAnalysis:
         """
         Análisis dual rápido: Generado + Liquidaciones.
-        
+
         El combo más útil para decisiones de trading:
         - Chart técnico con EMAs, BB, RSI, MACD
         - Heatmap de liquidaciones para ver zonas de stop hunting
@@ -338,7 +338,7 @@ class DualChartSystem:
             include_oi=False,
             include_funding=False,
         )
-    
+
     async def get_full_analysis(
         self,
         symbol: str,
@@ -346,7 +346,7 @@ class DualChartSystem:
     ) -> DualChartAnalysis:
         """
         Análisis completo con todos los charts disponibles.
-        
+
         Incluye:
         - Chart técnico generado
         - TradingView con Ichimoku, RSI, MACD
@@ -388,9 +388,9 @@ async def get_dual_analysis_charts(
 ) -> dict[str, str]:
     """
     Obtiene charts duales como diccionario de imágenes base64.
-    
+
     Uso simple para el Visual Agent:
-    
+
         charts = await get_dual_analysis_charts("BTCUSDT", "4h")
         # charts = {
         #     "generated_technical": "base64...",
@@ -408,7 +408,7 @@ async def get_full_visual_context(
 ) -> tuple[dict[str, str], str]:
     """
     Obtiene charts + contexto para prompt del Visual Agent.
-    
+
     Returns:
         (dict de imágenes, string de contexto para prompt)
     """
@@ -427,44 +427,44 @@ async def _test():
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-7s | %(message)s",
     )
-    
+
     print("\n🧪 Testing Dual Chart System\n")
-    
+
     system = DualChartSystem(
         symbols=["BTCUSDT"],
         timeframes=["4h"],
         enable_external=True,
     )
-    
+
     try:
         # No iniciamos el scheduler para test rápido
-        
+
         # Test 1: Quick dual
         print("1️⃣ Quick Dual Analysis (Generated + Liquidation)...")
         analysis = await system.get_quick_dual("BTCUSDT", "4h")
-        
+
         print(f"   📊 Charts obtenidos: {analysis.chart_count}")
         print(f"   Generated: {'✅' if analysis.has_generated else '❌'}")
         print(f"   External: {'✅' if analysis.has_external else '❌'}")
-        
+
         if analysis.liquidation:
             status = "✅" if analysis.liquidation.image_b64 else "❌"
             print(f"   Liquidation: {status}")
-        
+
         # Test 2: Get images
         print("\n2️⃣ Getting images dict...")
         images = analysis.get_all_images_b64()
         for name, img in images.items():
             print(f"   📸 {name}: {len(img)} bytes")
-        
+
         # Test 3: Prompt context
         print("\n3️⃣ Analysis prompt context:")
         context = analysis.get_analysis_prompt_context()
         print(context[:500] + "..." if len(context) > 500 else context)
-        
+
     finally:
         await system.stop()
-    
+
     print("\n✅ Test completado!")
 
 

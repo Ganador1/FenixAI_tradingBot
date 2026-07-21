@@ -16,7 +16,8 @@ from collections import deque
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
+from collections.abc import Callable
 
 import hashlib
 import logging
@@ -39,26 +40,26 @@ class ReasoningEntry:
     action: str
     confidence: float
     backend: str
-    latency_ms: Optional[float]
-    metadata: Dict[str, Any]
+    latency_ms: float | None
+    metadata: dict[str, Any]
     created_at: str
-    embedding: Optional[List[float]] = None
+    embedding: list[float] | None = None
     # Nuevos campos para self-judgment (paper ReasoningBank)
-    success: Optional[bool] = None  # None=pendiente, True/False=evaluado
-    reward: Optional[float] = None  # P&L del trade resultante
-    reward_signal: Optional[float] = None  # Reward shaping normalizado (-2,2)
-    near_miss: Optional[bool] = None
-    reward_notes: Optional[str] = None
-    evaluated_at: Optional[str] = None  # Timestamp de evaluación
-    trade_id: Optional[str] = None  # Link al trade que resultó de esta decisión
-    judge_verdict: Optional[str] = None
-    judge_score: Optional[float] = None
-    judge_confidence: Optional[float] = None
-    judge_notes: Optional[str] = None
-    judge_tags: List[str] = field(default_factory=list)
-    judge_metadata: Dict[str, Any] = field(default_factory=dict)
-    judge_success_estimate: Optional[bool] = None
-    judged_at: Optional[str] = None
+    success: bool | None = None  # None=pendiente, True/False=evaluado
+    reward: float | None = None  # P&L del trade resultante
+    reward_signal: float | None = None  # Reward shaping normalizado (-2,2)
+    near_miss: bool | None = None
+    reward_notes: str | None = None
+    evaluated_at: str | None = None  # Timestamp de evaluación
+    trade_id: str | None = None  # Link al trade que resultó de esta decisión
+    judge_verdict: str | None = None
+    judge_score: float | None = None
+    judge_confidence: float | None = None
+    judge_notes: str | None = None
+    judge_tags: list[str] = field(default_factory=list)
+    judge_metadata: dict[str, Any] = field(default_factory=dict)
+    judge_success_estimate: bool | None = None
+    judged_at: str | None = None
 
     def matches(self, query: str) -> bool:
         query_lower = query.lower()
@@ -69,11 +70,11 @@ class ReasoningEntry:
         if query_lower in self.metadata.get("tags", "").lower():
             return True
         return False
-    
+
     def similarity_score(
         self,
         other_prompt: str,
-        other_embedding: Optional[List[float]] = None,
+        other_embedding: list[float] | None = None,
     ) -> float:
         """Calcula similitud semántica si hay embeddings, Jaccard si no."""
         if other_embedding and self.embedding:
@@ -89,7 +90,7 @@ class ReasoningEntry:
         union = this_words | other_words
         return len(intersection) / len(union) if union else 0.0
 
-    def _cosine_similarity(self, other_embedding: List[float]) -> float:
+    def _cosine_similarity(self, other_embedding: list[float]) -> float:
         if not self.embedding or not other_embedding:
             return 0.0
         dot_product = sum(a * b for a, b in zip(self.embedding, other_embedding))
@@ -107,8 +108,8 @@ class ReasoningBank:
         max_entries_per_agent: int = 500,
         use_embeddings: bool = True,
         embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        embedding_device: Optional[str] = None,
-        embedding_backend: Optional[Callable[[str], List[float]]] = None,
+        embedding_device: str | None = None,
+        embedding_backend: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -119,12 +120,12 @@ class ReasoningBank:
         self.use_embeddings = bool(
             embedding_backend is not None or (use_embeddings and SentenceTransformer is not None)
         )
-        self._embedding_model: Optional[Any] = None
+        self._embedding_model: Any | None = None
         self._lock = threading.RLock()
         self._embedding_lock = threading.Lock()
-        self._cache: Dict[str, Deque[ReasoningEntry]] = {}
+        self._cache: dict[str, deque[ReasoningEntry]] = {}
         self._stats_path = self.storage_dir / "index.json"
-        self._stats: Dict[str, Any] = {}
+        self._stats: dict[str, Any] = {}
         self._embedding_warning_emitted = False
         self._load_stats()
 
@@ -160,7 +161,7 @@ class ReasoningBank:
                 pass
             raise
 
-    def _get_embedding_model(self) -> Optional[Any]:
+    def _get_embedding_model(self) -> Any | None:
         if not self.use_embeddings or self._embedding_backend is not None:
             return None
         if SentenceTransformer is None:
@@ -189,7 +190,7 @@ class ReasoningBank:
                         return None
         return self._embedding_model
 
-    def _embed_text(self, text: str) -> Optional[List[float]]:
+    def _embed_text(self, text: str) -> list[float] | None:
         if not text or not self.use_embeddings:
             return None
         if self._embedding_backend is not None:
@@ -229,11 +230,11 @@ class ReasoningBank:
         self,
         agent_name: str,
         prompt: str,
-        normalized_result: Dict[str, Any],
+        normalized_result: dict[str, Any],
         raw_response: str,
         backend: str,
-        latency_ms: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        latency_ms: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ReasoningEntry:
         digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
         action_value = str(normalized_result.get("action", "") or "").strip()
@@ -274,7 +275,7 @@ class ReasoningBank:
         now = datetime.now()
         created_at_iso = now.astimezone().isoformat()  # Includes timezone
         analysis_timestamp = now.strftime("%Y-%m-%d %H:%M:%S %Z")  # Human readable
-        
+
         entry = ReasoningEntry(
             agent=agent_name,
             prompt_digest=digest,
@@ -331,7 +332,7 @@ class ReasoningBank:
 
         return entry
 
-    def get_recent(self, agent_name: str, limit: int = 5) -> List[ReasoningEntry]:
+    def get_recent(self, agent_name: str, limit: int = 5) -> list[ReasoningEntry]:
         with self._lock:
             agent_cache = self._cache.get(agent_name)
             if not agent_cache:
@@ -355,7 +356,7 @@ class ReasoningBank:
         must never be injected back into agent prompts as past experience."""
         return bool((entry.metadata or {}).get("quarantined"))
 
-    def search(self, agent_name: str, query: str, limit: int = 5) -> List[ReasoningEntry]:
+    def search(self, agent_name: str, query: str, limit: int = 5) -> list[ReasoningEntry]:
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
         matches = [
             entry
@@ -363,7 +364,7 @@ class ReasoningBank:
             if not self._is_quarantined(entry) and entry.matches(query)
         ]
         return matches[:limit]
-    
+
     def get_relevant_context(
         self,
         agent_name: str,
@@ -371,28 +372,28 @@ class ReasoningBank:
         limit: int = 3,
         min_similarity: float = 0.3,
         prefer_successful: bool = True
-    ) -> List[ReasoningEntry]:
+    ) -> list[ReasoningEntry]:
         """Recupera experiencias relevantes para inyectar en prompt (core del paper).
-        
+
         Args:
             agent_name: Nombre del agente
             current_prompt: Prompt actual para el cual buscar contexto
             limit: Máximo número de entradas a devolver
             min_similarity: Umbral mínimo de similitud (0-1)
             prefer_successful: Si True, prioriza experiencias exitosas
-        
+
         Returns:
             Lista de ReasoningEntry relevantes, ordenadas por relevancia
         """
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
         if not entries:
             return []
-        current_embedding: Optional[List[float]] = None
+        current_embedding: list[float] | None = None
         if self.use_embeddings:
             current_embedding = self._embed_text(current_prompt)
             if current_embedding is None:
                 logger.debug("ReasoningBank: fallback a similitud por palabras para %s", agent_name)
-        
+
         # Calcular similitud y filtrar
         scored_entries = []
         for entry in entries:
@@ -404,32 +405,32 @@ class ReasoningBank:
                 if prefer_successful and entry.success is True:
                     score *= 1.5
                 scored_entries.append((score, entry))
-        
+
         # Ordenar por score descendente
         scored_entries.sort(key=lambda x: x[0], reverse=True)
-        
+
         return [entry for _, entry in scored_entries[:limit]]
-    
+
     def update_entry_outcome(
         self,
         agent_name: str,
         prompt_digest: str,
         success: bool,
         reward: float,
-        trade_id: Optional[str] = None,
-        reward_signal: Optional[float] = None,
-        near_miss: Optional[bool] = None,
-        reward_notes: Optional[str] = None,
+        trade_id: str | None = None,
+        reward_signal: float | None = None,
+        near_miss: bool | None = None,
+        reward_notes: str | None = None,
     ) -> bool:
         """Actualiza una entrada con el resultado real del trade (self-judgment).
-        
+
         Args:
             agent_name: Nombre del agente
             prompt_digest: Digest del prompt a actualizar
             success: Si el trade fue exitoso
             reward: P&L del trade
             trade_id: ID del trade asociado
-        
+
         Returns:
             True si se actualizó exitosamente
         """
@@ -437,7 +438,7 @@ class ReasoningBank:
             agent_cache = self._cache.get(agent_name)
             if not agent_cache:
                 return False
-            
+
             # Buscar y actualizar todas las entradas equivalentes en cache. Los
             # prompts idénticos pueden aparecer más de una vez y deben dejar de
             # quedar pendientes después de una evaluación.
@@ -454,10 +455,10 @@ class ReasoningBank:
                     if reward_notes:
                         entry.reward_notes = reward_notes
                     updated = True
-            
+
             if not updated:
                 return False
-            
+
             # Re-escribir archivo JSONL con datos actualizados
             if self._rewrite_agent_file(agent_name, agent_cache):
                 logger.info(f"ReasoningBank: Updated entry {prompt_digest[:8]} for {agent_name}")
@@ -525,7 +526,7 @@ class ReasoningBank:
         self,
         agent_name: str,
         prompt_digest: str,
-        judge_payload: Dict[str, Any]
+        judge_payload: dict[str, Any]
     ) -> bool:
         """Enlaza el veredicto del LLM-as-a-judge con la entrada de ReasoningBank."""
         if not judge_payload:
@@ -566,7 +567,7 @@ class ReasoningBank:
                 return True
             return False
 
-    def _rewrite_agent_file(self, agent_name: str, agent_cache: Deque[ReasoningEntry]) -> bool:
+    def _rewrite_agent_file(self, agent_name: str, agent_cache: deque[ReasoningEntry]) -> bool:
         """Persiste todas las entradas del agente nuevamente en disco."""
         agent_file = self.storage_dir / f"{agent_name}.jsonl"
         try:
@@ -576,18 +577,18 @@ class ReasoningBank:
         except Exception as exc:
             logger.error(f"ReasoningBank: Failed to persist file for {agent_name}: {exc}")
             return False
-    
-    def get_success_rate(self, agent_name: str, lookback: int = 50) -> Dict[str, Any]:
+
+    def get_success_rate(self, agent_name: str, lookback: int = 50) -> dict[str, Any]:
         """Calcula tasa de éxito para experiencias evaluadas."""
         entries = self.get_recent(agent_name, lookback)
         evaluated = [e for e in entries if e.success is not None]
-        
+
         if not evaluated:
             return {"total_evaluated": 0, "success_rate": 0.0, "avg_reward": 0.0}
-        
+
         successful = [e for e in evaluated if e.success]
         total_reward = sum(e.reward or 0.0 for e in evaluated)
-        
+
         return {
             "total_evaluated": len(evaluated),
             "successful": len(successful),
@@ -595,42 +596,42 @@ class ReasoningBank:
             "avg_reward": total_reward / len(evaluated),
             "total_reward": total_reward
         }
-    
+
     def extract_success_patterns(
         self,
         agent_name: str,
         min_confidence: float = 0.7
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Análisis contrastivo: qué diferencia éxitos de fracasos (core del paper).
-        
+
         Returns:
             Dict con patrones encontrados en experiencias exitosas vs fallidas
         """
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
         evaluated = [e for e in entries if e.success is not None]
-        
+
         if len(evaluated) < 10:  # Mínimo para análisis estadístico
             return {"status": "insufficient_data", "evaluated_count": len(evaluated)}
-        
+
         successful = [e for e in evaluated if e.success]
         failed = [e for e in evaluated if not e.success]
-        
+
         # Análisis de acciones
         success_actions = [e.action for e in successful]
         fail_actions = [e.action for e in failed]
-        
+
         from collections import Counter
         success_action_counts = Counter(success_actions)
         fail_action_counts = Counter(fail_actions)
-        
+
         # Análisis de confidence
         success_avg_conf = sum(e.confidence for e in successful) / len(successful) if successful else 0
         fail_avg_conf = sum(e.confidence for e in failed) / len(failed) if failed else 0
-        
+
         # Patrones de alta confianza
         high_conf_success = [e for e in successful if e.confidence >= min_confidence]
         high_conf_fail = [e for e in failed if e.confidence >= min_confidence]
-        
+
         return {
             "status": "analyzed",
             "total_evaluated": len(evaluated),
@@ -658,34 +659,34 @@ class ReasoningBank:
                 successful, failed, min_confidence
             )
         }
-    
+
     def _generate_insights(
         self,
-        successful: List[ReasoningEntry],
-        failed: List[ReasoningEntry],
+        successful: list[ReasoningEntry],
+        failed: list[ReasoningEntry],
         min_confidence: float
-    ) -> List[str]:
+    ) -> list[str]:
         """Genera insights textuales del análisis contrastivo."""
         insights = []
-        
+
         if not successful or not failed:
             return ["Insufficient data for contrastive analysis"]
-        
+
         # Insight 1: Confidence threshold
         success_avg_conf = sum(e.confidence for e in successful) / len(successful)
         fail_avg_conf = sum(e.confidence for e in failed) / len(failed)
-        
+
         if success_avg_conf > fail_avg_conf + 0.1:
             insights.append(
                 f"Successful decisions have {success_avg_conf:.1%} avg confidence "
                 f"vs {fail_avg_conf:.1%} for failed ones. Higher confidence correlates with success."
             )
-        
+
         # Insight 2: Action distribution
         from collections import Counter
         success_actions = Counter(e.action for e in successful)
         best_action = success_actions.most_common(1)[0] if success_actions else None
-        
+
         if best_action:
             action_name, action_count = best_action
             action_rate = action_count / len(successful)
@@ -693,11 +694,11 @@ class ReasoningBank:
                 insights.append(
                     f"Action '{action_name}' appears in {action_rate:.0%} of successful cases."
                 )
-        
+
         # Insight 3: Latency
         success_latencies = [e.latency_ms for e in successful if e.latency_ms]
         fail_latencies = [e.latency_ms for e in failed if e.latency_ms]
-        
+
         if success_latencies and fail_latencies:
             avg_success_lat = sum(success_latencies) / len(success_latencies)
             avg_fail_lat = sum(fail_latencies) / len(fail_latencies)
@@ -705,47 +706,47 @@ class ReasoningBank:
                 insights.append(
                     f"Latency differs: {avg_success_lat:.0f}ms (success) vs {avg_fail_lat:.0f}ms (fail)"
                 )
-        
+
         return insights if insights else ["No significant patterns detected"]
-    
+
     def synthesize_strategies(
         self,
         agent_name: str,
         min_success_rate: float = 0.65,
         min_sample_size: int = 10
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Sintetiza estrategias generalizables a partir de experiencias (paper ReasoningBank).
-        
+
         Extrae patrones de alto nivel tipo "Cuando X, hacer Y resulta en Z".
-        
+
         Args:
             agent_name: Nombre del agente
             min_success_rate: Tasa mínima de éxito para considerar una estrategia
             min_sample_size: Mínimo de casos para validar una estrategia
-        
+
         Returns:
             Lista de estrategias sintetizadas con metadatos
         """
         entries = self.get_recent(agent_name, self.max_entries_per_agent)
         evaluated = [e for e in entries if e.success is not None]
-        
+
         if len(evaluated) < min_sample_size:
             return []
-        
+
         strategies = []
-        
+
         # Estrategia 1: Por nivel de confidence
         confidence_buckets = {
             "high": [e for e in evaluated if e.confidence >= 0.8],
             "medium": [e for e in evaluated if 0.5 <= e.confidence < 0.8],
             "low": [e for e in evaluated if e.confidence < 0.5]
         }
-        
+
         for bucket_name, bucket_entries in confidence_buckets.items():
             if len(bucket_entries) >= min_sample_size:
                 success_count = sum(1 for e in bucket_entries if e.success)
                 success_rate = success_count / len(bucket_entries)
-                
+
                 if success_rate >= min_success_rate:
                     avg_reward = sum(e.reward or 0 for e in bucket_entries if e.success) / max(success_count, 1)
                     strategies.append({
@@ -757,22 +758,22 @@ class ReasoningBank:
                         "avg_reward": avg_reward,
                         "recommendation": self._generate_recommendation(bucket_name, success_rate, avg_reward)
                     })
-        
+
         # Estrategia 2: Por acción específica
         from collections import defaultdict
         action_outcomes = defaultdict(list)
         for entry in evaluated:
             action_outcomes[entry.action].append(entry)
-        
+
         for action, action_entries in action_outcomes.items():
             if len(action_entries) >= min_sample_size:
                 success_count = sum(1 for e in action_entries if e.success)
                 success_rate = success_count / len(action_entries)
-                
+
                 if success_rate >= min_success_rate:
                     avg_reward = sum(e.reward or 0 for e in action_entries if e.success) / max(success_count, 1)
                     avg_conf = sum(e.confidence for e in action_entries if e.success) / max(success_count, 1)
-                    
+
                     strategies.append({
                         "type": "action_strategy",
                         "rule": f"Action '{action}' is effective",
@@ -783,17 +784,17 @@ class ReasoningBank:
                         "avg_confidence": avg_conf,
                         "recommendation": f"Continue using {action} when conditions are similar. Success rate: {success_rate:.1%}"
                     })
-        
+
         # Estrategia 3: Patrones temporales (latency)
         if any(e.latency_ms for e in evaluated):
             latency_sorted = sorted([e for e in evaluated if e.latency_ms], key=lambda x: x.latency_ms or 0)
             fast_entries = latency_sorted[:len(latency_sorted)//2]  # 50% más rápidos
             slow_entries = latency_sorted[len(latency_sorted)//2:]
-            
+
             if len(fast_entries) >= min_sample_size:
                 fast_success = sum(1 for e in fast_entries if e.success) / len(fast_entries)
                 slow_success = sum(1 for e in slow_entries if e.success) / len(slow_entries)
-                
+
                 if abs(fast_success - slow_success) > 0.15:  # Diferencia significativa
                     better_group = "fast" if fast_success > slow_success else "slow"
                     strategies.append({
@@ -805,12 +806,12 @@ class ReasoningBank:
                         "delta": abs(fast_success - slow_success),
                         "recommendation": f"Monitor inference latency. {better_group.capitalize()} responses show {abs(fast_success - slow_success):.1%} better success rate."
                     })
-        
+
         # Ordenar por success_rate * sample_size (combina calidad y confianza estadística)
         strategies.sort(key=lambda s: s["success_rate"] * s["sample_size"], reverse=True)
-        
+
         return strategies
-    
+
     def _generate_recommendation(self, bucket_name: str, success_rate: float, avg_reward: float) -> str:
         """Genera recomendación basada en métricas."""
         if bucket_name == "high" and success_rate > 0.75:
@@ -822,11 +823,11 @@ class ReasoningBank:
         else:
             return f"NEUTRAL: {bucket_name.capitalize()} confidence at {success_rate:.1%} success"
 
-    def summarize_agent(self, agent_name: str) -> Dict[str, Any]:
+    def summarize_agent(self, agent_name: str) -> dict[str, Any]:
         stats = self._stats.get(agent_name, {})
         recent = self.get_recent(agent_name, limit=3)
         success_stats = self.get_success_rate(agent_name, lookback=100)
-        
+
         return {
             "agent": agent_name,
             "total_reasonings": stats.get("total", 0),
@@ -837,13 +838,13 @@ class ReasoningBank:
         }
 
 
-_reasoning_bank: Optional[ReasoningBank] = None
+_reasoning_bank: ReasoningBank | None = None
 _reasoning_bank_lock = threading.Lock()
 
 
 def get_reasoning_bank() -> ReasoningBank:
     """Get singleton ReasoningBank instance.
-    
+
     Note: Embeddings disabled by default to prevent memory issues on macOS.
     Uses Jaccard similarity fallback instead.
     """
