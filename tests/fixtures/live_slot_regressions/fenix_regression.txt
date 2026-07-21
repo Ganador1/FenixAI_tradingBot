@@ -1,0 +1,5 @@
+2026-03-05 19:29:46,000 | INFO | FenixTradingEngine | FLIP BLOCKED: LONG→SELL
+2026-03-05 19:29:46,100 | INFO | FenixTradingEngine | Waiting for safe reconciliation
+2026-03-05 19:29:47,000 | INFO | FenixTradingEngine | Trade executed: SELL quantity=0.10
+2026-03-05 19:30:00,000 | INFO | FenixTradingEngine | NanoFenix companion policy (direction_mismatch): side=SHORT decision=BUY effective_signal=None
+2026-03-05 19:30:01,000 | INFO | FenixTradingEngine | Trade executed: BUY quantity=0.10

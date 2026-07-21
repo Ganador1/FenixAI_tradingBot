@@ -116,9 +116,6 @@ class RuntimeRiskManager:
         # All-time high-water mark: only ever increases (except explicit re-anchor).
         # Protects against drawdown erasure via daily resets or process restarts.
         self._all_time_peak: float = 0.0
-        # Emit the "inherited drawdown tolerated" warning only once per process.
-        self._inherited_drawdown_logged: bool = False
-
         # Cooldown tracking
         self._cooldown_start: datetime | None = None
 
@@ -631,17 +628,12 @@ class RuntimeRiskManager:
         # El peak intradía se re-ancla a medianoche; este check evita que pérdidas
         # sostenidas (-5% diario) escapen al circuit breaker indefinidamente.
         #
-        # GRACE (2026-07-18): the all-time peak is seeded from full account equity
-        # and survives restarts, so a FRESH process on an account that is below a
-        # historical high inherits that drawdown and blocks every entry — even
-        # though this session executed zero trades and caused zero loss (observed
-        # live: peak 538 vs balance 433 = 19.5% >= 15% -> perpetual SEVERE with
-        # daily_pnl 0.0). A bot that has not traded this session cannot have
-        # caused a drawdown this session, so the inherited all-time drawdown must
-        # not hard-block it. The high-water mark is left untouched on disk; the
-        # instant the first trade is recorded, full protection re-engages. A real
-        # LIVE drawdown (trades exist) is unaffected. Lowering the mark remains
-        # an explicit operator action (FENIX_RISK_ALLOW_REANCHOR).
+        # A process restart must never bypass this guard. The account may be below
+        # its historical peak because of trading losses, another bot, or an
+        # intentional withdrawal; local session history cannot distinguish those
+        # cases. Treat the persisted high-water mark as authoritative and fail
+        # closed. Operators must explicitly re-anchor/reset the persisted state
+        # after verifying an external capital-flow change.
         all_time_drawdown_pct = metrics.get("all_time_drawdown_pct", 0.0)
         try:
             max_alltime_dd = float(
@@ -650,24 +642,7 @@ class RuntimeRiskManager:
             )
         except (TypeError, ValueError):
             max_alltime_dd = 15.0
-        has_traded_this_session = bool(self._trades)
-        if (
-            max_alltime_dd > 0
-            and all_time_drawdown_pct >= max_alltime_dd
-            and not has_traded_this_session
-        ):
-            if not self._inherited_drawdown_logged:
-                self._inherited_drawdown_logged = True
-                logger.warning(
-                    "RiskManager: inherited all-time drawdown %.1f%% >= %.1f%% is "
-                    "being tolerated because no trade has been executed this "
-                    "session (all-time peak %.2f left intact). Full protection "
-                    "re-engages on the first trade.",
-                    all_time_drawdown_pct,
-                    max_alltime_dd,
-                    self._all_time_peak,
-                )
-        elif max_alltime_dd > 0 and all_time_drawdown_pct >= max_alltime_dd:
+        if max_alltime_dd > 0 and all_time_drawdown_pct >= max_alltime_dd:
             self.current_status = RiskFeedbackStatus(
                 mode="SEVERE",
                 risk_bias=self.config.drawdown_risk_bias,

@@ -63,6 +63,18 @@ class TestClassifyHeadline:
         # The exact headline from the 2026-07-18 run that SHOULD block.
         assert classify_headline("US strikes hit Iran for seventh consecutive night") == "severe"
 
+    def test_local_personal_attack_is_high_not_severe(self):
+        assert (
+            classify_headline(
+                "Palestinian teenage footballer dies a week after Israeli settler attack"
+            )
+            == "high"
+        )
+
+    def test_state_attack_and_systemic_targets_are_severe(self):
+        assert classify_headline("Two troops killed after Iranian attack in Jordan") == "severe"
+        assert classify_headline("Iran steps up attacks on ships in Hormuz") == "severe"
+
 
 class TestGetMacroAlerts:
     def test_feed_failure_returns_empty(self):

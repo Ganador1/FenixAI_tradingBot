@@ -76,7 +76,6 @@ HIGH_IMPACT_KEYWORDS: tuple[str, ...] = (
 # "strike" still lives in HIGH_IMPACT_KEYWORDS as a soft (non-blocking) signal.
 SEVERE_KEYWORDS: tuple[str, ...] = (
     "war",
-    "attack",
     "missile",
     "nuclear",
     "invasion",
@@ -113,6 +112,19 @@ SEVERE_KEYWORDS: tuple[str, ...] = (
     "russian strikes",
 )
 
+# Generic "attack" is too broad for a global risk-off gate. Local crime,
+# protests, and isolated personal attacks remain high-impact context but must
+# not block every new crypto long. These patterns promote only military/state
+# actors or systemic targets to severe.
+SEVERE_ATTACK_PATTERNS: tuple[str, ...] = (
+    r"\b(?:iranian|russian|american|u\.?s\.?|military|terrorist|drone|missile|cyber)"
+    r"\s+attacks?\b",
+    r"\battacks?\s+(?:on|against)\s+(?:ships?|tankers?|troops?|military|bases?|"
+    r"airports?|ports?|embass(?:y|ies)|critical infrastructure)\b",
+    r"\battacks?\s+(?:kill|kills|killed|hit|hits|target|targets)\s+(?:troops?|"
+    r"soldiers?|ships?|tankers?|bases?|airports?|ports?|embass(?:y|ies))\b",
+)
+
 _cache: dict[str, Any] = {"ts": 0.0, "alerts": []}
 _CACHE_TTL_SEC = 600  # do not hammer the feeds on every 15m cycle
 
@@ -140,7 +152,9 @@ def _matches_any(text: str, keywords: tuple[str, ...]) -> bool:
 def classify_headline(title: str, summary: str = "") -> str | None:
     """Return "severe"/"high" when the text matches impact keywords, else None."""
     text = f"{title} {summary}".lower()
-    if _matches_any(text, SEVERE_KEYWORDS):
+    if _matches_any(text, SEVERE_KEYWORDS) or any(
+        re.search(pattern, text) for pattern in SEVERE_ATTACK_PATTERNS
+    ):
         return "severe"
     if _matches_any(text, HIGH_IMPACT_KEYWORDS):
         return "high"

@@ -1,0 +1,10 @@
+{"event":"position:closed","payload":{"pnl":1.2}}
+{"event":"position:closed","payload":{"pnl":0.8}}
+{"event":"position:closed","payload":{"pnl":0.5}}
+{"event":"position:closed","payload":{"pnl":-0.2}}
+{"event":"position:closed","payload":{"pnl":-0.3}}
+{"event":"position:closed","payload":{"pnl":-0.4}}
+{"event":"position:closed","payload":{"pnl":-0.5}}
+{"event":"position:closed","payload":{"pnl":-0.6}}
+{"event":"position:closed","payload":{"pnl":-0.7}}
+{"event":"position:closed","payload":{"pnl":-0.8}}
