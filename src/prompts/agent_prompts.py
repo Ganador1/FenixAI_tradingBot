@@ -340,13 +340,15 @@ CRITICAL RULES - FOLLOW EXACTLY:
 10. Order flow bias must be exactly: "buying", "selling", or "neutral"
 11. Absorption detected must be a boolean (true or false)
 
-OBI INTERPRETATION RULES (follow EXACTLY — do NOT improvise):
-- OBI > 2.0  → "Strong buying pressure" (bid dominance)
-- OBI 1.2-2.0 → "Moderate buying pressure"
+OBI INTERPRETATION RULES (describe the book imbalance, do NOT equate it with
+direction — a low OBI while CVD is positive/rising is order-book resistance
+being ABSORBED by buyers, not a sell signal):
+- OBI > 2.0  → "Strong bid-side imbalance"
+- OBI 1.2-2.0 → "Moderate bid-side imbalance"
 - OBI 0.8-1.2 → "Balanced order book" (neutral)
-- OBI 0.2-0.8 → "Moderate selling pressure"
-- OBI < 0.2  → "Strong selling pressure" (ask dominance)
-- OBI > 10.0 → "Extreme bid imbalance — possible absorption or exhaustion"
+- OBI 0.2-0.8 → "Moderate ask-side imbalance"
+- OBI < 0.2  → "Strong ask-side imbalance"
+- OBI > 10.0 → "Extreme bid imbalance — likely absorption or exhaustion, NOT continuation"
 
 CVD INTERPRETATION RULES:
 - CVD > 0 and increasing → Net buying pressure (bullish)
@@ -355,11 +357,24 @@ CVD INTERPRETATION RULES:
 - CVD < 0 and increasing → Selling pressure fading (caution)
 - CVD diverges from price → Potential reversal signal
 
-SIGNAL DECISION RULES:
-- OBI < 0.8 AND CVD < 0 → SELL_QABBA (both indicators confirm selling)
-- OBI > 1.2 AND CVD > 0 → BUY_QABBA (both indicators confirm buying)
-- OBI and CVD conflict → HOLD_QABBA (no clear direction)
-- OBI 0.8-1.2 → HOLD_QABBA (balanced)
+SIGNAL DECISION RULES (CVD-led — read carefully):
+- CVD is the PRIMARY directional signal. Instantaneous OBI is a snapshot of
+  resting orders that flips violently on this timeframe (it can read 0.2 on one
+  bar and 20 on the next while price barely moves) and is NOT reliable as a
+  standalone direction — empirically it barely correlates with the next move.
+  Treat OBI as a SECONDARY, confirming-only input.
+- BUY_QABBA  → CVD > 0 AND increasing (net aggressive buying), AND OBI is not
+  contradicting (OBI >= 0.8). Confidence rises when OBI also shows bid dominance.
+- SELL_QABBA → CVD < 0 AND decreasing (net aggressive selling), AND OBI is not
+  contradicting (OBI <= 1.2). Confidence rises when OBI also shows ask dominance.
+- NEVER issue BUY/SELL on OBI alone. If OBI leans one way but CVD is flat or
+  points the OTHER way, that is a conflict → HOLD_QABBA. A low OBI with a
+  positive, rising CVD is a NEUTRAL/absorption reading, NOT selling pressure.
+- The one exception where OBI leads is DIVERGENCE/ABSORPTION: price makes a new
+  extreme while CVD does not, or an extreme OBI is clearly being absorbed — then
+  favour the reversal side, per the capitulation rule below.
+- OBI 0.8-1.2 → HOLD_QABBA (balanced).
+- When in genuine doubt between microstructure signals → HOLD_QABBA.
 
 CAPITULATION / CLIMAX OVERRIDE (takes precedence over the rules above):
 - When OBI is EXTREME (< 0.2 or > 5.0) AND CVD is extreme in the same direction
@@ -446,7 +461,17 @@ AGENTS REPORTING TO YOU:
 
 DECISION POLICY:
 1. Your job is to SYNTHESIZE all 5 agent signals into ONE final decision
-2. QABBA (35%) and Technical (35%) are the PRIMARY directional signals — they carry the most weight. Their real reliability varies over time: ALWAYS check the "Agent track records" section in your context and trust the agent with the better recent track record more.
+2. TRACK RECORD OVERRIDES BASE WEIGHTS. The base weights below are only a
+   starting point. The "Agent track records" section in your context shows each
+   agent's REAL recent accuracy — that is what matters. An agent below ~45%
+   accuracy is worse than a coin flip: heavily discount it (near-zero weight)
+   NO MATTER its base weight or label, even a "primary" agent. An agent clearly
+   above 50% should gain weight. Never let a labeled-primary agent with a poor
+   track record drive a trade. QABBA's order-flow read in particular is noisy on
+   this timeframe — only trust it when its recent accuracy earns it.
+   IMPORTANT: do not invent accuracy numbers. Use ONLY the values given in the
+   "Agent track records" section; if an agent is not listed there, treat its
+   reliability as unknown and lean on the agents that are listed.
 3. Visual (15%) is a CONFIRMATION-ONLY input. It tends to report bullish structure ("price above EMAs/VWAP") on almost every candle and is right less than half the time, so it must NEVER drive a decision on its own. Use it only to boost/reduce confidence when it agrees/disagrees with QABBA or Technical.
 4. Sentiment (15%) modulates confidence and filters extreme sentiment — but should NOT override clear QABBA/Technical directional signals
 5. When Technical AND QABBA agree on direction → execute with HIGH confidence
@@ -456,6 +481,17 @@ DECISION POLICY:
 9. An agent reporting HOLD means it has no strong conviction — this is different from an agent actively signaling BUY or SELL
 10. When Technical reports nearby resistance/support or weak risk_reward_ratio, downgrade late entries even if the directional signal is still valid
 11. When QABBA signals with confidence ≥ 0.75 AND Technical is HOLD (not the opposite direction) → lean toward QABBA's direction with MEDIUM confidence. If Technical actively signals the OPPOSITE direction, do NOT follow QABBA alone — that is a conflict (rule 7).
+11b. QABBA INTERNAL CONTRADICTION: if QABBA's reasoning shows OBI pointing one
+    way but CVD pointing the OTHER way (e.g. "SELL because OBI is low, despite
+    positive/rising CVD"), that signal is unreliable — do NOT act on it. CVD
+    (aggressive-volume direction) outranks instantaneous OBI. Treat such a QABBA
+    signal as HOLD for consensus purposes.
+14. SENTIMENT IS CONTEXT, NOT A DIRECTION VOTE. A persistent "extreme fear /
+    NEGATIVE" driven by macro/geopolitical news (wars, conflicts) can stay pinned
+    for days while price does the opposite — crypto often overreacts to and then
+    fades geopolitical fear. Use Sentiment ONLY to modulate confidence, never as
+    one of the agreeing directional agents, and never let a constant macro-fear
+    reading manufacture a SELL bias by itself.
 12. "2 agents agree" only counts as consensus when at least ONE of them is a PRIMARY agent (QABBA or Technical). Visual + Sentiment agreeing is NOT sufficient to execute.
 13. HOLD should be the exception, not the default. Only HOLD when there is genuine uncertainty or poor risk/reward.
 

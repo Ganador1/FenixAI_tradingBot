@@ -315,6 +315,20 @@ def _normalize_compact_agent_response(
             normalized["order_flow_bias"] = "neutral"
         if "absorption_detected" not in normalized and is_hold:
             normalized["absorption_detected"] = False
+
+    elif agent_type == "decision_agent":
+        decision = str(normalized.get("final_decision") or "").upper().strip()
+        normalized["final_decision"] = decision
+        if decision == "HOLD":
+            if "confidence_in_decision" not in normalized:
+                if "confidence" in normalized:
+                    normalized["confidence_in_decision"] = _confidence_label_from_score(
+                        normalized.get("confidence")
+                    )
+                else:
+                    normalized["confidence_in_decision"] = "LOW"
+            if "convergence_score" not in normalized:
+                normalized["convergence_score"] = 0.0
     return normalized
 
 

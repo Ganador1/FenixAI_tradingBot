@@ -112,6 +112,37 @@ class TestHelperFunctions:
             "technical_analyst", normalized
         )
 
+    def test_compact_decision_hold_gets_fail_safe_confidence(self):
+        from src.core.langgraph_orchestrator import (
+            _normalize_compact_agent_response,
+            validate_agent_response,
+        )
+
+        normalized = _normalize_compact_agent_response(
+            "decision_agent",
+            {"final_decision": "HOLD"},
+        )
+
+        assert normalized["confidence_in_decision"] == "LOW"
+        assert normalized["convergence_score"] == 0.0
+        assert validate_agent_response("decision_agent", normalized) == []
+
+    def test_compact_directional_decision_stays_strict(self):
+        from src.core.langgraph_orchestrator import (
+            _normalize_compact_agent_response,
+            validate_agent_response,
+        )
+
+        normalized = _normalize_compact_agent_response(
+            "decision_agent",
+            {"final_decision": "BUY"},
+        )
+
+        assert "confidence_in_decision" not in normalized
+        assert "Missing required field: 'confidence_in_decision'" in validate_agent_response(
+            "decision_agent", normalized
+        )
+
 
 class TestReasoningBankHelpers:
     """Tests para helpers de ReasoningBank."""

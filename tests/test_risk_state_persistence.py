@@ -135,6 +135,78 @@ def test_update_balance_then_trade_keeps_realistic_balance(tmp_path):
     assert rm._current_balance == pytest.approx(539.67, abs=0.01)
 
 
+# --- Inherited all-time drawdown restart safety ---
+# A fresh process seeds the all-time peak from full account equity, which
+# survives restarts. Restarting must not grant one additional trade while the
+# account remains above the configured all-time drawdown limit.
+
+
+def test_inherited_alltime_drawdown_blocks_fresh_bot():
+    from src.risk.runtime_risk_manager import RuntimeRiskManager
+    import tempfile
+
+    rm = RuntimeRiskManager(storage_path=tempfile.mktemp(suffix=".jsonl"))
+    rm._all_time_peak = 538.29
+    rm.update_balance(433.13)
+
+    assert not rm._trades
+    status = rm.evaluate_risk()
+    assert status.mode == "SEVERE"
+    allowed, _ = rm.check_trade_allowed("ETHUSDC", 50.0)
+    assert allowed is False
+
+
+def test_inherited_alltime_peak_preserved_on_disk(tmp_path):
+    state = tmp_path / "risk_manager.jsonl"
+    rm = RuntimeRiskManager(storage_path=str(state))
+    rm._all_time_peak = 538.29
+    rm.update_balance(433.13)
+    rm.evaluate_risk()
+
+    # Grace must NOT lower the high-water mark, in memory or on disk.
+    assert rm._all_time_peak == pytest.approx(538.29)
+    rm._save_state()
+    last = json.loads(state.read_text().splitlines()[-1])
+    assert last["all_time_peak"] == pytest.approx(538.29)
+
+
+def test_restart_cannot_grant_an_extra_trade(tmp_path):
+    from src.risk.runtime_risk_manager import RuntimeRiskManager
+
+    state = tmp_path / "risk_manager.jsonl"
+    first = RuntimeRiskManager(storage_path=str(state))
+    first._all_time_peak = 538.29
+    first.update_balance(433.13)
+    first._save_state()
+
+    restarted = RuntimeRiskManager(storage_path=str(state))
+    assert not restarted._trades
+    allowed, status = restarted.check_trade_allowed("ETHUSDC", 50.0)
+
+    assert allowed is False
+    assert status.mode == "SEVERE"
+    assert "All-time drawdown" in status.reason
+
+
+def test_live_alltime_drawdown_still_blocks_with_trades():
+    """The legitimate case: a real live drawdown (trades exist) must still halt."""
+    from src.risk.runtime_risk_manager import RuntimeRiskManager, TradeRecord
+    import tempfile
+
+    rm = RuntimeRiskManager(storage_path=tempfile.mktemp(suffix=".jsonl"))
+    rm.update_balance(1000.0)
+    for i in range(3):
+        rm.record_trade(TradeRecord(
+            trade_id=f"L{i}", timestamp=datetime.now(timezone.utc), symbol="ETHUSDC",
+            decision="SELL", entry_price=1000.0, exit_price=1000.0, pnl=-55.0, success=False,
+        ))
+        rm.update_balance(1000.0 - (i + 1) * 55.0)
+
+    # ~16.5% below the 1000 peak, with real trades -> SEVERE stays active.
+    assert rm._all_time_peak == pytest.approx(1000.0)
+    assert rm.evaluate_risk().mode == "SEVERE"
+
+
 if __name__ == "__main__":
     import os
 

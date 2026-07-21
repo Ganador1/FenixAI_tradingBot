@@ -32,6 +32,49 @@ class TestClassifyHeadline:
             == "severe"
         )
 
+    # --- Regression: bare "strike" false positives (2026-07-18 live radiografía) ---
+    # The macro filter blocked two winning BUYs citing "hunger strike". Labor/
+    # finance uses of "strike" must NOT be severe (they stay "high" = soft signal).
+
+    def test_hunger_strike_not_severe(self):
+        r = classify_headline("Indian activist on hunger strike for 20 days taken to hospital")
+        assert r != "severe"
+
+    def test_strike_price_not_severe(self):
+        assert classify_headline("Options with high strike price expire Friday") != "severe"
+
+    def test_labor_strikes_not_severe(self):
+        assert classify_headline("Rail strikes hit commuters across the country") != "severe"
+        assert classify_headline("Auto workers strikes hit production lines") != "severe"
+
+    def test_strike_idioms_not_severe(self):
+        assert classify_headline("US strikes down controversial law") != "severe"
+        assert classify_headline("US strikes trade deal with EU") != "severe"
+
+    def test_airstrikes_plural_is_severe(self):
+        # \b before the trailing "s" means "airstrike" alone would miss the plural.
+        assert classify_headline("Israel launches airstrikes on Gaza") == "severe"
+
+    def test_drone_and_missile_strike_are_severe(self):
+        assert classify_headline("Drone strike kills commander") == "severe"
+        assert classify_headline("Missile strike hits airport") == "severe"
+
+    def test_us_strikes_hit_iran_is_severe(self):
+        # The exact headline from the 2026-07-18 run that SHOULD block.
+        assert classify_headline("US strikes hit Iran for seventh consecutive night") == "severe"
+
+    def test_local_personal_attack_is_high_not_severe(self):
+        assert (
+            classify_headline(
+                "Palestinian teenage footballer dies a week after Israeli settler attack"
+            )
+            == "high"
+        )
+
+    def test_state_attack_and_systemic_targets_are_severe(self):
+        assert classify_headline("Two troops killed after Iranian attack in Jordan") == "severe"
+        assert classify_headline("Iran steps up attacks on ships in Hormuz") == "severe"
+
 
 class TestGetMacroAlerts:
     def test_feed_failure_returns_empty(self):

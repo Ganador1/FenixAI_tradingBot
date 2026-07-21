@@ -116,7 +116,6 @@ class RuntimeRiskManager:
         # All-time high-water mark: only ever increases (except explicit re-anchor).
         # Protects against drawdown erasure via daily resets or process restarts.
         self._all_time_peak: float = 0.0
-
         # Cooldown tracking
         self._cooldown_start: datetime | None = None
 
@@ -628,6 +627,13 @@ class RuntimeRiskManager:
         # 1b. Evaluar SEVERE all-time drawdown (acumulado entre días/restarts).
         # El peak intradía se re-ancla a medianoche; este check evita que pérdidas
         # sostenidas (-5% diario) escapen al circuit breaker indefinidamente.
+        #
+        # A process restart must never bypass this guard. The account may be below
+        # its historical peak because of trading losses, another bot, or an
+        # intentional withdrawal; local session history cannot distinguish those
+        # cases. Treat the persisted high-water mark as authoritative and fail
+        # closed. Operators must explicitly re-anchor/reset the persisted state
+        # after verifying an external capital-flow change.
         all_time_drawdown_pct = metrics.get("all_time_drawdown_pct", 0.0)
         try:
             max_alltime_dd = float(

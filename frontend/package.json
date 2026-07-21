@@ -6,7 +6,7 @@
   "scripts": {
     "client:dev": "vite --host 127.0.0.1 --port 5173",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "node ./node_modules/eslint/bin/eslint.js .",
     "preview": "vite preview",
     "check": "tsc --noEmit",
     "server:dev": "export NODE_PATH=./node_modules && nodemon --watch ../api --ext ts,json --exec tsx ../api/server.ts",
