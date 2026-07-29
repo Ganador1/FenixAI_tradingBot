@@ -13,6 +13,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,llm,vision,monitoring]"
 python -m playwright install chromium
+plotly_get_chrome -y
 ```
 
 1. Copy `.env.example` to `.env` and update keys
