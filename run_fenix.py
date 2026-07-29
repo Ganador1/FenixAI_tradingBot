@@ -97,6 +97,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _api_port(value: str) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("API port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("API port must be between 1 and 65535")
+    return port
+
+
 def _start_log_retention_thread() -> None:
     """Run a recursive log-retention pass now and then once per day.
 
@@ -305,6 +315,12 @@ Examples:
         "--host",
         default="127.0.0.1",
         help="Host to bind API server (default: 127.0.0.1, not exposed publicly)",
+    )
+    parser.add_argument(
+        "--port",
+        type=_api_port,
+        default=os.getenv("FENIX_API_PORT", "8000"),
+        help="API port (default: FENIX_API_PORT or 8000)",
     )
 
     # ---- v2.5 NanoFenix companion ------------------------------------
@@ -646,7 +662,7 @@ async def main():
         import uvicorn
         # Importar app_socketio desde el nuevo módulo server
         # Nota: uvicorn necesita el import string "src.api.server:app_socketio"
-        uvicorn.run("src.api.server:app_socketio", host=args.host, port=8000, reload=False)
+        uvicorn.run("src.api.server:app_socketio", host=args.host, port=args.port, reload=False)
         return 0
 
     # Start standard trading engine (CLI mode)
@@ -849,7 +865,7 @@ if __name__ == "__main__":
                 logger.warning("API host set to 0.0.0.0; to expose the API explicitly set ALLOW_EXPOSE_API=true")
                 logger.info("Binding to 127.0.0.1 instead for safety")
                 host = "127.0.0.1"
-        uvicorn.run("src.api.server:app_socketio", host=host, port=8000, reload=False)
+        uvicorn.run("src.api.server:app_socketio", host=host, port=args.port, reload=False)
         sys.exit(0)
 
     try:

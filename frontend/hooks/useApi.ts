@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { API_CONFIG, ERROR_MESSAGES } from '@/lib/api-config';
+import { getAuthToken } from '@/lib/auth';
 import { toast } from 'sonner';
 
 interface RequestOptions {
@@ -52,7 +53,7 @@ export const useApi = <T = unknown,>(
       };
 
       // Add authorization token if available
-      const token = options.token || localStorage.getItem('auth_token');
+      const token = options.token || getAuthToken();
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
@@ -167,7 +168,7 @@ export const useApiMutation = <T = unknown,>() => {
         };
 
         // Add authorization token if available
-        const token = options.token || localStorage.getItem('auth_token');
+        const token = options.token || getAuthToken();
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
         }

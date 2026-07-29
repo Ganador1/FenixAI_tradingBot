@@ -8,6 +8,7 @@ import { Switch } from '@/components/ui/Switch';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/Alert';
 // import { Badge } from '@/components/ui/Badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
+import { authHeaders } from '@/lib/auth';
 
 interface SystemSettings {
   general: {
@@ -101,9 +102,7 @@ export const SettingsPage: React.FC = () => {
       setError(null);
 
       const response = await fetch('/api/system/settings', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       if (!response.ok) {
@@ -131,7 +130,7 @@ export const SettingsPage: React.FC = () => {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          ...authHeaders()
         },
         body: JSON.stringify(settings[section])
       });
@@ -155,9 +154,7 @@ export const SettingsPage: React.FC = () => {
       
       const response = await fetch(`/api/system/test-connection/${type}`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       const result = await response.json();
@@ -183,9 +180,7 @@ export const SettingsPage: React.FC = () => {
 
       const response = await fetch(`/api/system/settings/${section}/reset`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       if (!response.ok) {
@@ -263,6 +258,16 @@ export const SettingsPage: React.FC = () => {
           <AlertDescription>{success}</AlertDescription>
         </Alert>
       )}
+
+      <Alert className="mb-4">
+        <AlertTriangle className="h-4 w-4" />
+        <AlertTitle>Administrative settings</AlertTitle>
+        <AlertDescription>
+          Changes on this page are persisted, but they do not hot-reconfigure a running
+          trading engine. Use the dedicated Engine controls or deployment configuration
+          for execution and risk changes.
+        </AlertDescription>
+      </Alert>
 
       {/* Settings Tabs */}
       <Tabs defaultValue={activeTab}>

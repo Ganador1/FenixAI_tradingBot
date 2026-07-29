@@ -8,6 +8,7 @@ import { Select } from '../components/ui/Select';
 import { Badge } from '../components/ui/Badge';
 import { Alert, AlertTitle, AlertDescription } from '../components/ui/Alert';
 import { Modal } from '../components/ui/Modal';
+import { authHeaders } from '@/lib/auth';
 
 interface User {
   id: string;
@@ -85,9 +86,7 @@ export const UsersPage: React.FC = () => {
       setError(null);
 
       const usersResponse = await fetch('/api/auth/users', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       if (!usersResponse.ok) {
@@ -202,7 +201,7 @@ export const UsersPage: React.FC = () => {
         method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          ...authHeaders()
         },
         body: JSON.stringify({
           ...userForm,
@@ -232,9 +231,7 @@ export const UsersPage: React.FC = () => {
     try {
       const response = await fetch(`/api/auth/users/${userId}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       if (!response.ok) {
@@ -253,9 +250,7 @@ export const UsersPage: React.FC = () => {
     try {
       const response = await fetch(`/api/auth/users/${userId}/reset-password`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       if (!response.ok) {
@@ -274,7 +269,7 @@ export const UsersPage: React.FC = () => {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          ...authHeaders()
         },
         body: JSON.stringify({ enabled: enable })
       });

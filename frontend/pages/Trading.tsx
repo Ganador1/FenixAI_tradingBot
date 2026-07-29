@@ -10,6 +10,7 @@ import { Select } from '../components/ui/Select';
 import { Badge } from '../components/ui/Badge';
 import { Alert, AlertTitle, AlertDescription } from '../components/ui/Alert';
 import { ExecutionFlowFeed } from '../components/trading/ExecutionFlowFeed';
+import { authHeaders } from '@/lib/auth';
 
 interface Order {
   id: string;
@@ -220,7 +221,7 @@ export const Trading: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          ...authHeaders()
         },
         body: JSON.stringify(orderForm)
       });
@@ -250,9 +251,7 @@ export const Trading: React.FC = () => {
     try {
       const response = await fetch(`/api/trading/orders/${orderId}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers: authHeaders()
       });
 
       if (!response.ok) {

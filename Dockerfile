@@ -49,7 +49,7 @@ for dependency in project["dependencies"]:
         seen.add(dependency)
 
 optional = project.get("optional-dependencies", {})
-for extra in ("vision", "monitoring"):
+for extra in ("llm", "vision", "monitoring"):
     for dependency in optional.get(extra, []):
         if dependency not in seen:
             print(dependency)

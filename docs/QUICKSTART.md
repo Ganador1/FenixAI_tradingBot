@@ -24,7 +24,9 @@ source .venv/bin/activate  # Linux/Mac
 # or .venv\Scripts\activate  # Windows
 
 # Install dependencies
-pip install -e ".[dev,vision,monitoring]"
+pip install -e ".[dev,llm,vision,monitoring]"
+python -m playwright install chromium
+plotly_get_chrome -y
 ```
 
 ---

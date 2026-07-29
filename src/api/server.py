@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import platform
+import smtplib
 import time
 import uuid
 from collections import deque
@@ -16,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import get_password_hash
@@ -35,6 +36,13 @@ from src.api.nano_routes import (
 )
 from src.api.nano_routes import (
     router as nano_router,
+)
+from src.api.system_settings import (
+    SettingsValidationError,
+    load_system_settings,
+    public_system_settings,
+    reset_system_settings as reset_persisted_system_settings,
+    update_system_settings as update_persisted_system_settings,
 )
 from src.config.config_loader import APP_CONFIG
 from src.config.database import get_db, init_db
@@ -858,109 +866,81 @@ async def get_runtime_instances():
     }
 
 
-# ============ System Settings (simple in-memory store for UI) ============
-_SYSTEM_SETTINGS: dict = {
-    "general": {
-        "site_name": "Fenix AI Trading Dashboard",
-        "site_description": "Advanced trading dashboard with AI agents",
-        "timezone": "UTC",
-        "date_format": "YYYY-MM-DD",
-        "language": "en",
-    },
-    "security": {
-        "session_timeout": 30,
-        "password_min_length": 12,
-        "require_uppercase": True,
-        "require_lowercase": True,
-        "require_numbers": True,
-        "require_special_chars": False,
-        "max_login_attempts": 5,
-        "lockout_duration": 30,
-        "two_factor_enabled": False,
-    },
-    "notifications": {
-        "email_enabled": False,
-        "email_host": "",
-        "email_port": 587,
-        "email_username": "",
-        "email_password": "",
-        "email_from": "no-reply@fenix.ai",
-        "sms_enabled": False,
-        "sms_provider": "",
-        "sms_api_key": "",
-    },
-    "trading": {
-        "max_positions_per_user": 5,
-        "max_daily_trades": 100,
-        "risk_threshold": 2.0,
-        "stop_loss_default": 1.0,
-        "take_profit_default": 2.0,
-        "leverage_max": 10,
-        "margin_call_level": 80,
-        "auto_close_on_margin_call": True,
-    },
-    "agents": {
-        "sentiment_agent_enabled": True,
-        "technical_agent_enabled": True,
-        "visual_agent_enabled": True,
-        "qabba_agent_enabled": True,
-        "decision_agent_enabled": True,
-        "risk_agent_enabled": True,
-        "agent_timeout": 30,
-        "max_concurrent_agents": 4,
-        "reasoning_bank_retention_days": 365,
-        "scorecard_retention_days": 365,
-    },
-    "api": {
-        "rate_limit_enabled": True,
-        "rate_limit_requests_per_minute": 60,
-        "rate_limit_requests_per_hour": 1000,
-        "cors_enabled": True,
-        "cors_origins": ["http://localhost:5173"],
-        "api_key_required": False,
-        "jwt_expiry_hours": 24,
-        "refresh_token_expiry_days": 30,
-    },
-    "database": {
-        "backup_enabled": False,
-        "backup_frequency": "daily",
-        "backup_retention_days": 30,
-        "maintenance_window": "03:00",
-        "auto_vacuum": False,
-        "connection_pool_size": 5,
-        "query_timeout_seconds": 60,
-    },
-}
+# ============ Persistent System Settings ============
 
 
-@app.get("/api/system/settings")
+@app.get("/api/system/settings", dependencies=[Depends(require_control_access)])
 async def get_system_settings():
-    return _SYSTEM_SETTINGS
+    """Return persisted administrative settings with all secrets masked."""
+    return public_system_settings()
 
 
-@app.put("/api/system/settings/{section}")
+@app.put("/api/system/settings/{section}", dependencies=[Depends(require_control_access)])
 async def update_system_settings(section: str, payload: dict):
-    if section not in _SYSTEM_SETTINGS:
-        raise HTTPException(status_code=404, detail="Settings section not found")
-    # Very permissive for demo - replace on valid payload
-    _SYSTEM_SETTINGS[section].update(payload)
-    return {"success": True, "section": section, "settings": _SYSTEM_SETTINGS[section]}
+    """Validate and atomically persist one settings section."""
+    try:
+        persisted = update_persisted_system_settings(section, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Settings section not found") from None
+    except SettingsValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    public_section = public_system_settings({**load_system_settings(), section: persisted})[section]
+    return {"success": True, "section": section, "settings": public_section}
 
 
-@app.post("/api/system/test-connection/{type}")
-async def test_system_connection(type: str):
-    # Simple stub to keep frontend happy
-    return {"success": True, "type": type, "message": "Connection OK"}
+def _test_email_connection(settings: dict) -> None:
+    email = settings["notifications"]
+    host = str(email.get("email_host", "")).strip()
+    port = int(email.get("email_port", 0) or 0)
+    if not host or not port:
+        raise ValueError("Email host and port must be configured before testing")
+
+    smtp_class = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+    with smtp_class(host, port, timeout=5) as client:
+        client.ehlo()
+        if port == 587:
+            client.starttls()
+            client.ehlo()
+        username = str(email.get("email_username", "")).strip()
+        password = str(email.get("email_password", ""))
+        if username:
+            if not password:
+                raise ValueError("Email password is not configured")
+            client.login(username, password)
 
 
-@app.post("/api/system/settings/{section}/reset")
+@app.post("/api/system/test-connection/{type}", dependencies=[Depends(require_control_access)])
+async def test_system_connection(type: str, db: AsyncSession = Depends(get_db)):
+    """Perform a real, non-destructive connectivity check."""
+    if type == "database":
+        await db.execute(text("SELECT 1"))
+        return {"success": True, "type": type, "message": "Database query succeeded"}
+    if type == "email":
+        try:
+            await asyncio.to_thread(_test_email_connection, load_system_settings())
+        except (OSError, smtplib.SMTPException, ValueError) as exc:
+            raise HTTPException(status_code=502, detail=f"Email connection failed: {exc}") from exc
+        return {"success": True, "type": type, "message": "SMTP connection succeeded"}
+    if type == "sms":
+        raise HTTPException(
+            status_code=501,
+            detail="SMS connectivity testing is not implemented for the selected provider",
+        )
+    raise HTTPException(status_code=404, detail="Connection type not found")
+
+
+@app.post(
+    "/api/system/settings/{section}/reset",
+    dependencies=[Depends(require_control_access)],
+)
 async def reset_system_settings(section: str):
-    if section not in _SYSTEM_SETTINGS:
-        raise HTTPException(status_code=404, detail="Settings section not found")
-    # Replace with defaults - for now set to empty or predefined defaults
-    # We simply reset to the currently defined defaults by reloading the in-memory defaults
-    # TODO: implement persistent storage or config file
-    return {"success": True, "section": section, "settings": _SYSTEM_SETTINGS[section]}
+    """Reset one section to defaults and persist the result."""
+    try:
+        persisted = reset_persisted_system_settings(section)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Settings section not found") from None
+    public_section = public_system_settings({**load_system_settings(), section: persisted})[section]
+    return {"success": True, "section": section, "settings": public_section}
 
 
 @app.get("/api/system/alerts")
@@ -1193,12 +1173,50 @@ async def cancel_order(order_id: str = Path(...), db: AsyncSession = Depends(get
 
 
 @app.get("/api/trading/balance")
-async def get_account_balance():
-    """Get real account balance from Binance Futures."""
-    # Bug fix: paper_trading != testnet. Paper mode with production keys must
-    # query the production API (read-only); using the testnet here caused
-    # 401 -2015 errors when only production keys are configured.
-    testnet = engine.use_testnet if engine else True
+async def get_account_balance(db: AsyncSession = Depends(get_db)):
+    """Return paper ledger equity or the authenticated live Futures balance."""
+    paper_mode = (
+        bool(engine.paper_trading)
+        if engine is not None
+        else _engine_env_flag("ENABLE_PAPER_TRADING", True)
+    )
+    if paper_mode:
+        try:
+            initial_balance = float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "100") or 100)
+        except ValueError:
+            initial_balance = 100.0
+        if initial_balance <= 0:
+            initial_balance = 100.0
+        realized_result = await db.execute(
+            select(func.coalesce(func.sum(Position.realized_pnl), 0.0)).where(
+                Position.is_open.is_(False)
+            )
+        )
+        unrealized_result = await db.execute(
+            select(func.coalesce(func.sum(Position.unrealized_pnl), 0.0)).where(
+                Position.is_open.is_(True)
+            )
+        )
+        realized_pnl = float(realized_result.scalar_one())
+        unrealized_pnl = float(unrealized_result.scalar_one())
+        equity = initial_balance + realized_pnl + unrealized_pnl
+        return {
+            "balances": [
+                {
+                    "asset": "USDT",
+                    "balance": equity,
+                    "available": equity,
+                    "unrealized_pnl": unrealized_pnl,
+                }
+            ],
+            "total_usdt": equity,
+            "initial_balance": initial_balance,
+            "realized_pnl": realized_pnl,
+            "mode": "paper",
+            "source": "paper_ledger",
+        }
+
+    testnet = engine.use_testnet if engine else False
 
     async def _inner(client: BinanceClient):
         # Get all asset balances
@@ -1224,7 +1242,7 @@ async def get_account_balance():
                 if asset in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD"):
                     total_usdt += balance
 
-        return {"balances": balances, "total_usdt": total_usdt}
+        return {"balances": balances, "total_usdt": total_usdt, "mode": "live"}
 
     result = await _with_binance_client(testnet, _inner)
     if result is None:
@@ -1715,8 +1733,16 @@ if __name__ == "__main__":
 
     allow_expose_api = os.getenv("ALLOW_EXPOSE_API", "false").lower() == "true"
     host = "0.0.0.0" if allow_expose_api else "127.0.0.1"
+    try:
+        port = int(os.getenv("FENIX_API_PORT", "8000"))
+    except ValueError:
+        logger.warning("Invalid FENIX_API_PORT; falling back to 8000")
+        port = 8000
+    if not 1 <= port <= 65535:
+        logger.warning("FENIX_API_PORT is out of range; falling back to 8000")
+        port = 8000
     if allow_expose_api:
         logger.warning("ALLOW_EXPOSE_API is set: the API will bind to 0.0.0.0 (external exposure)")
     else:
         logger.info("Binding to 127.0.0.1 by default. Set ALLOW_EXPOSE_API=true to bind to 0.0.0.0")
-    uvicorn.run("src.api.server:app_socketio", host=host, port=8000, reload=True)
+    uvicorn.run("src.api.server:app_socketio", host=host, port=port, reload=True)

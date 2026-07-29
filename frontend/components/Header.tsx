@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Bell, User, LogOut, Sparkles, Activity, Play, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/authStore';
+import { authHeaders } from '@/lib/auth';
 import { Button } from './ui/Button';
 
 interface EngineState {
@@ -47,10 +48,9 @@ export function Header() {
     const action = engine?.running ? 'stop' : 'start';
     setEngineBusy(true);
     try {
-      const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
       const res = await fetch(`/api/engine/${action}`, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: authHeaders(),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
