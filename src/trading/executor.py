@@ -144,6 +144,7 @@ class OrderExecutor:
         min_notional: float = 5.0,
         timeframe: str | None = None,
         testnet: bool = True,
+        allow_mutations: bool = False,
     ):
         self.symbol = symbol.upper()
         self.timeframe = timeframe or "15m"
@@ -151,6 +152,9 @@ class OrderExecutor:
         self.qty_precision = qty_precision
         self.min_notional = min_notional
         self.testnet = testnet
+        # Exchange writes are a capability, not an implication of choosing an
+        # endpoint. Paper/read-only callers must never receive that capability.
+        self.allow_mutations = bool(allow_mutations)
 
         self._service: BinanceService | None = None
         self._last_protective_prices: tuple[float | None, float | None] = (None, None)
@@ -158,7 +162,20 @@ class OrderExecutor:
         cb_enabled = not (self.testnet or disable_cb_env)
         self.circuit_breaker = CircuitBreaker(enabled=cb_enabled)
 
-        logger.info(f"OrderExecutor initialized for {symbol} (testnet={testnet})")
+        logger.info(
+            "OrderExecutor initialized for %s (testnet=%s, mutations=%s)",
+            symbol,
+            testnet,
+            self.allow_mutations,
+        )
+
+    def _require_mutations_enabled(self, operation: str) -> None:
+        """Fail closed before any Binance order/account mutation."""
+        if not self.allow_mutations:
+            raise PermissionError(
+                f"Exchange mutation blocked for {self.symbol}: {operation} "
+                "requires an explicitly mutation-enabled executor"
+            )
 
     @property
     def service(self) -> BinanceService:
@@ -492,6 +509,18 @@ class OrderExecutor:
             OrderResult with execution details.
         """
         timestamp = datetime.now(timezone.utc).isoformat()
+        if not self.allow_mutations:
+            logger.critical(
+                "Blocked exchange market order without mutation capability: symbol=%s side=%s",
+                self.symbol,
+                side,
+            )
+            return OrderResult(
+                success=False,
+                status="MUTATIONS_DISABLED",
+                message="Exchange mutations are disabled for this executor",
+                timestamp=timestamp,
+            )
         entry_client_order_id = self._new_client_order_id("entry")
         account_lock = None
 
@@ -1024,6 +1053,7 @@ class OrderExecutor:
         if float(formatted_qty) <= 0:
             return "INVALID_CLOSE_QUANTITY"
 
+        self._require_mutations_enabled("close_unprotected_position")
         try:
             response = await asyncio.to_thread(
                 self.service.place_market_order,
@@ -1053,6 +1083,7 @@ class OrderExecutor:
         entry_price: float | None = None,
     ) -> tuple[int | None, int | None]:
         """Place SL and TP orders."""
+        self._require_mutations_enabled("place_protective_orders")
         # SL/TP side is opposite to the entry side.
         sltp_side = "SELL" if entry_side == "BUY" else "BUY"
         formatted_qty = self.format_quantity(quantity)
@@ -1163,6 +1194,7 @@ class OrderExecutor:
 
     async def cancel_order(self, order_id: int) -> bool:
         """Cancel one order."""
+        self._require_mutations_enabled("cancel_order")
         try:
             await asyncio.to_thread(self.service.cancel_order, self.symbol, order_id)
             logger.info(f"Order {order_id} cancelled")
@@ -1173,6 +1205,7 @@ class OrderExecutor:
 
     async def cancel_all_orders(self) -> bool:
         """Cancel all open and monitored orders for the current symbol."""
+        self._require_mutations_enabled("cancel_all_orders")
         success = True
 
         try:
@@ -1245,6 +1278,13 @@ class OrderExecutor:
     ) -> OrderResult:
         """Replace monitored SL/TP orders for an existing protected position."""
         timestamp = datetime.now(timezone.utc).isoformat()
+        if not self.allow_mutations:
+            return OrderResult(
+                success=False,
+                status="MUTATIONS_DISABLED",
+                message="Exchange mutations are disabled for this executor",
+                timestamp=timestamp,
+            )
 
         try:
             monitor = self._resolve_order_monitor()

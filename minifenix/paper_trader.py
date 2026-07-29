@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger("MiniFenix.Paper")
 
@@ -103,7 +102,7 @@ class PaperTrader:
         self.commission_pct = commission_pct
         self.cooldown_seconds = cooldown_seconds
 
-        self.position: Optional[Position] = None
+        self.position: Position | None = None
         self.trades: list[Trade] = []
         self._trade_id = 0
         self._last_trade_ts = 0.0
@@ -155,7 +154,7 @@ class PaperTrader:
         """Open SHORT position."""
         return self._open("SHORT", price, ml_signal, ml_confidence, brain_bias, brain_confidence)
 
-    def update(self, current_price: float) -> Optional[Trade]:
+    def update(self, current_price: float) -> Trade | None:
         """
         Update the position with the current price.
         Close if SL or TP is hit.
@@ -172,7 +171,7 @@ class PaperTrader:
             return self._close(current_price, reason="SL")
         return None
 
-    def force_close(self, price: float, reason: str = "SIGNAL") -> Optional[Trade]:
+    def force_close(self, price: float, reason: str = "SIGNAL") -> Trade | None:
         """Close the position based on the opposite model signal."""
         if self.position is None:
             return None
@@ -286,7 +285,8 @@ class PaperTrader:
 
     def _close(self, price: float, reason: str) -> Trade:
         pos = self.position
-        assert pos is not None
+        if pos is None:
+            raise RuntimeError("Cannot close a MiniFenix position that is not open")
 
         self._trade_id += 1
 

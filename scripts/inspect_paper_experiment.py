@@ -10,6 +10,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+_TABLE_COUNT_QUERIES = {
+    "orders": 'SELECT COUNT(*) FROM "orders"',
+    "positions": 'SELECT COUNT(*) FROM "positions"',
+    "trades": 'SELECT COUNT(*) FROM "trades"',
+    "agent_outputs": 'SELECT COUNT(*) FROM "agent_outputs"',
+}
+
 
 def _process_running(pid: int) -> bool:
     try:
@@ -20,8 +27,11 @@ def _process_running(pid: int) -> bool:
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int | None:
+    query = _TABLE_COUNT_QUERIES.get(table)
+    if query is None:
+        raise ValueError("table is not part of the experiment schema")
     try:
-        row = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
+        row = connection.execute(query).fetchone()
     except sqlite3.Error:
         return None
     return int(row[0]) if row else 0

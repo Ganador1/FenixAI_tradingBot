@@ -19,9 +19,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+os.umask(0o077)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.security.plan_security import (
+    read_bounded_json,
+    require_slot_count,
+    strict_bool,
+    strict_number,
+    strict_optional_bool,
+    strict_text,
+)
+from src.security.private_files import ensure_private_directory, open_private_text
+from src.security.subprocess_environment import experiment_child_environment
 
 SUPPORTED_PROVIDER_CHOICES = (
     "ollama_cloud",
@@ -35,26 +48,9 @@ SUPPORTED_PROVIDER_CHOICES = (
 
 
 def _load_dotenv_file(project_root: Path) -> None:
-    env_path = project_root / ".env"
-    if not env_path.exists():
-        return
+    from src.security.dotenv_security import secure_load_dotenv
 
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv(env_path)
-        return
-    except Exception:
-        pass
-
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+    secure_load_dotenv(project_root / ".env")
 
 
 @dataclass
@@ -92,103 +88,93 @@ class LiveSuiteSlot:
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
+    return (re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("._-") or "slot")[:80]
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as handle:
+    with open_private_text(path, "a") as handle:
         handle.write(json.dumps(payload, default=str, ensure_ascii=False) + "\n")
 
 
 def _load_plan(path: Path) -> list[LiveSuiteSlot]:
-    raw = json.loads(path.read_text())
-    if not isinstance(raw, list):
-        raise ValueError("Plan file must contain a JSON list")
+    raw = require_slot_count(read_bounded_json(path))
 
     slots: list[LiveSuiteSlot] = []
     for idx, item in enumerate(raw, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"Invalid plan item at index {idx}: expected object")
-
-        mode = str(item.get("mode", "individual")).strip().lower()
+        mode = strict_text(item, "mode", default="individual", maximum=16)
+        if mode is None:
+            raise ValueError(f"Slot {idx} mode cannot be null")
+        mode = mode.lower()
         if mode not in {"individual", "team"}:
             raise ValueError(f"Invalid mode in slot {idx}: {mode}")
 
+        name = strict_text(item, "name", default=f"slot-{idx}", maximum=120)
+        if not name:
+            raise ValueError(f"Slot {idx} name cannot be empty")
+        timeframe = strict_text(item, "timeframe", maximum=16)
+        if timeframe is None:
+            timeframe = strict_text(item, "single_timeframe", maximum=16)
+
         slot = LiveSuiteSlot(
-            name=str(item.get("name") or f"slot-{idx}").strip(),
+            name=name,
             mode=mode,
-            base_model=item.get("base_model"),
-            team_models=item.get("team_models"),
-            base_vision_model=item.get("base_vision_model"),
-            symbol=item.get("symbol"),
-            timeframe=item.get("timeframe") or item.get("single_timeframe"),
-            run_minutes=item.get("run_minutes"),
-            engine_mode=item.get("engine_mode"),
-            description=str(item.get("description", "")),
-            experiment=str(item.get("experiment", "")),
-            experiment_id=int(item.get("experiment_id", 0) or 0),
-            disable_reasoning_bank=bool(item.get("disable_reasoning_bank", False)),
-            disable_risk_manager=bool(item.get("disable_risk_manager", False)),
-            disable_judge=bool(item.get("disable_judge", False)),
-            monolithic_mode=bool(item.get("monolithic_mode", False)),
-            lite_pipeline=bool(item.get("lite_pipeline", False)),
-            no_visual=bool(item.get("no_visual", False)),
-            no_sentiment=bool(item.get("no_sentiment", False)),
-            disable_trading=bool(item.get("disable_trading", False)),
-            max_risk_per_trade=(
-                float(item["max_risk_per_trade"])
-                if item.get("max_risk_per_trade") is not None
-                else None
+            base_model=strict_text(item, "base_model", maximum=256),
+            team_models=strict_text(item, "team_models", maximum=4096),
+            base_vision_model=strict_text(item, "base_vision_model", maximum=256),
+            symbol=strict_text(item, "symbol", maximum=20),
+            timeframe=timeframe,
+            run_minutes=strict_number(
+                item, "run_minutes", minimum=1, maximum=10_080, integer=True
             ),
-            balance_fallback_usdt=(
-                float(item["balance_fallback_usdt"])
-                if item.get("balance_fallback_usdt") is not None
-                else None
+            engine_mode=strict_text(item, "engine_mode", maximum=16),
+            description=strict_text(item, "description", default="", maximum=2_000) or "",
+            experiment=strict_text(item, "experiment", default="", maximum=120) or "",
+            experiment_id=strict_number(
+                item, "experiment_id", minimum=0, maximum=2_147_483_647, integer=True, default=0
+            )
+            or 0,
+            disable_reasoning_bank=strict_bool(item, "disable_reasoning_bank"),
+            disable_risk_manager=strict_bool(item, "disable_risk_manager"),
+            disable_judge=strict_bool(item, "disable_judge"),
+            monolithic_mode=strict_bool(item, "monolithic_mode"),
+            lite_pipeline=strict_bool(item, "lite_pipeline"),
+            no_visual=strict_bool(item, "no_visual"),
+            no_sentiment=strict_bool(item, "no_sentiment"),
+            disable_trading=strict_bool(item, "disable_trading"),
+            max_risk_per_trade=strict_number(
+                item, "max_risk_per_trade", minimum=0.000001, maximum=1
             ),
-            lite_consensus_mode=(
-                str(item["lite_consensus_mode"]).strip()
-                if item.get("lite_consensus_mode") is not None
-                else None
+            balance_fallback_usdt=strict_number(
+                item, "balance_fallback_usdt", minimum=0, maximum=1_000_000_000
             ),
-            lite_node_timeout_sec=(
-                float(item["lite_node_timeout_sec"])
-                if item.get("lite_node_timeout_sec") is not None
-                else None
+            lite_consensus_mode=strict_text(item, "lite_consensus_mode", maximum=64),
+            lite_node_timeout_sec=strict_number(
+                item, "lite_node_timeout_sec", minimum=0.1, maximum=3_600
             ),
-            strict_mtf_bias_timeframe=(
-                str(item["strict_mtf_bias_timeframe"]).strip()
-                if item.get("strict_mtf_bias_timeframe") is not None
-                else None
+            strict_mtf_bias_timeframe=strict_text(
+                item, "strict_mtf_bias_timeframe", maximum=16
             ),
-            strict_mtf_opposing_veto_conf=(
-                float(item["strict_mtf_opposing_veto_conf"])
-                if item.get("strict_mtf_opposing_veto_conf") is not None
-                else None
+            strict_mtf_opposing_veto_conf=strict_number(
+                item, "strict_mtf_opposing_veto_conf", minimum=0, maximum=1
             ),
-            strict_mtf_bias_cache_sec=(
-                float(item["strict_mtf_bias_cache_sec"])
-                if item.get("strict_mtf_bias_cache_sec") is not None
-                else None
+            strict_mtf_bias_cache_sec=strict_number(
+                item, "strict_mtf_bias_cache_sec", minimum=0, maximum=86_400
             ),
-            lite_mtf_confirm_conf=(
-                float(item["lite_mtf_confirm_conf"])
-                if item.get("lite_mtf_confirm_conf") is not None
-                else None
+            lite_mtf_confirm_conf=strict_number(
+                item, "lite_mtf_confirm_conf", minimum=0, maximum=1
             ),
-            lite_mtf_qabba_min_conf=(
-                float(item["lite_mtf_qabba_min_conf"])
-                if item.get("lite_mtf_qabba_min_conf") is not None
-                else None
+            lite_mtf_qabba_min_conf=strict_number(
+                item, "lite_mtf_qabba_min_conf", minimum=0, maximum=1
             ),
-            lite_allow_mtf_qabba_when_tech_hold=(
-                bool(item["lite_allow_mtf_qabba_when_tech_hold"])
-                if item.get("lite_allow_mtf_qabba_when_tech_hold") is not None
-                else None
+            lite_allow_mtf_qabba_when_tech_hold=strict_optional_bool(
+                item, "lite_allow_mtf_qabba_when_tech_hold"
             ),
         )
 
         if slot.mode == "team" and not slot.team_models:
             raise ValueError(f"Slot {idx} is team mode but team_models is missing")
+        if slot.engine_mode and slot.engine_mode not in {"paper", "testnet", "live"}:
+            raise ValueError(f"Invalid engine_mode in slot {idx}: {slot.engine_mode}")
         slots.append(slot)
 
     return slots
@@ -207,6 +193,17 @@ def _build_slot_command(
     timeframe = slot.timeframe or args.timeframe
     run_minutes = int(slot.run_minutes or args.slot_minutes)
     engine_mode = (slot.engine_mode or args.engine_mode).strip().lower()
+    trading_disabled = args.disable_trading or slot.disable_trading
+    risk_disabled = args.disable_risk_manager or slot.disable_risk_manager
+    if not 1 <= run_minutes <= 10_080:
+        raise ValueError("Slot duration must be between 1 minute and 7 days")
+    if engine_mode == "live":
+        if not args.allow_live:
+            raise ValueError("A live suite slot requires --allow-live")
+        if risk_disabled and not trading_disabled:
+            raise ValueError("Mainnet live suite slots cannot disable the risk manager")
+        if slot.balance_fallback_usdt is not None or args.balance_fallback_usdt is not None:
+            raise ValueError("Mainnet live suite slots cannot use a simulated balance fallback")
 
     cmd = [
         args.python_bin,
@@ -455,15 +452,14 @@ def main() -> None:
 
     run_tag = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     if args.run_tag_suffix:
-        run_tag = f"{run_tag}{args.run_tag_suffix}"
+        run_tag = f"{run_tag}_{_slug(args.run_tag_suffix)}"
 
-    logs_dir = PROJECT_ROOT / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = ensure_private_directory(PROJECT_ROOT / "logs")
     schedule_path = logs_dir / f"live_suite_schedule_{run_tag}.jsonl"
     results_path = logs_dir / f"live_suite_results_{run_tag}.jsonl"
     master_log_path = logs_dir / f"live_suite_run_{run_tag}.log"
 
-    env = os.environ.copy()
+    env = experiment_child_environment(api_key_index=args.api_key_index)
     env["PYTHONPATH"] = "."
     env["PYTHONUNBUFFERED"] = "1"
 
@@ -496,7 +492,7 @@ def main() -> None:
     print(f"run tag      : {run_tag}")
     print("=" * 72)
 
-    with master_log_path.open("a", encoding="utf-8") as master_log:
+    with open_private_text(master_log_path, "a") as master_log:
         master_log.write(
             f"[{datetime.now(timezone.utc).isoformat()}] START run_tag={run_tag} "
             f"slots={total} plan={plan_path}\n"
@@ -551,7 +547,7 @@ def main() -> None:
             timeout_sec = max(120, int((slot.run_minutes or args.slot_minutes) * 60) + 900)
             rc = None
 
-            with slot_log_path.open("w", encoding="utf-8") as out:
+            with open_private_text(slot_log_path, "w") as out:
                 try:
                     result = subprocess.run(
                         cmd,

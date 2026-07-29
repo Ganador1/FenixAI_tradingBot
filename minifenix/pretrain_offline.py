@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import sys
 import time
@@ -26,6 +27,8 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import joblib
+
+from src.security.artifact_integrity import write_signed_artifact
 
 # Import local modules
 from .feature_engine import FeatureEngine, LOBSnapshot
@@ -377,7 +380,9 @@ def train_offline(
         }
     }
 
-    joblib.dump(model_data, output_path)
+    buffer = io.BytesIO()
+    joblib.dump(model_data, buffer)
+    write_signed_artifact(output_path, buffer.getvalue())
     logger.info(f"\n[SAVE] Model saved to: {output_path}")
 
     return {

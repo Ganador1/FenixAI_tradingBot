@@ -53,7 +53,12 @@ def test_sl_tp_clamping(monkeypatch):
             m.setenv("FENIX_MIN_TP_PCT", "0.005")  # 0.5%
             m.setenv("FENIX_ESTIMATED_FEE_PCT", "0.0004")
 
-            executor = OrderExecutor(symbol="BTCUSDT", testnet=True, timeframe="15m")
+            executor = OrderExecutor(
+                symbol="BTCUSDT",
+                testnet=True,
+                timeframe="15m",
+                allow_mutations=True,
+            )
 
             svc = MagicMock()
             svc.get_symbol_config.return_value = SymbolConfig(
@@ -120,7 +125,12 @@ def test_sl_tp_clamping(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancel_all_orders_cleans_monitor_and_exchange(monkeypatch):
-    executor = OrderExecutor(symbol="ETHUSDT", testnet=True, timeframe="3m")
+    executor = OrderExecutor(
+        symbol="ETHUSDT",
+        testnet=True,
+        timeframe="3m",
+        allow_mutations=True,
+    )
 
     monitor = MagicMock()
     monitor.cancel_all_for_symbol = AsyncMock(return_value=True)
@@ -140,7 +150,12 @@ async def test_cancel_all_orders_cleans_monitor_and_exchange(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_market_entry_closes_fail_safe_when_protection_not_visible():
-    executor = OrderExecutor(symbol="SOLUSDT", testnet=False, timeframe="15m")
+    executor = OrderExecutor(
+        symbol="SOLUSDT",
+        testnet=False,
+        timeframe="15m",
+        allow_mutations=True,
+    )
     svc = MagicMock()
     svc.place_market_order.side_effect = [
         {"orderId": 1001},
@@ -210,7 +225,12 @@ async def test_protection_verification_accepts_visible_algo_orders():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_market_entry_succeeds_when_protection_is_visible():
-    executor = OrderExecutor(symbol="SOLUSDT", testnet=False, timeframe="15m")
+    executor = OrderExecutor(
+        symbol="SOLUSDT",
+        testnet=False,
+        timeframe="15m",
+        allow_mutations=True,
+    )
     svc = MagicMock()
     svc.place_market_order.return_value = {"orderId": 1001}
     svc.get_order.return_value = {
@@ -254,7 +274,12 @@ async def test_market_entry_succeeds_when_protection_is_visible():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_filled_market_response_with_zero_average_is_requeried():
-    executor = OrderExecutor(symbol="SOLUSDT", testnet=True, timeframe="1m")
+    executor = OrderExecutor(
+        symbol="SOLUSDT",
+        testnet=True,
+        timeframe="1m",
+        allow_mutations=True,
+    )
     svc = MagicMock()
     svc.place_market_order.return_value = {
         "orderId": 1001,
@@ -306,7 +331,12 @@ def test_get_protection_status_filters_monitored_positions(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_refresh_position_protection_replaces_monitored_orders(monkeypatch):
-    executor = OrderExecutor(symbol="ETHUSDT", testnet=True, timeframe="3m")
+    executor = OrderExecutor(
+        symbol="ETHUSDT",
+        testnet=True,
+        timeframe="3m",
+        allow_mutations=True,
+    )
 
     monitor = MagicMock()
     monitor.get_position.return_value = MagicMock(
@@ -342,7 +372,12 @@ async def test_refresh_position_protection_replaces_monitored_orders(monkeypatch
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_refresh_position_protection_aborts_when_cancel_fails(monkeypatch):
-    executor = OrderExecutor(symbol="ETHUSDT", testnet=True, timeframe="3m")
+    executor = OrderExecutor(
+        symbol="ETHUSDT",
+        testnet=True,
+        timeframe="3m",
+        allow_mutations=True,
+    )
 
     monitor = MagicMock()
     monitor.get_position.return_value = MagicMock(

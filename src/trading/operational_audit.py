@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from src.security.plan_security import read_bounded_json
+from src.security.private_files import (
+    ensure_private_directory,
+    open_private_text,
+    write_private_text,
+)
 
 logger = logging.getLogger("FenixOperationalAudit")
 
@@ -23,7 +31,7 @@ def _utcnow() -> str:
 
 def _safe_component(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value).strip())
-    return normalized.strip(".-") or "fenix"
+    return (normalized.strip(".-") or "fenix")[:80]
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -55,6 +63,7 @@ class OperationalAudit:
         state_root = (
             Path(configured_root).expanduser() if configured_root else project_root / "logs"
         )
+        ensure_private_directory(state_root)
         raw_instance_id = instance_id or os.getenv("FENIX_INSTANCE_ID", "").strip()
         if not raw_instance_id:
             raw_instance_id = f"{symbol.lower()}-{timeframe}-{os.getpid()}"
@@ -93,15 +102,10 @@ class OperationalAudit:
             "tracked_position": tracked_position,
             "detail": detail,
         }
-        self._instance_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._instance_path.with_name(
-            f"{self._instance_path.name}.{os.getpid()}.tmp"
-        )
-        temporary.write_text(
+        write_private_text(
+            self._instance_path,
             json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
-            encoding="utf-8",
         )
-        temporary.replace(self._instance_path)
 
     def append_ledger_record(self, record: dict[str, Any]) -> None:
         """Append one fsynced record; an audit write must survive a crash."""
@@ -123,14 +127,13 @@ class OperationalAudit:
                 separators=(",", ":"),
             )
             + "\n"
-        ).encode("utf-8")
-        self._ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(self._ledger_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
-        try:
-            os.write(descriptor, encoded)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        )
+        if len(encoded.encode("utf-8")) > 1_048_576:
+            raise ValueError("Operational audit record exceeds the 1 MiB limit")
+        with open_private_text(self._ledger_path, "a") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def read_runtime_instances(
@@ -151,13 +154,22 @@ def read_runtime_instances(
             max_age = max(1.0, float(os.getenv("FENIX_INSTANCE_FRESHNESS_SEC", "20")))
         except (TypeError, ValueError):
             max_age = 20.0
+    if (
+        not math.isfinite(float(max_age))
+        or float(max_age) <= 0
+        or float(max_age) > 86_400
+    ):
+        max_age = 20.0
 
     now = datetime.now(timezone.utc)
     instances: list[dict[str, Any]] = []
-    for path in (root / "runtime_instances").glob("*.json"):
+    runtime_dir = root / "runtime_instances"
+    if root.is_symlink() or runtime_dir.is_symlink() or not runtime_dir.is_dir():
+        return instances
+    for path in runtime_dir.glob("*.json"):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            payload = read_bounded_json(path, max_bytes=1_048_576)
+        except ValueError:
             continue
         if not isinstance(payload, dict):
             continue

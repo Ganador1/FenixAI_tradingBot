@@ -10,14 +10,21 @@ import pytest
 
 from src.risk.safety_alerts import SafetyAlertConfig, SafetyAlertNotifier
 
+TELEGRAM_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDEFGH"
+TELEGRAM_CHAT = "-123456789"
+DISCORD_WEBHOOK = (
+    "https://discord.com/api/webhooks/1234567890/"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGH"
+)
+
 
 @pytest.fixture
 def notifier() -> SafetyAlertNotifier:
     return SafetyAlertNotifier(
         SafetyAlertConfig(
-            telegram_bot_token="test-token",
-            telegram_chat_id="test-chat",
-            discord_webhook_url="https://discord.com/api/webhooks/test",
+            telegram_bot_token=TELEGRAM_TOKEN,
+            telegram_chat_id=TELEGRAM_CHAT,
+            discord_webhook_url=DISCORD_WEBHOOK,
             min_severity="WARNING",
             cooldown_seconds=1,
             max_alerts_per_minute=100,
@@ -27,13 +34,13 @@ def notifier() -> SafetyAlertNotifier:
 
 class TestSafetyAlertConfig:
     def test_loads_from_env(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot123")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat456")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TELEGRAM_TOKEN)
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", TELEGRAM_CHAT)
         monkeypatch.setenv("FENIX_SAFETY_ALERT_MIN_SEVERITY", "CRITICAL")
-        config = SafetyAlertNotifier._load_config_from_env()
-        assert config.telegram_bot_token == "bot123"
-        assert config.telegram_chat_id == "chat456"
-        assert config.min_severity == "CRITICAL"
+        configured = SafetyAlertNotifier()
+        assert configured.config.telegram_bot_token == TELEGRAM_TOKEN
+        assert configured.config.telegram_chat_id == TELEGRAM_CHAT
+        assert configured.config.min_severity == "CRITICAL"
 
     def test_rejects_placeholder_credentials(self, monkeypatch):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "your_bot_token_here")
@@ -44,6 +51,22 @@ class TestSafetyAlertConfig:
         for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL"):
             monkeypatch.delenv(key, raising=False)
         notifier = SafetyAlertNotifier()
+        assert not notifier.enabled
+
+    @pytest.mark.parametrize(
+        "webhook",
+        [
+            "http://discord.com/api/webhooks/123456/abcdefghijklmnopqrstuvwxyz",
+            "https://127.0.0.1/api/webhooks/123456/abcdefghijklmnopqrstuvwxyz",
+            "https://discord.com.evil.example/api/webhooks/123456/abcdefghijklmnopqrstuvwxyz",
+            "https://discord.com@127.0.0.1/api/webhooks/123456/abcdefghijklmnopqrstuvwxyz",
+        ],
+    )
+    def test_rejects_ssrf_discord_webhooks(self, webhook):
+        notifier = SafetyAlertNotifier(
+            SafetyAlertConfig(discord_webhook_url=webhook)
+        )
+        assert notifier.config.discord_webhook_url is None
         assert not notifier.enabled
 
 
@@ -96,9 +119,9 @@ class TestSafetyAlertNotifier:
     async def test_critical_severity_passes_critical_filter(self):
         notifier = SafetyAlertNotifier(
             SafetyAlertConfig(
-                telegram_bot_token="t",
-                telegram_chat_id="c",
-                discord_webhook_url="w",
+                telegram_bot_token=TELEGRAM_TOKEN,
+                telegram_chat_id=TELEGRAM_CHAT,
+                discord_webhook_url=DISCORD_WEBHOOK,
                 min_severity="CRITICAL",
                 cooldown_seconds=1,
                 max_alerts_per_minute=100,
@@ -119,9 +142,9 @@ class TestSafetyAlertNotifier:
     async def test_rate_limit_drops_excess_alerts(self):
         notifier = SafetyAlertNotifier(
             SafetyAlertConfig(
-                telegram_bot_token="t",
-                telegram_chat_id="c",
-                discord_webhook_url="w",
+                telegram_bot_token=TELEGRAM_TOKEN,
+                telegram_chat_id=TELEGRAM_CHAT,
+                discord_webhook_url=DISCORD_WEBHOOK,
                 min_severity="WARNING",
                 cooldown_seconds=0,
                 max_alerts_per_minute=2,

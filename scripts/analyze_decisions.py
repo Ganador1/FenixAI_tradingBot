@@ -230,7 +230,8 @@ def fetch_klines(symbol: str, interval: str, start_ms: int, limit: int) -> list[
     url = f"{FUTURES_KLINES}?symbol={symbol}&interval={interval}&startTime={start_ms}&limit={limit}"
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(url, timeout=15) as resp:
+            # The origin is a module constant and only query values are interpolated.
+            with urllib.request.urlopen(url, timeout=15) as resp:  # nosec B310
                 raw = json.load(resp)
             return [
                 {"open": float(k[1]), "high": float(k[2]), "low": float(k[3]),

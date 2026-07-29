@@ -6,71 +6,109 @@ on:
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  lint:
-    name: "Code Linting"
+  quality-and-test:
+    name: "Quality and tests"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
-      - name: Install ruff
-        run: pip install ruff
-      - name: Run linter
-        run: ruff check src/ --output-format=github
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.9.17"
+          enable-cache: true
 
-  type-check:
-    name: "Type Checking"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: pip install mypy types-PyYAML types-requests pydantic
-      - name: Run type checker
-        run: mypy src/ --ignore-missing-imports --no-error-summary || true
+      - name: Install the frozen development environment
+        run: uv sync --frozen --extra dev --extra monitoring --extra llm --extra vision
 
-  test:
-    name: "Tests with Coverage"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Run enforceable Ruff security baseline
+        run: >-
+          uv run ruff check
+          run_fenix.py
+          src/api/auth.py src/api/nano_routes.py src/api/server.py src/api/system_settings.py
+          src/config/secrets_manager.py src/core/langgraph_orchestrator.py
+          src/core/orchestrator/agents/base.py src/core/orchestrator/agents/visual.py
+          src/core/orchestrator/llm_factory.py src/core/trading_constants.py
+          src/inference/hf_inference_client.py src/inference/providers/ollama_cloud_provider.py
+          src/inference/providers/ollama_provider.py
+          src/metrics/trading_metrics.py
+          src/memory/reasoning_bank.py src/memory/reasoning_bank_optimized.py
+          src/memory/trade_memory.py src/risk/circuit_breaker_alerts.py
+          src/risk/runtime_risk_manager.py src/risk/safety_alerts.py
+          src/monitoring/prometheus_metrics.py src/security src/system/intelligent_cache.py
+          src/prompts/ab_testing.py src/tools/chart_capture_scheduler.py
+          src/tools/enhanced_playwright_capture.py src/tools/external_chart_capturer.py
+          src/tools/tradingview_playwright_capture.py src/tools/tradingview_scraper.py
+          src/tools/technical_tools.py
+          src/trading/engine.py src/trading/executor.py
+          src/trading/operational_audit.py src/utils/log_cleanup.py
+          src/utils/structured_logger.py nanofenixv3/core.py nanofenixv3/executor.py
+          nanofenixv3/predictor.py minifenix/paper_trader.py minifenix/sota_predictor.py
+          scripts/crypto_sentiment_system.py scripts/migrate_sqlite_to_postgres.py
+          scripts/secure_dotenv_exec.py
+          scripts/reasoning_bank_maintenance.py scripts/run_chart_service.py
+          scripts/run_fenix_live_slot.py scripts/run_fenix_live_suite.py
+          scripts/run_benchmark_suite.py scripts/testnet_fault_injection.py
+          scripts/testnet_order_lifecycle_smoke.py tests/test_api_security_boundary.py
+          tests/test_artifact_integrity.py tests/test_executor_mutation_capability.py
+          tests/test_chart_service_security.py tests/test_live_safety_hardening.py
+          tests/test_security_hardening.py tests/test_public_paper_experiment_harness.py
+          tests/test_run_fenix_live_slot.py tests/test_run_fenix_security.py
+          tests/test_plan_and_process_security.py tests/test_log_cleanup.py
+          tests/test_safety_alerts.py
+
       - name: Run tests with coverage
-        run: |
-          pytest tests/ --cov=src --cov-report=xml --cov-report=html -q --tb=short || true
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: coverage.xml
-          fail_ci_if_error: false
-        continue-on-error: true
+        env:
+          FENIX_MODEL_SIGNING_KEY: ci-only-model-signing-key-00000000000000000000000000000000
+        run: uv run pytest tests/ --cov=src --cov-report=xml --cov-report=html -q --tb=short
+
       - name: Upload coverage HTML report
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-report
           path: htmlcov/
           retention-days: 7
 
   security:
-    name: "Security Scan"
+    name: "Security gates"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
-      - name: Install bandit
-        run: pip install bandit
-      - name: Run security check
-        run: bandit -r src/ -ll -q || true
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.9.17"
+          enable-cache: true
+
+      - name: Export the frozen production dependency graph
+        run: >-
+          uv export --quiet --frozen --no-dev --extra llm --extra vision --extra monitoring
+          --no-emit-project --output-file /tmp/fenix-requirements.txt
+
+      - name: Audit Python dependencies
+        run: >-
+          uvx pip-audit --disable-pip --no-deps --require-hashes
+          --requirement /tmp/fenix-requirements.txt
+
+      - name: Run Bandit
+        run: uvx bandit -r src/ nanofenixv3/ minifenix/ scripts/ run_fenix.py -ll -q
+
+      - name: Run Semgrep high-confidence rules
+        run: >-
+          uvx semgrep==1.172.0 scan
+          --config p/python --config p/typescript
+          --severity ERROR --error --metrics off --disable-version-check
+          --exclude frontend/node_modules --exclude logs --exclude memory
+          --exclude docs/archives .

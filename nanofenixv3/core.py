@@ -39,8 +39,8 @@ import asyncio
 import json
 import logging
 import os
-import pickle
 import signal
+import stat
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +53,7 @@ from .feature_engine import (
     MultiScaleFeatureEngine,
 )
 from .predictor import DualHorizonPredictor
+from src.security.private_files import write_private_text
 
 logger = logging.getLogger("NanoFenixV3")
 
@@ -86,7 +87,7 @@ def _runtime_interval_tag(interval: float) -> str:
 
 
 def _default_runtime_state_path(symbol: str, interval: float) -> Path:
-    return Path(f"nanofenixv3/runtime_{symbol.lower()}_{_runtime_interval_tag(interval)}.pkl")
+    return Path(f"nanofenixv3/runtime_{symbol.lower()}_{_runtime_interval_tag(interval)}.json")
 
 
 def _unique_tmp_path(target: Path) -> Path:
@@ -438,14 +439,12 @@ class NanoFenixV3:
             self._last_model_save_bar = bar_idx
 
     def _resolve_runtime_restore_path(self, default_runtime_path: Path) -> Path:
-        legacy_path = Path(f"nanofenixv3/runtime_{self.symbol.lower()}.pkl")
         interval_backup_path = default_runtime_path.with_name(
             f"{default_runtime_path.stem}_backup{default_runtime_path.suffix}"
         )
         candidates = [
             self._runtime_state_path,
             default_runtime_path,
-            legacy_path,
             interval_backup_path,
         ]
         seen: set[str] = set()
@@ -463,10 +462,28 @@ class NanoFenixV3:
         if not path.exists():
             return
         try:
-            with open(path, "rb") as f:
-                state = pickle.load(f)
+            if path.is_symlink():
+                raise ValueError("runtime state symlinks are not allowed")
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            try:
+                file_stat = os.fstat(fd)
+                if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > 20 * 1024 * 1024:
+                    raise ValueError("runtime state file is invalid")
+                with os.fdopen(fd, "r", encoding="utf-8") as f:
+                    fd = -1
+                    state = json.load(f)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            if not isinstance(state, dict):
+                raise ValueError("runtime state must contain a JSON object")
         except Exception as exc:
-            logger.warning("Failed to load Nano runtime state %s: %s", path, exc)
+            logger.warning(
+                "Failed to load Nano runtime state %s (%s)",
+                path.name,
+                exc.__class__.__name__,
+            )
             return
 
         try:
@@ -511,9 +528,21 @@ class NanoFenixV3:
         }
         tmp = _unique_tmp_path(self._runtime_state_path)
         try:
-            with open(tmp, "wb") as f:
-                pickle.dump(state, f)
-            tmp.replace(self._runtime_state_path)
+            payload = json.dumps(
+                state,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+            fd = os.open(tmp, flags, 0o600)
+            try:
+                os.write(fd, payload)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, self._runtime_state_path)
+            os.chmod(self._runtime_state_path, 0o600)
             if self.predictor.either_trained:
                 self.predictor.save_model(self._model_save_path)
             logger.info(
@@ -523,7 +552,11 @@ class NanoFenixV3:
                 getattr(self.features, "is_warm", False),
             )
         except Exception as exc:
-            logger.warning("Failed to persist Nano runtime state: %s", exc)
+            logger.warning("Failed to persist Nano runtime state (%s)", exc.__class__.__name__)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ──────────────────────────────────────────────────────────────────────
     # Companion Signal Publisher
@@ -649,9 +682,10 @@ class NanoFenixV3:
                 ),
                 "source": str((policy or {}).get("source", "none")),
             }
-            tmp = _unique_tmp_path(self._signal_state_file)
-            tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
-            tmp.replace(self._signal_state_file)
+            write_private_text(
+                self._signal_state_file,
+                json.dumps(payload, ensure_ascii=True, allow_nan=False) + "\n",
+            )
         except Exception as e:
             logger.debug("Signal state write failed: %s", e)
 

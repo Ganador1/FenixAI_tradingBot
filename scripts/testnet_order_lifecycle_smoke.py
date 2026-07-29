@@ -19,13 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.services.binance_service import BinanceService  # noqa: E402
+from src.security.dotenv_security import secure_load_dotenv  # noqa: E402
 from src.trading.executor import OrderExecutor  # noqa: E402
 from src.trading.user_data_stream import FuturesUserDataStream  # noqa: E402
 
@@ -103,7 +102,7 @@ async def _flatten_symbol(executor: OrderExecutor) -> dict[str, Any]:
 
 
 async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    secure_load_dotenv(PROJECT_ROOT / ".env", override=False)
     key, secret = _select_testnet_credentials(args.api_key_index)
     os.environ["BINANCE_TESTNET_API_KEY"] = key
     os.environ["BINANCE_TESTNET_API_SECRET"] = secret
@@ -118,7 +117,12 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     service = BinanceService(key, secret, testnet=True)
     if not service.initialize():
         raise RuntimeError("Could not initialize Binance Futures Testnet")
-    executor = OrderExecutor(symbol=symbol, timeframe=args.timeframe, testnet=True)
+    executor = OrderExecutor(
+        symbol=symbol,
+        timeframe=args.timeframe,
+        testnet=True,
+        allow_mutations=True,
+    )
     executor._service = service
     user_events: list[dict[str, Any]] = []
 

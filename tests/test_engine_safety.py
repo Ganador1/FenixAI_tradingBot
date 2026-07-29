@@ -44,6 +44,7 @@ async def test_live_trade_blocked_without_flag():
     )
     engine.executor = _DummyExecutor()
     engine.market_data = _DummyMarketData(price=50000)
+    engine._get_tracked_position = lambda: None
 
     await engine._execute_trade(
         decision="BUY",
@@ -65,6 +66,7 @@ async def test_live_trade_allows_execution_with_flag():
     )
     engine.executor = _DummyExecutor()
     engine.market_data = _DummyMarketData(price=40000)
+    engine._get_tracked_position = lambda: None
 
     await engine._execute_trade(
         decision="SELL",

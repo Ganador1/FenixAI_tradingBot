@@ -29,21 +29,11 @@ def _load_testnet_keys() -> None:
     Load .env and map BINANCE_TESTNET_API_KEY_1 -> BINANCE_TESTNET_API_KEY
     (FenixAI's get_binance_service expects the name without the _1 suffix).
     """
-    try:
-        from dotenv import load_dotenv
-        # Look for .env in several locations
-        possible_paths = [
-            Path(__file__).parent.parent / ".env",  # FenixAI/.env
-            Path.cwd() / ".env",                      # Current directory
-            Path.home() / ".env",                     # Home directory
-        ]
-        for env_path in possible_paths:
-            if env_path.exists():
-                load_dotenv(dotenv_path=env_path, override=True)
-                logger.info(f"[FILE] Loading .env from: {env_path}")
-                break
-    except ImportError:
-        logger.warning("[WARN] python-dotenv not installed, using existing environment variables")
+    from src.security.dotenv_security import secure_load_dotenv
+
+    env_path = Path(__file__).parent.parent / ".env"
+    if secure_load_dotenv(env_path, override=False):
+        logger.info("[FILE] Loaded validated project .env")
 
     # Try the _1 suffix first, fall back to the unsuffixed name
     key = os.getenv("BINANCE_TESTNET_API_KEY_1") or os.getenv("BINANCE_TESTNET_API_KEY")
@@ -178,7 +168,11 @@ class TestnetTrader:
         if self._executor is None:
             try:
                 from src.trading.executor import OrderExecutor
-                self._executor = OrderExecutor(symbol=self.symbol, testnet=True)
+                self._executor = OrderExecutor(
+                    symbol=self.symbol,
+                    testnet=True,
+                    allow_mutations=True,
+                )
                 logger.info(f"[OK] [TESTNET] OrderExecutor created for {self.symbol} (testnet=True)")
             except Exception as e:
                 logger.error(f"[FAIL] [TESTNET] Could not create OrderExecutor: {e}")

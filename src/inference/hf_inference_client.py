@@ -4,6 +4,7 @@ Integration with Kimi-K2-Thinking, Qwen3, and other cloud-based models
 """
 
 import json
+import hashlib
 import logging
 import os
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from src.security.private_files import ensure_private_directory, open_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -95,35 +98,54 @@ class HFInferenceClient:
         # Performance tracking
         self.performance_stats = {}
         self.response_log_dir = Path("logs/hf_inference_responses")
-        self.response_log_dir.mkdir(parents=True, exist_ok=True)
+        if os.getenv("FENIX_HF_LOG_RESPONSES", "0") == "1":
+            ensure_private_directory(self.response_log_dir)
 
     def _log_response(
         self, model: str, prompt: str, response: HFInferenceResponse, metadata: dict | None = None
     ):
         """Log response for analysis"""
+        if os.getenv("FENIX_HF_LOG_RESPONSES", "0") != "1":
+            return
         try:
+            include_content = os.getenv("FENIX_HF_LOG_CONTENT", "0") == "1"
             log_entry = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "model": model,
-                "prompt": prompt[:500] + "..." if len(prompt) > 500 else prompt,
-                "response": response.content[:1000] + "..."
-                if len(response.content) > 1000
-                else response.content,
+                "prompt_length": len(prompt),
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                "response_length": len(response.content),
+                "response_sha256": hashlib.sha256(
+                    response.content.encode("utf-8")
+                ).hexdigest(),
                 "success": response.success,
                 "latency_ms": response.latency_ms,
-                "error_message": response.error_message,
-                "metadata": metadata or {},
+                "error_type": (
+                    type(response.error_message).__name__
+                    if response.error_message is not None
+                    else None
+                ),
+                "metadata_keys": sorted(str(key)[:100] for key in (metadata or {}))[:50],
             }
+            if include_content:
+                log_entry["prompt"] = prompt[:500]
+                log_entry["response"] = response.content[:1000]
 
+            safe_model = "".join(
+                character if character.isalnum() or character in "._-" else "_"
+                for character in model
+            )[:120]
             log_file = (
                 self.response_log_dir
-                / f"{model.replace('/', '_')}_{datetime.utcnow().strftime('%Y%m%d')}.jsonl"
+                / f"{safe_model}_{datetime.utcnow().strftime('%Y%m%d')}.jsonl"
             )
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+            with open_private_text(log_file, "a") as handle:
+                handle.write(
+                    json.dumps(log_entry, ensure_ascii=False, allow_nan=False) + "\n"
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to log response: {e}")
+        except (OSError, TypeError, ValueError):
+            logger.error("Failed to log the inference response securely")
 
     def _update_performance_stats(self, model: str, success: bool, latency_ms: float):
         """Update performance statistics"""

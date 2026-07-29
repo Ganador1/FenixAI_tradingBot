@@ -39,8 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
-
+from src.security.dotenv_security import secure_load_dotenv
 from src.services.binance_service import BinanceService
 from src.trading.executor import OrderExecutor
 from src.trading.user_data_stream import FuturesUserDataStream
@@ -344,12 +343,11 @@ async def fault_test_process_kill_during_save() -> dict:
 
     try:
         import tempfile
-        import pickle
+        import json
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model_path = Path(tmpdir) / "model.pkl"
-            with model_path.open("wb") as handle:
-                pickle.dump({"version": "known-good"}, handle)
+            model_path.write_text(json.dumps({"version": "known-good"}), encoding="utf-8")
 
             child_code = (
                 "import os,signal,sys,time;"
@@ -365,8 +363,7 @@ async def fault_test_process_kill_during_save() -> dict:
                 capture_output=True,
                 timeout=10,
             )
-            with model_path.open("rb") as handle:
-                data = pickle.load(handle)
+            data = json.loads(model_path.read_text(encoding="utf-8"))
             temp_files = list(model_path.parent.glob(f".{model_path.name}.*.tmp"))
 
             result["mode"] = "real_subprocess_sigkill"
@@ -398,9 +395,19 @@ async def fault_test_simultaneous_signals(service: BinanceService, symbol: str) 
     result: dict[str, Any] = {"test": "simultaneous_signals", "symbol": symbol}
 
     try:
-        executor1 = OrderExecutor(symbol=symbol, timeframe="1m", testnet=True)
+        executor1 = OrderExecutor(
+            symbol=symbol,
+            timeframe="1m",
+            testnet=True,
+            allow_mutations=True,
+        )
         executor1._service = service
-        executor2 = OrderExecutor(symbol=symbol, timeframe="1m", testnet=True)
+        executor2 = OrderExecutor(
+            symbol=symbol,
+            timeframe="1m",
+            testnet=True,
+            allow_mutations=True,
+        )
         executor2._service = service
 
         # Patch the account margin check to always pass (we're testing the lock, not the margin).
@@ -488,7 +495,7 @@ ALL_TESTS = {
 
 
 async def run_fault_injection(args: argparse.Namespace) -> dict[str, Any]:
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    secure_load_dotenv(PROJECT_ROOT / ".env", override=False)
     key, secret = _select_testnet_credentials(args.api_key_index)
     os.environ["BINANCE_TESTNET_API_KEY"] = key
     os.environ["BINANCE_TESTNET_API_SECRET"] = secret
@@ -502,7 +509,12 @@ async def run_fault_injection(args: argparse.Namespace) -> dict[str, Any]:
     if not service.initialize():
         raise RuntimeError("Could not initialize Binance Futures Testnet")
 
-    executor = OrderExecutor(symbol=symbol, timeframe="1m", testnet=True)
+    executor = OrderExecutor(
+        symbol=symbol,
+        timeframe="1m",
+        testnet=True,
+        allow_mutations=True,
+    )
     executor._service = service
 
     # Pre-flight: ensure no existing exposure.

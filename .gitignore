@@ -31,6 +31,7 @@ dmypy.json
 
 # Virtual Environments
 .venv/
+.venv
 venv/
 env/
 ENV/
@@ -142,6 +143,11 @@ data/training_dataset/
 *.crt
 secrets.json
 config/secrets*.yaml
+tradingview_session_state.json
+storage_state*.json
+cookies*.json
+playwright/.auth/
+screenshots/
 # Solo el directorio security/ de la RAÍZ (dumps locales); src/security/ es
 # código fuente y debe versionarse (el patrón sin anclar ocultaba
 # src/security/prompt_sanitizer.py).

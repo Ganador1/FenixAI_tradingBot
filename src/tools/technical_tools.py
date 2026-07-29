@@ -173,8 +173,9 @@ def validate_kline_data(close: float, high: float, low: float, volume: float) ->
         return False
 
     # Ensure type hinting knows these are floats now
-    # Type narrowing for static checkers
-    assert c is not None and h is not None and lo is not None and v is not None
+    # Keep the runtime guard active even when Python assertions are optimized out.
+    if c is None or h is None or lo is None or v is None:
+        raise ValueError("OHLCV inputs must be complete")
     c, h, lo = float(c), float(h), float(lo)
 
     if not (lo <= c <= h and lo <= h): # Logical consistency

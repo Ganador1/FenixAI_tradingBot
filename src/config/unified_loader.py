@@ -17,12 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
+
+from src.security.dotenv_security import secure_load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables unless the caller requested a hermetic process.
+secure_load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # Base paths
 CONFIG_DIR = Path(__file__).parent.parent.parent / "config"

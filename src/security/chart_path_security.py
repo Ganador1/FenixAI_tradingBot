@@ -1,301 +1,289 @@
-#!/usr/bin/env python3
-"""
-🛡️ SISTEMA DE SEGURIDAD PARA PATHS DE CAPTURAS
-==============================================
+"""Fail-closed validation for chart images used in trading decisions."""
 
-Este módulo implementa un sistema de seguridad que garantiza que:
-1. ✅ NUNCA se usen capturas más antiguas de 5 minutos
-2. ✅ Se valide la frescura de cada captura antes de enviarla al modelo
-3. ✅ Se mantenga un registro de las últimas capturas usadas
-4. ✅ Se detecten y prevengan errores de paths antiguos
+from __future__ import annotations
 
-🚨 ESTE ES UN SISTEMA CRÍTICO PARA EVITAR ERRORES FATALES EN TRADING
-"""
-
-import os
-import time
-import logging
-from pathlib import Path
 from datetime import datetime
-from typing import Optional, Tuple
+import logging
+import os
+from pathlib import Path
+import re
+import stat
+import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MIN_CHART_BYTES = 5_000
+_MAX_CHART_BYTES = 25 * 1024 * 1024
+_SYMBOL = re.compile(r"^[A-Z0-9]{5,20}$")
+_TIMEFRAMES = {
+    "1",
+    "3",
+    "5",
+    "15",
+    "30",
+    "60",
+    "240",
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "4h",
+    "1d",
+    "1w",
+}
+
+
+def _validated_market_inputs(symbol: str, timeframe: str) -> tuple[str, str]:
+    normalized_symbol = str(symbol).strip().upper()
+    normalized_timeframe = str(timeframe).strip()
+    if not _SYMBOL.fullmatch(normalized_symbol):
+        raise ValueError("invalid chart symbol")
+    if normalized_timeframe not in _TIMEFRAMES:
+        raise ValueError("unsupported chart timeframe")
+    return normalized_symbol, normalized_timeframe
+
+
+def _safe_chart_metadata(path: str | Path) -> tuple[Path, os.stat_result]:
+    chart_path = Path(path)
+    if not str(chart_path) or len(str(chart_path)) > 4_096 or chart_path.suffix.lower() != ".png":
+        raise ValueError("chart path must identify a bounded PNG filename")
+    if chart_path.is_symlink():
+        raise ValueError("chart symlinks are not allowed")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(chart_path, flags)
+    except OSError as exc:
+        raise ValueError("chart cannot be opened safely") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("chart must be a regular file")
+        if not _MIN_CHART_BYTES <= metadata.st_size <= _MAX_CHART_BYTES:
+            raise ValueError("chart size is outside the allowed range")
+        if os.read(descriptor, len(_PNG_SIGNATURE)) != _PNG_SIGNATURE:
+            raise ValueError("chart does not contain a valid PNG signature")
+    finally:
+        os.close(descriptor)
+    return chart_path, metadata
+
+
 class ChartPathSecurityManager:
-    """
-    🛡️ Gestor de seguridad para paths de capturas de gráficos
+    """Validate chart identity, type, size, freshness, and temporal ordering."""
 
-    Garantiza que NUNCA se usen capturas antiguas que podrían
-    causar decisiones de trading incorrectas.
-    """
-
-    def __init__(self, max_age_minutes: int = 60, disable_age_check: bool | None = None):  # TEMPORAL: 60 min para testing
-        """
-        Inicializar el gestor de seguridad
-
-        Args:
-            max_age_minutes: Edad máxima permitida para una captura (default: 60 minutos para testing)
-        """
-        # Permitir override por entorno para endurecer la frescura sin tocar el código
-        env_max_age = os.getenv("FENIX_CHART_MAX_AGE_MINUTES")
-        if env_max_age:
+    def __init__(
+        self,
+        max_age_minutes: int = 5,
+        disable_age_check: bool | None = None,
+    ):
+        configured = os.getenv("FENIX_CHART_MAX_AGE_MINUTES")
+        if configured:
             try:
-                max_age_minutes = max(1, int(env_max_age))
+                max_age_minutes = int(configured)
             except ValueError:
-                logger.warning("⚠️ FENIX_CHART_MAX_AGE_MINUTES inválido (%s), usando valor por defecto %s", env_max_age, max_age_minutes)
+                logger.warning("Ignoring invalid FENIX_CHART_MAX_AGE_MINUTES")
+        if not 1 <= int(max_age_minutes) <= 1_440:
+            raise ValueError("chart maximum age must be between 1 and 1440 minutes")
 
-        self.max_age_seconds = max_age_minutes * 60
-        self.used_paths_history = []  # Historial de paths usados
-        self.last_validated_path = None
-        self.last_validation_time = None
-
-        flag = os.getenv("FENIX_DISABLE_CHART_AGE_CHECK")
-        if disable_age_check is None:
-            self._age_check_disabled = flag == "1"
-        else:
-            self._age_check_disabled = disable_age_check
-
+        self.max_age_seconds = int(max_age_minutes) * 60
+        self.used_paths_history: list[dict[str, Any]] = []
+        self.last_validated_path: str | None = None
+        self.last_validation_time: float | None = None
+        # The environment can no longer disable this trading-safety control.
+        # Tests may opt out only by constructing an isolated manager explicitly.
+        self._age_check_disabled = bool(disable_age_check)
         if self._age_check_disabled:
-            logger.warning("⚠️ ChartPathSecurityManager: age validation disabled (testing mode)")
+            logger.warning("Chart age validation disabled on an explicitly isolated manager")
 
-        logger.info(f"🛡️ ChartPathSecurityManager inicializado (max_age: {max_age_minutes} min)")
+    def validate_chart_path_freshness(
+        self,
+        chart_path: str,
+        symbol: str,
+        timeframe: str,
+    ) -> tuple[bool, str]:
+        """Validate a chart without following symlinks or trusting its extension."""
+        try:
+            normalized_symbol, normalized_timeframe = _validated_market_inputs(
+                symbol,
+                timeframe,
+            )
+            path, metadata = _safe_chart_metadata(chart_path)
+        except ValueError as exc:
+            message = f"Chart rejected: {exc}"
+            logger.error(message)
+            return False, message
 
-    def validate_chart_path_freshness(self, chart_path: str, symbol: str, timeframe: str) -> tuple[bool, str]:
-        """
-        🔍 Validar que un path de captura sea fresco y seguro para usar
+        name = path.name.lower()
+        if normalized_symbol.lower() not in name or normalized_timeframe.lower() not in name:
+            message = "Chart filename does not match the requested symbol and timeframe"
+            logger.error(message)
+            return False, message
 
-        Args:
-            chart_path: Path de la captura a validar
-            symbol: Símbolo del trading pair
-            timeframe: Timeframe de la captura
-
-        Returns:
-            Tuple[bool, str]: (es_válido, mensaje_explicativo)
-        """
         current_time = time.time()
+        age_seconds = current_time - metadata.st_mtime
+        if age_seconds < -5:
+            message = "Chart timestamp is unexpectedly in the future"
+            logger.error(message)
+            return False, message
+        if not self._age_check_disabled and age_seconds > self.max_age_seconds:
+            message = f"Chart is stale ({age_seconds / 60:.1f} minutes old)"
+            logger.error(message)
+            return False, message
 
-        # Validación 1: El archivo debe existir
-        if not chart_path or not os.path.exists(chart_path):
-            error_msg = f"❌ SEGURIDAD: Archivo no existe: {chart_path}"
-            logger.error(error_msg)
-            return False, error_msg
+        normalized_path = str(path.resolve())
+        if (
+            self.last_validated_path == normalized_path
+            and self.last_validation_time is not None
+            and current_time - self.last_validation_time < 30
+        ):
+            logger.warning("The same chart was validated again within 30 seconds")
 
-        # Validación 2: El archivo debe tener contenido mínimo
-        file_size = os.path.getsize(chart_path)
-        if file_size < 5000:  # Mínimo 5KB para una imagen válida
-            error_msg = f"❌ SEGURIDAD: Archivo muy pequeño ({file_size} bytes): {chart_path}"
-            logger.error(error_msg)
-            return False, error_msg
-
-        # Validación 3: El archivo debe ser reciente
-        file_mtime = os.path.getmtime(chart_path)
-        age_seconds = current_time - file_mtime
-
-        if not self._age_check_disabled:
-            if age_seconds > self.max_age_seconds:
-                age_minutes = age_seconds / 60
-                error_msg = f"❌ SEGURIDAD: Captura demasiado antigua ({age_minutes:.1f} min): {chart_path}"
-                logger.error(error_msg)
-                return False, error_msg
-        else:
-            logger.debug("ChartPathSecurityManager: omitiendo validación de antigüedad para %s", chart_path)
-
-        # Validación 4: El path debe contener el símbolo y timeframe correctos
-        path_lower = chart_path.lower()
-        symbol_lower = symbol.lower()
-        timeframe_lower = timeframe.lower()
-
-        if symbol_lower not in path_lower:
-            error_msg = f"❌ SEGURIDAD: Path no contiene símbolo correcto ({symbol}): {chart_path}"
-            logger.error(error_msg)
-            return False, error_msg
-
-        if timeframe_lower not in path_lower:
-            error_msg = f"❌ SEGURIDAD: Path no contiene timeframe correcto ({timeframe}): {chart_path}"
-            logger.error(error_msg)
-            return False, error_msg
-
-        # Validación 5: No debe ser el mismo path que la validación anterior (para análisis temporal)
-        if (self.last_validated_path == chart_path and 
-            self.last_validation_time and 
-            (current_time - self.last_validation_time) < 30):  # Menos de 30 segundos
-
-            warning_msg = f"⚠️ SEGURIDAD: Mismo path validado recientemente: {chart_path}"
-            logger.warning(warning_msg)
-            # No es error crítico, pero es sospechoso
-
-        # ✅ Todas las validaciones pasaron
-        self.last_validated_path = chart_path
+        self.last_validated_path = normalized_path
         self.last_validation_time = current_time
-        self.used_paths_history.append({
-            'path': chart_path,
-            'timestamp': current_time,
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'file_age_seconds': age_seconds
-        })
+        self.used_paths_history.append(
+            {
+                "path": normalized_path,
+                "timestamp": current_time,
+                "symbol": normalized_symbol,
+                "timeframe": normalized_timeframe,
+                "file_age_seconds": max(0.0, age_seconds),
+            }
+        )
+        self.used_paths_history = self.used_paths_history[-10:]
+        return True, f"Chart is valid and fresh ({max(0.0, age_seconds):.1f}s old)"
 
-        # Mantener solo los últimos 10 registros
-        if len(self.used_paths_history) > 10:
-            self.used_paths_history = self.used_paths_history[-10:]
+    def get_most_recent_chart_path(
+        self,
+        symbol: str,
+        timeframe: str,
+        screenshots_dir: str = "screenshots",
+    ) -> str | None:
+        """Return the newest safe direct child of a real screenshots directory."""
+        try:
+            normalized_symbol, normalized_timeframe = _validated_market_inputs(
+                symbol,
+                timeframe,
+            )
+        except ValueError as exc:
+            logger.error("Chart lookup rejected: %s", exc)
+            return None
 
-        success_msg = f"✅ SEGURIDAD: Captura válida y fresca ({age_seconds:.1f}s): {chart_path}"
-        logger.info(success_msg)
-        return True, success_msg
-
-    def get_most_recent_chart_path(self, symbol: str, timeframe: str, screenshots_dir: str = "screenshots") -> str | None:
-        """
-        🔍 Obtener el path de la captura MÁS RECIENTE que pase todas las validaciones
-
-        Args:
-            symbol: Símbolo del trading pair
-            timeframe: Timeframe deseado
-            screenshots_dir: Directorio de capturas
-
-        Returns:
-            Optional[str]: Path de la captura más reciente válida, o None si no hay ninguna
-        """
         screenshots_path = Path(screenshots_dir)
-
-        if not screenshots_path.exists():
-            logger.error(f"❌ SEGURIDAD: Directorio de capturas no existe: {screenshots_dir}")
+        if screenshots_path.is_symlink() or not screenshots_path.is_dir():
+            logger.error("Screenshots directory is unavailable or unsafe")
             return None
 
-        # Buscar archivos que contengan el símbolo y timeframe
-        pattern = f"*{symbol}*{timeframe}*.png"
-        matching_files = list(screenshots_path.glob(pattern))
-
-        if not matching_files:
-            logger.warning(f"⚠️ SEGURIDAD: No se encontraron capturas para {symbol} {timeframe}")
+        pattern = f"*{normalized_symbol}*{normalized_timeframe}*.png"
+        candidates = list(screenshots_path.glob(pattern))
+        if len(candidates) > 1_000:
+            logger.error("Chart candidate count exceeds the safety limit")
             return None
 
-        # Ordenar por timestamp de modificación (más reciente primero)
-        matching_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        safe_candidates: list[tuple[float, Path]] = []
+        for candidate in candidates:
+            try:
+                candidate_path, metadata = _safe_chart_metadata(candidate)
+                safe_candidates.append((metadata.st_mtime, candidate_path))
+            except ValueError:
+                continue
+        safe_candidates.sort(key=lambda item: item[0], reverse=True)
 
-        # Validar cada archivo hasta encontrar uno válido
-        for file_path in matching_files:
-            is_valid, message = self.validate_chart_path_freshness(str(file_path), symbol, timeframe)
-            if is_valid:
-                logger.info(f"🎯 SEGURIDAD: Captura más reciente válida encontrada: {file_path}")
-                return str(file_path)
-            else:
-                logger.warning(f"⚠️ SEGURIDAD: Captura rechazada: {message}")
-
-        logger.error(f"❌ SEGURIDAD: No se encontró ninguna captura válida para {symbol} {timeframe}")
+        for _, candidate in safe_candidates:
+            valid, _ = self.validate_chart_path_freshness(
+                str(candidate),
+                normalized_symbol,
+                normalized_timeframe,
+            )
+            if valid:
+                return str(candidate.resolve())
         return None
 
-    def validate_temporal_analysis_paths(self, current_path: str, previous_path: str, 
-                                       symbol: str, timeframe: str) -> tuple[bool, str]:
-        """
-        🔍 Validar paths para análisis temporal
-
-        Args:
-            current_path: Path de la captura actual
-            previous_path: Path de la captura anterior
-            symbol: Símbolo del trading pair
-            timeframe: Timeframe
-
-        Returns:
-            Tuple[bool, str]: (son_válidos, mensaje_explicativo)
-        """
-        # Validar ambos paths individualmente
-        current_valid, current_msg = self.validate_chart_path_freshness(current_path, symbol, timeframe)
+    def validate_temporal_analysis_paths(
+        self,
+        current_path: str,
+        previous_path: str,
+        symbol: str,
+        timeframe: str,
+    ) -> tuple[bool, str]:
+        """Require two distinct valid charts in strictly increasing time order."""
+        current_valid, current_message = self.validate_chart_path_freshness(
+            current_path,
+            symbol,
+            timeframe,
+        )
         if not current_valid:
-            return False, f"Captura actual inválida: {current_msg}"
-
-        previous_valid, previous_msg = self.validate_chart_path_freshness(previous_path, symbol, timeframe)
+            return False, f"Invalid current chart: {current_message}"
+        previous_valid, previous_message = self.validate_chart_path_freshness(
+            previous_path,
+            symbol,
+            timeframe,
+        )
         if not previous_valid:
-            return False, f"Captura anterior inválida: {previous_msg}"
+            return False, f"Invalid previous chart: {previous_message}"
 
-        # Validar que sean diferentes
-        if current_path == previous_path:
-            error_msg = f"❌ SEGURIDAD: Paths idénticos para análisis temporal: {current_path}"
-            logger.error(error_msg)
-            return False, error_msg
+        try:
+            current_resolved, current_metadata = _safe_chart_metadata(current_path)
+            previous_resolved, previous_metadata = _safe_chart_metadata(previous_path)
+        except ValueError as exc:
+            return False, f"Chart changed during temporal validation: {exc}"
 
-        # Validar orden cronológico
-        current_mtime = os.path.getmtime(current_path)
-        previous_mtime = os.path.getmtime(previous_path)
+        if current_resolved.resolve() == previous_resolved.resolve():
+            return False, "Temporal chart paths must be different"
+        if current_metadata.st_mtime <= previous_metadata.st_mtime:
+            return False, "Temporal charts are not in strictly increasing order"
+        return True, "Temporal chart paths are valid"
 
-        if current_mtime <= previous_mtime:
-            error_msg = f"❌ SEGURIDAD: Orden cronológico incorrecto. Actual: {current_mtime}, Anterior: {previous_mtime}"
-            logger.error(error_msg)
-            return False, error_msg
-
-        success_msg = f"✅ SEGURIDAD: Paths temporales válidos. Actual: {current_path}, Anterior: {previous_path}"
-        logger.info(success_msg)
-        return True, success_msg
-
-    def get_security_report(self) -> dict:
-        """
-        📊 Obtener reporte de seguridad del gestor
-
-        Returns:
-            dict: Reporte con estadísticas de seguridad
-        """
-        report = {
-            'max_age_seconds': self.max_age_seconds,
-            'last_validated_path': self.last_validated_path,
-            'last_validation_time': self.last_validation_time,
-            'validations_count': len(self.used_paths_history),
-            'recent_validations': []
+    def get_security_report(self) -> dict[str, Any]:
+        """Return bounded, serializable validation metadata."""
+        recent: list[dict[str, Any]] = []
+        for validation in self.used_paths_history[-5:]:
+            item = dict(validation)
+            item["timestamp_human"] = datetime.fromtimestamp(
+                float(validation["timestamp"])
+            ).isoformat()
+            item["age_at_validation_minutes"] = (
+                float(validation["file_age_seconds"]) / 60
+            )
+            recent.append(item)
+        return {
+            "max_age_seconds": self.max_age_seconds,
+            "last_validated_path": self.last_validated_path,
+            "last_validation_time": self.last_validation_time,
+            "validations_count": len(self.used_paths_history),
+            "recent_validations": recent,
         }
 
-        # Agregar validaciones recientes
-        for validation in self.used_paths_history[-5:]:  # Últimas 5
-            validation_copy = validation.copy()
-            validation_copy['timestamp_human'] = datetime.fromtimestamp(validation['timestamp']).isoformat()
-            validation_copy['age_at_validation_minutes'] = validation['file_age_seconds'] / 60
-            report['recent_validations'].append(validation_copy)
 
-        return report
-
-# Instancia global del gestor de seguridad
 chart_security_manager = ChartPathSecurityManager()
 
+
 def validate_chart_path_safe(chart_path: str, symbol: str, timeframe: str) -> bool:
-    """
-    🛡️ Función de conveniencia para validar un path de captura
+    valid, _ = chart_security_manager.validate_chart_path_freshness(
+        chart_path,
+        symbol,
+        timeframe,
+    )
+    return valid
 
-    Args:
-        chart_path: Path a validar
-        symbol: Símbolo del trading pair
-        timeframe: Timeframe
-
-    Returns:
-        bool: True si el path es seguro para usar
-    """
-    is_valid, _ = chart_security_manager.validate_chart_path_freshness(chart_path, symbol, timeframe)
-    return is_valid
 
 def get_safe_chart_path(symbol: str, timeframe: str) -> str | None:
-    """
-    🎯 Obtener un path de captura seguro y validado
-
-    Args:
-        symbol: Símbolo del trading pair
-        timeframe: Timeframe deseado
-
-    Returns:
-        Optional[str]: Path seguro o None si no hay capturas válidas
-    """
     return chart_security_manager.get_most_recent_chart_path(symbol, timeframe)
 
-def validate_temporal_paths_safe(current_path: str, previous_path: str, 
-                                symbol: str, timeframe: str) -> bool:
-    """
-    🛡️ Validar paths para análisis temporal de forma segura
 
-    Args:
-        current_path: Path actual
-        previous_path: Path anterior
-        symbol: Símbolo
-        timeframe: Timeframe
-
-    Returns:
-        bool: True si ambos paths son seguros para análisis temporal
-    """
-    is_valid, _ = chart_security_manager.validate_temporal_analysis_paths(
-        current_path, previous_path, symbol, timeframe
+def validate_temporal_paths_safe(
+    current_path: str,
+    previous_path: str,
+    symbol: str,
+    timeframe: str,
+) -> bool:
+    valid, _ = chart_security_manager.validate_temporal_analysis_paths(
+        current_path,
+        previous_path,
+        symbol,
+        timeframe,
     )
-    return is_valid
+    return valid

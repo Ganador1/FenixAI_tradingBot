@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,7 +29,25 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from src.security.private_files import (
+    ensure_private_directory,
+    write_private_bytes,
+    write_private_text,
+)
+
 logger = logging.getLogger(__name__)
+
+_VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"}
+
+
+def _validated_market_inputs(symbol: str, timeframe: str) -> tuple[str, str]:
+    normalized_symbol = str(symbol).strip().upper()
+    normalized_timeframe = str(timeframe).strip()
+    if not re.fullmatch(r"[A-Z0-9]{5,20}", normalized_symbol):
+        raise ValueError("symbol must be a 5-20 character market identifier")
+    if normalized_timeframe not in _VALID_TIMEFRAMES:
+        raise ValueError("timeframe is not supported by the external chart service")
+    return normalized_symbol, normalized_timeframe
 
 
 class ChartSource(Enum):
@@ -129,6 +148,7 @@ def _generate_tradingview_widget_html(symbol: str, timeframe: str, indicators: l
 
     El widget es gratuito y no requiere login.
     """
+    symbol, timeframe = _validated_market_inputs(symbol, timeframe)
     # Mapear timeframe a formato TradingView
     tv_intervals = {
         "1m": "1", "5m": "5", "15m": "15", "30m": "30",
@@ -212,7 +232,7 @@ class ExternalChartCapturer:
     def __init__(self, headless: bool = True, cache_dir: str = "cache/external_charts"):
         self.headless = headless
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.cache_dir)
         self._browser = None
         self._context = None
         self._playwright = None
@@ -228,7 +248,6 @@ class ExternalChartCapturer:
                     args=[
                         '--disable-blink-features=AutomationControlled',
                         '--disable-dev-shm-usage',
-                        '--no-sandbox',
                     ]
                 )
                 self._context = await self._browser.new_context(
@@ -268,6 +287,7 @@ class ExternalChartCapturer:
         - Open Interest por exchange
         - Funding rates históricos
         """
+        symbol, timeframe = _validated_market_inputs(symbol, timeframe)
         await self._ensure_browser()
 
         config = SOURCE_CONFIG[chart_type]
@@ -322,7 +342,7 @@ class ExternalChartCapturer:
             # Guardar a disco
             filename = f"{chart_type.value}_{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             filepath = self.cache_dir / filename
-            filepath.write_bytes(screenshot_bytes)
+            write_private_bytes(filepath, screenshot_bytes)
             logger.info("📸 Capturado: %s (%d bytes)", filename, len(screenshot_bytes))
 
             await page.close()
@@ -359,6 +379,7 @@ class ExternalChartCapturer:
         - Ichimoku, Stochastic, ATR
         - Volume, VWAP, EMAs
         """
+        symbol, timeframe = _validated_market_inputs(symbol, timeframe)
         await self._ensure_browser()
 
         indicators = indicators or ["rsi", "macd", "bb", "volume"]
@@ -374,7 +395,7 @@ class ExternalChartCapturer:
 
             # Guardar HTML temporal
             html_file = self.cache_dir / f"tv_widget_{symbol}.html"
-            html_file.write_text(html_content)
+            write_private_text(html_file, html_content)
 
             page = await self._context.new_page()
             await page.set_viewport_size(config["viewport"])
@@ -393,7 +414,7 @@ class ExternalChartCapturer:
             # Guardar
             filename = f"tradingview_{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             filepath = self.cache_dir / filename
-            filepath.write_bytes(screenshot_bytes)
+            write_private_bytes(filepath, screenshot_bytes)
             logger.info("📸 TradingView Widget: %s (%d bytes)", filename, len(screenshot_bytes))
 
             await page.close()

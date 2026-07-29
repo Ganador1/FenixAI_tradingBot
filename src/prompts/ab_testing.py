@@ -15,13 +15,20 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import random
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.prompts.agent_prompts import AgentType, PromptTemplate
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_text,
+    write_private_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +118,12 @@ class PromptExperiment:
         agent_type: AgentType,
         storage_dir: Path | str = "data/experiments",
     ):
-        self.experiment_id = experiment_id
+        self.experiment_id = str(experiment_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", self.experiment_id):
+            raise ValueError("experiment_id contains unsafe characters")
         self.agent_type = agent_type
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.storage_dir)
 
         self.variants: dict[str, PromptVariant] = {}
         self.metrics: dict[str, ExperimentMetrics] = {}
@@ -129,6 +138,14 @@ class PromptExperiment:
         is_control: bool = False,
     ) -> None:
         """Añade una variante de prompt al experimento."""
+        name = str(name).strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", name):
+            raise ValueError("variant name contains unsafe characters")
+        if len(self.variants) >= 100 and name not in self.variants:
+            raise ValueError("an experiment may contain at most 100 variants")
+        weight = float(weight)
+        if not math.isfinite(weight) or weight <= 0 or weight > 1_000:
+            raise ValueError("variant weight must be finite and between 0 and 1000")
         variant = PromptVariant(
             name=name,
             template=template,
@@ -210,6 +227,9 @@ class PromptExperiment:
 
     def _update_latency_metrics(self, m: ExperimentMetrics, latency_ms: float) -> None:
         """Actualiza métricas de latencia."""
+        latency_ms = float(latency_ms)
+        if not math.isfinite(latency_ms) or latency_ms < 0 or latency_ms > 3_600_000:
+            raise ValueError("latency_ms must be finite and between 0 and 3600000")
         m.total_latency_ms += latency_ms
         m.min_latency_ms = min(m.min_latency_ms, latency_ms)
         m.max_latency_ms = max(m.max_latency_ms, latency_ms)
@@ -300,14 +320,22 @@ class PromptExperiment:
 
     def _save_state(self) -> None:
         """Persiste el estado del experimento."""
+        serialized_metrics: dict[str, dict[str, Any]] = {}
+        for key, metrics in self.metrics.items():
+            payload = asdict(metrics)
+            if not math.isfinite(float(payload["min_latency_ms"])):
+                payload["min_latency_ms"] = None
+            serialized_metrics[key] = payload
         state = {
             "experiment_id": self.experiment_id,
             "agent_type": self.agent_type.value,
-            "metrics": {k: asdict(v) for k, v in self.metrics.items()},
+            "metrics": serialized_metrics,
         }
 
-        with self._get_state_file().open("w") as f:
-            json.dump(state, f, indent=2)
+        write_private_text(
+            self._get_state_file(),
+            json.dumps(state, indent=2, allow_nan=False) + "\n",
+        )
 
     def _load_state(self) -> None:
         """Carga el estado del experimento si existe."""
@@ -316,15 +344,29 @@ class PromptExperiment:
             return
 
         try:
-            with state_file.open() as f:
-                state = json.load(f)
+            state = json.loads(read_private_text(state_file, max_bytes=1_000_000))
+            if not isinstance(state, dict):
+                raise ValueError("experiment state must be an object")
+            if state.get("experiment_id") != self.experiment_id:
+                raise ValueError("experiment state id does not match its filename")
+            if state.get("agent_type") != self.agent_type.value:
+                raise ValueError("experiment state agent type does not match")
+            raw_metrics = state.get("metrics", {})
+            if not isinstance(raw_metrics, dict) or len(raw_metrics) > 100:
+                raise ValueError("experiment metrics are invalid or unbounded")
 
-            for name, data in state.get("metrics", {}).items():
+            for name, data in raw_metrics.items():
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", str(name)):
+                    raise ValueError("stored variant name contains unsafe characters")
+                if not isinstance(data, dict):
+                    raise ValueError("stored variant metrics must be an object")
+                if data.get("min_latency_ms") is None:
+                    data["min_latency_ms"] = float("inf")
                 self.metrics[name] = ExperimentMetrics(**data)
 
             logger.info(f"Loaded experiment state: {self.experiment_id}")
-        except Exception as e:
-            logger.warning(f"Failed to load experiment state: {e}")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("Failed to load experiment state securely")
 
 
 class ABTestingManager:

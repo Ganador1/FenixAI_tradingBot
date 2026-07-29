@@ -1,11 +1,10 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 
 export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'trader' | 'analyst' | 'ai_agent';
+  role: 'admin' | 'trader' | 'viewer' | 'analyst' | 'ai_agent';
   avatar?: string;
   created_at: string;
 }
@@ -22,9 +21,7 @@ export interface AuthState {
   setToken: (token: string) => void;
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
+export const useAuthStore = create<AuthState>()((set) => ({
       user: null,
       token: null,
       isLoading: false,
@@ -79,9 +76,4 @@ export const useAuthStore = create<AuthState>()(
       setToken: (token: string) => {
         set({ token });
       },
-    }),
-    {
-      name: 'auth-storage',
-    }
-  )
-);
+    }));

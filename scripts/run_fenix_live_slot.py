@@ -13,6 +13,7 @@ import asyncio
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+os.umask(0o077)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -67,6 +70,11 @@ if os.getenv("FENIX_LIVE_SLOT_REEXECED") != "1":
         pass
 
 from config.llm_provider_config import AgentProviderConfig, LLMProvidersConfig
+from src.security.private_files import (
+    ensure_private_directory,
+    open_private_text,
+    write_private_text,
+)
 from src.system.connections.exchange_api import create_exchange_api
 from src.trading.engine import TradingEngine
 
@@ -102,39 +110,86 @@ SHORT_TF_AGENT_TIMEOUT_DEFAULTS = {
 
 
 def _load_dotenv_file(project_root: Path) -> None:
-    env_path = project_root / ".env"
-    if not env_path.exists():
-        return
+    from src.security.dotenv_security import secure_load_dotenv
 
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv(env_path)
-        return
-    except Exception:
-        pass
-
-    # Lightweight fallback when python-dotenv is not installed.
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+    secure_load_dotenv(project_root / ".env")
 
 
 def _mask_secret(value: str | None) -> str:
-    if not value:
-        return "(missing)"
-    if len(value) < 6:
-        return "***"
-    return f"***{value[-6:]}"
+    return "(configured)" if value else "(missing)"
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
+    return (re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("._-") or "slot")[:80]
+
+
+def _bounded_text(value: str, *, label: str, maximum: int = 256) -> str:
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > maximum
+        or any(character in normalized for character in "\x00\r\n")
+    ):
+        raise argparse.ArgumentTypeError(f"{label} must be bounded single-line text")
+    return normalized
+
+
+def _symbol(value: str) -> str:
+    normalized = value.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{5,20}", normalized):
+        raise argparse.ArgumentTypeError("symbol must be a 5-20 character Binance pair")
+    return normalized
+
+
+def _timeframe(value: str) -> str:
+    normalized = value.strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,4}(?:m|h|d|w|M)", normalized):
+        raise argparse.ArgumentTypeError("timeframe has an invalid format")
+    return normalized
+
+
+def _bounded_int(value: str, *, label: str, minimum: int, maximum: int) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"{label} must be an integer") from exc
+    if not minimum <= result <= maximum:
+        raise argparse.ArgumentTypeError(
+            f"{label} must be between {minimum} and {maximum}"
+        )
+    return result
+
+
+def _run_minutes(value: str) -> int:
+    return _bounded_int(value, label="run minutes", minimum=1, maximum=10_080)
+
+
+def _model_timeout(value: str) -> int:
+    return _bounded_int(value, label="model timeout", minimum=1, maximum=3_600)
+
+
+def _slot_index(value: str) -> int:
+    return _bounded_int(value, label="slot index", minimum=1, maximum=1_000_000)
+
+
+def _experiment_id(value: str) -> int:
+    return _bounded_int(value, label="experiment id", minimum=0, maximum=2_147_483_647)
+
+
+def _model_text(value: str) -> str:
+    return _bounded_text(value, label="model identifier", maximum=256)
+
+
+def _team_model_text(value: str) -> str:
+    return _bounded_text(value, label="team model mapping", maximum=4096)
+
+
+def _label_text(value: str) -> str:
+    return _bounded_text(value, label="label", maximum=120)
+
+
+def _output_path_text(value: str) -> str:
+    return _bounded_text(value, label="output path", maximum=1024)
 
 
 def _active_binance_env_names(mode_cfg: EngineModeConfig) -> tuple[str, str]:
@@ -159,8 +214,7 @@ def _resolve_live_slot_lock_path(
 
     symbol_key = _slug(args.symbol.strip().lower())
     network = "testnet" if mode_cfg.use_testnet else "mainnet"
-    lock_dir = PROJECT_ROOT / "logs" / "locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_dir = ensure_private_directory(PROJECT_ROOT / "logs" / "locks")
     return lock_dir / f"fenix_live_slot_{network}_{account_fingerprint}_{symbol_key}.lock"
 
 
@@ -171,7 +225,7 @@ def live_slot_symbol_lock(args: argparse.Namespace, mode_cfg: EngineModeConfig):
         yield None
         return
 
-    handle = lock_path.open("a+", encoding="utf-8")
+    handle = open_private_text(lock_path, "r+")
     locked = False
     try:
         try:
@@ -201,6 +255,7 @@ def live_slot_symbol_lock(args: argparse.Namespace, mode_cfg: EngineModeConfig):
             )
         )
         handle.flush()
+        os.fsync(handle.fileno())
         yield lock_path
     finally:
         try:
@@ -406,6 +461,8 @@ def parse_team_models(raw: str | None) -> dict[str, str]:
     mapping: dict[str, str] = {}
     if not raw:
         return mapping
+    if len(raw) > 4096 or any(character in raw for character in "\x00\r\n"):
+        raise ValueError("Team model mapping is too long or contains control data")
 
     for chunk in raw.replace(";", ",").split(","):
         part = chunk.strip()
@@ -418,8 +475,10 @@ def parse_team_models(raw: str | None) -> dict[str, str]:
         model = model.strip()
         if agent not in TEAM_AGENT_KEYS:
             raise ValueError(f"Invalid team agent key: {agent}")
-        if not model:
-            raise ValueError(f"Empty model for agent: {agent}")
+        if agent in mapping:
+            raise ValueError(f"Duplicate team agent key: {agent}")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", model):
+            raise ValueError(f"Invalid model identifier for agent: {agent}")
         mapping[agent] = model
     return mapping
 
@@ -541,10 +600,9 @@ class LiveEventCollector:
     def __init__(self, event_log_path: Path, metadata: dict[str, Any], *, append: bool = False):
         self.event_log_path = event_log_path
         self.metadata = dict(metadata)
-        self.event_log_path.parent.mkdir(parents=True, exist_ok=True)
         if not append:
             # Start each slot with a clean event log unless append is explicitly requested.
-            self.event_log_path.write_text("")
+            write_private_text(self.event_log_path, "")
 
         self.total_events = 0
         self.event_counts: dict[str, int] = {}
@@ -594,7 +652,7 @@ class LiveEventCollector:
             "payload": _json_safe(payload),
             **_json_safe(self.metadata),
         }
-        with self.event_log_path.open("a", encoding="utf-8") as handle:
+        with open_private_text(self.event_log_path, "a") as handle:
             handle.write(json.dumps(payload_with_meta, ensure_ascii=False) + "\n")
 
     def as_dict(self) -> dict[str, Any]:
@@ -1001,8 +1059,10 @@ async def run_slot(args: argparse.Namespace) -> dict[str, Any]:
         "ended_at": slot_end.isoformat(),
     }
 
-    args.summary_path.parent.mkdir(parents=True, exist_ok=True)
-    args.summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+    write_private_text(
+        args.summary_path,
+        json.dumps(summary, ensure_ascii=False, indent=2),
+    )
     return summary
 
 
@@ -1010,9 +1070,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a single full-engine Fenix test slot (paper/testnet/live)."
     )
-    parser.add_argument("--symbol", default="BTCUSDT")
-    parser.add_argument("--timeframe", default="5m")
-    parser.add_argument("--run-minutes", type=int, default=60)
+    parser.add_argument("--symbol", type=_symbol, default="BTCUSDT")
+    parser.add_argument("--timeframe", type=_timeframe, default="5m")
+    parser.add_argument("--run-minutes", type=_run_minutes, default=60)
     parser.add_argument("--mode", choices=["paper", "testnet", "live"], default="testnet")
     parser.add_argument(
         "--allow-live",
@@ -1028,8 +1088,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-visual", action="store_true", help="Disable visual agent.")
     parser.add_argument("--no-sentiment", action="store_true", help="Disable sentiment agent.")
 
-    parser.add_argument("--base-model", default=None)
-    parser.add_argument("--base-vision-model", default=None)
+    parser.add_argument("--base-model", type=_model_text, default=None)
+    parser.add_argument("--base-vision-model", type=_model_text, default=None)
     parser.add_argument(
         "--team-provider",
         choices=SUPPORTED_PROVIDER_CHOICES,
@@ -1044,13 +1104,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--team-models",
+        type=_team_model_text,
         default=None,
         help=(
             "Per-agent team map "
             "(technical=...,qabba=...,decision=...,sentiment=...,visual=...,risk_manager=...)"
         ),
     )
-    parser.add_argument("--model-timeout-sec", type=int, default=120)
+    parser.add_argument("--model-timeout-sec", type=_model_timeout, default=120)
 
     parser.add_argument("--disable-reasoning-bank", action="store_true")
     parser.add_argument("--disable-risk-manager", action="store_true")
@@ -1076,13 +1137,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lite-allow-mtf-qabba-when-tech-hold", action="store_true")
 
     parser.add_argument("--api-key-index", type=int, choices=[1, 2], default=1)
-    parser.add_argument("--run-tag", default=None)
-    parser.add_argument("--slot-name", default=None)
-    parser.add_argument("--slot-index", type=int, default=None)
-    parser.add_argument("--experiment", default=None)
-    parser.add_argument("--experiment-id", type=int, default=None)
-    parser.add_argument("--summary-path", default=None)
-    parser.add_argument("--event-log-path", default=None)
+    parser.add_argument("--run-tag", type=_label_text, default=None)
+    parser.add_argument("--slot-name", type=_label_text, default=None)
+    parser.add_argument("--slot-index", type=_slot_index, default=None)
+    parser.add_argument("--experiment", type=_label_text, default=None)
+    parser.add_argument("--experiment-id", type=_experiment_id, default=None)
+    parser.add_argument("--summary-path", type=_output_path_text, default=None)
+    parser.add_argument("--event-log-path", type=_output_path_text, default=None)
     parser.add_argument(
         "--append-event-log",
         action="store_true",
@@ -1097,18 +1158,31 @@ def _resolve_output_paths(args: argparse.Namespace) -> tuple[str, Path, Path]:
     slot_name = args.slot_name or "slot"
     slot_suffix = _slug(f"{slot_name}_{args.symbol}_{args.timeframe}_{run_tag}")
 
-    logs_dir = PROJECT_ROOT / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = ensure_private_directory(PROJECT_ROOT / "logs")
+    resolved_logs = logs_dir.resolve(strict=True)
 
-    summary_path = (
-        Path(args.summary_path)
-        if args.summary_path
-        else logs_dir / f"live_slot_summary_{slot_suffix}.json"
+    def _output_path(raw: str | None, default: Path, expected_suffix: str) -> Path:
+        candidate = Path(raw) if raw else default
+        if not candidate.is_absolute():
+            candidate = PROJECT_ROOT / candidate
+        resolved_candidate = candidate.resolve(strict=False)
+        if not resolved_candidate.is_relative_to(resolved_logs):
+            raise ValueError("Slot output paths must remain inside the private logs directory")
+        if candidate.suffix != expected_suffix:
+            raise ValueError(f"Slot output path must end in {expected_suffix}")
+        if candidate.is_symlink():
+            raise ValueError("Slot output path cannot be a symbolic link")
+        return candidate
+
+    summary_path = _output_path(
+        args.summary_path,
+        logs_dir / f"live_slot_summary_{slot_suffix}.json",
+        ".json",
     )
-    event_log_path = (
-        Path(args.event_log_path)
-        if args.event_log_path
-        else logs_dir / f"live_slot_events_{slot_suffix}.jsonl"
+    event_log_path = _output_path(
+        args.event_log_path,
+        logs_dir / f"live_slot_events_{slot_suffix}.jsonl",
+        ".jsonl",
     )
     return run_tag, summary_path, event_log_path
 
@@ -1151,9 +1225,65 @@ def configure_slot_runtime_env(
     return applied
 
 
+def validate_live_runtime_safety(
+    args: argparse.Namespace,
+    mode_cfg: EngineModeConfig,
+) -> None:
+    """Reject configurations that remove the risk agent from mainnet execution."""
+    risk_disabled = args.disable_risk_manager or os.getenv(
+        "FENIX_DISABLE_RISK_MANAGER", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if (
+        not mode_cfg.paper_trading
+        and not mode_cfg.use_testnet
+        and not args.disable_trading
+        and risk_disabled
+    ):
+        raise ValueError("Mainnet live trading cannot run with the risk agent disabled")
+    if (
+        not mode_cfg.paper_trading
+        and not mode_cfg.use_testnet
+        and not args.disable_trading
+        and getattr(args, "balance_fallback_usdt", None) is not None
+    ):
+        raise ValueError("Mainnet live trading cannot use a simulated balance fallback")
+
+
+def validate_slot_arguments(args: argparse.Namespace) -> None:
+    """Apply bounds to numeric controls that argparse cannot safely coerce alone."""
+
+    def _finite_between(name: str, minimum: float, maximum: float, *, optional=False) -> None:
+        value = getattr(args, name, None)
+        if value is None and optional:
+            return
+        if (
+            type(value) not in {int, float}
+            or not math.isfinite(float(value))
+            or not minimum <= float(value) <= maximum
+        ):
+            raise ValueError(
+                f"{name.replace('_', '-')} must be between {minimum:g} and {maximum:g}"
+            )
+
+    _finite_between("max_risk_per_trade", 0.000001, 1, optional=True)
+    _finite_between("balance_fallback_usdt", 0, 1_000_000_000, optional=True)
+    _finite_between("min_klines_to_start", 1, 5_000)
+    _finite_between("fast_loop_sec", 0, 3_600)
+    _finite_between("analyze_on_start_delay_sec", 0, 3_600)
+    _finite_between("shutdown_timeout_sec", 1, 3_600)
+    _finite_between("lite_node_timeout_sec", 0.1, 3_600, optional=True)
+    _finite_between("strict_mtf_opposing_veto_conf", 0, 1, optional=True)
+    _finite_between("strict_mtf_bias_cache_sec", 0, 86_400, optional=True)
+    _finite_between("lite_mtf_confirm_conf", 0, 1, optional=True)
+    _finite_between("lite_mtf_qabba_min_conf", 0, 1, optional=True)
+    if args.team_models:
+        parse_team_models(args.team_models)
+
+
 def main() -> None:
     _load_dotenv_file(PROJECT_ROOT)
     args = parse_args()
+    validate_slot_arguments(args)
 
     run_tag, summary_path, event_log_path = _resolve_output_paths(args)
     args.run_tag = run_tag
@@ -1165,6 +1295,7 @@ def main() -> None:
 
     selected = apply_api_key_index(os.environ, args.api_key_index)
     mode_cfg = resolve_engine_mode(args.mode, args.allow_live, args.use_testnet_data)
+    validate_live_runtime_safety(args, mode_cfg)
     experiment_env_overrides = _configure_experiment_env(args)
     timeout_overrides = _configure_short_timeframe_defaults(args)
     runtime_env_overrides = configure_slot_runtime_env(args, mode_cfg)
@@ -1230,7 +1361,7 @@ def main() -> None:
             "symbol": args.symbol,
             "timeframe": args.timeframe,
         }
-        args.summary_path.write_text(json.dumps(interrupted, indent=2))
+        write_private_text(args.summary_path, json.dumps(interrupted, indent=2))
         print("Interrupted by user.")
         raise SystemExit(130)
 

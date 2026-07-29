@@ -30,9 +30,13 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import hashlib
+import json
 import logging
 import os
+import re
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -43,17 +47,36 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.tools.chart_capture_scheduler import ChartCaptureScheduler
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_text,
+    write_private_text,
+)
 
 # Configuración por defecto
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 DEFAULT_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
 LOG_DIR = PROJECT_ROOT / "logs"
-PID_FILE = PROJECT_ROOT / ".chart_service.pid"
+PID_FILE = LOG_DIR / "runtime_locks" / "chart_service.pid"
+
+
+def _symbol(value: str) -> str:
+    normalized = value.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{5,20}", normalized):
+        raise argparse.ArgumentTypeError("symbol must be a 5-20 character Binance pair")
+    return normalized
+
+
+def _timeframe(value: str) -> str:
+    normalized = value.strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,4}(?:m|h|d|w|M)", normalized):
+        raise argparse.ArgumentTypeError("timeframe has an invalid format")
+    return normalized
 
 
 def setup_logging(log_to_file: bool = True, verbose: bool = False) -> logging.Logger:
     """Configura logging con rotación de archivos."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(LOG_DIR)
 
     level = logging.DEBUG if verbose else logging.INFO
 
@@ -72,12 +95,15 @@ def setup_logging(log_to_file: bool = True, verbose: bool = False) -> logging.Lo
     # File handler con rotación diaria
     if log_to_file:
         log_file = LOG_DIR / f"chart_service_{datetime.now().strftime('%Y%m%d')}.log"
+        if log_file.is_symlink():
+            raise ValueError("Chart service log cannot be a symbolic link")
         file_handler = logging.FileHandler(log_file)
+        os.fchmod(file_handler.stream.fileno(), 0o600)
         file_handler.setFormatter(formatter)
         file_handler.setLevel(logging.DEBUG)
         handlers.append(file_handler)
 
-    logging.basicConfig(level=level, handlers=handlers)
+    logging.basicConfig(level=level, handlers=handlers, force=True)
 
     # Silenciar logs ruidosos de librerías
     logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -86,26 +112,65 @@ def setup_logging(log_to_file: bool = True, verbose: bool = False) -> logging.Lo
     return logging.getLogger("chart_service")
 
 
+def _process_identity(pid: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart=,command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = result.stdout.strip()
+    if result.returncode != 0 or "run_chart_service.py" not in line:
+        return None
+    return hashlib.sha256(line.encode("utf-8")).hexdigest()
+
+
+def _read_pid_record() -> dict[str, object] | None:
+    if not PID_FILE.exists():
+        return None
+    try:
+        payload = json.loads(read_private_text(PID_FILE, max_bytes=4096))
+        pid = payload.get("pid") if isinstance(payload, dict) else None
+        identity = payload.get("identity") if isinstance(payload, dict) else None
+        if (
+            type(pid) is not int
+            or pid <= 1
+            or not isinstance(identity, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", identity)
+            or _process_identity(pid) != identity
+        ):
+            return None
+        return {"pid": pid, "identity": identity}
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def _remove_own_pidfile() -> None:
+    record = _read_pid_record()
+    if record and record["pid"] == os.getpid() and not PID_FILE.is_symlink():
+        PID_FILE.unlink(missing_ok=True)
+
+
 def write_pid():
     """Escribe el PID actual al archivo."""
-    PID_FILE.write_text(str(os.getpid()))
-    atexit.register(lambda: PID_FILE.unlink(missing_ok=True))
+    identity = _process_identity(os.getpid())
+    if identity is None:
+        raise RuntimeError("Could not establish chart service process identity")
+    ensure_private_directory(PID_FILE.parent)
+    write_private_text(
+        PID_FILE,
+        json.dumps({"pid": os.getpid(), "identity": identity}),
+    )
+    atexit.register(_remove_own_pidfile)
 
 
 def check_running() -> bool:
     """Verifica si ya hay un servicio corriendo."""
-    if not PID_FILE.exists():
-        return False
-
-    try:
-        pid = int(PID_FILE.read_text().strip())
-        # Verificar si el proceso existe
-        os.kill(pid, 0)
-        return True
-    except (ValueError, OSError):
-        # PID inválido o proceso no existe
-        PID_FILE.unlink(missing_ok=True)
-        return False
+    return _read_pid_record() is not None
 
 
 def daemonize():
@@ -121,7 +186,7 @@ def daemonize():
     # Decouple del entorno padre
     os.chdir("/")
     os.setsid()
-    os.umask(0)
+    os.umask(0o077)
 
     # Segunda fork
     try:
@@ -272,6 +337,7 @@ Examples:
         "--symbols",
         "-s",
         nargs="+",
+        type=_symbol,
         default=DEFAULT_SYMBOLS,
         help=f"Símbolos a capturar (default: {DEFAULT_SYMBOLS})",
     )
@@ -280,6 +346,7 @@ Examples:
         "--timeframes",
         "-t",
         nargs="+",
+        type=_timeframe,
         default=DEFAULT_TIMEFRAMES,
         help=f"Timeframes (default: {DEFAULT_TIMEFRAMES})",
     )
@@ -300,38 +367,45 @@ Examples:
 
     # Comando: --status
     if args.status:
-        if check_running():
-            pid = int(PID_FILE.read_text().strip())
-            print(f"✅ Chart service is running (PID: {pid})")
+        record = _read_pid_record()
+        if record:
+            print(f"✅ Chart service is running (PID: {record['pid']})")
         else:
             print("❌ Chart service is not running")
         return
 
     # Comando: --stop
     if args.stop:
-        if not check_running():
+        record = _read_pid_record()
+        if not record:
             print("❌ No service running")
             return
 
-        pid = int(PID_FILE.read_text().strip())
+        pid = int(record["pid"])
+        expected_identity = str(record["identity"])
         print(f"Stopping service (PID: {pid})...")
         os.kill(pid, signal.SIGTERM)
 
         # Esperar que termine
         for _ in range(10):
             time.sleep(0.5)
-            if not check_running():
+            current = _read_pid_record()
+            if current is None:
                 print("✅ Service stopped")
                 return
 
-        print("⚠️ Service did not stop gracefully, sending SIGKILL...")
-        os.kill(pid, signal.SIGKILL)
+        current = _read_pid_record()
+        if current and current["pid"] == pid and current["identity"] == expected_identity:
+            print("⚠️ Service did not stop gracefully, sending SIGKILL...")
+            os.kill(pid, signal.SIGKILL)
+        else:
+            print("Refusing SIGKILL because the process identity changed")
         return
 
     # Verificar si ya hay uno corriendo
-    if check_running():
-        pid = int(PID_FILE.read_text().strip())
-        print(f"❌ Service already running (PID: {pid})")
+    running_record = _read_pid_record()
+    if running_record:
+        print(f"❌ Service already running (PID: {running_record['pid']})")
         print("Use --stop to stop it first")
         sys.exit(1)
 

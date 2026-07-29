@@ -65,6 +65,11 @@ from src.core.orchestrator.llm_factory import LLMFactory as SharedLLMFactory
 from src.inference.reasoning_judge import ReasoningJudgePayload, ReasoningLLMJudge  # Integration
 from src.prompts.agent_prompts import format_prompt
 from src.risk.dynamic_stop_loss import calculate_dynamic_risk_levels
+from src.security.private_files import (
+    ensure_private_directory,
+    open_private_text,
+    write_private_text,
+)
 from src.system.tracing import get_tracer
 
 # ReasoningBank integration
@@ -783,6 +788,8 @@ def save_legacy_agent_log(
     Useful for debugging and detailed analysis.
     """
     try:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", agent_name):
+            raise ValueError("agent_name contains unsafe path characters")
         # Base directory - use absolute path based on script location
         project_root = Path(__file__).parent.parent.parent
         configured_log_dir = os.getenv("FENIX_LLM_RESPONSE_LOG_DIR")
@@ -791,7 +798,7 @@ def save_legacy_agent_log(
             if configured_log_dir
             else project_root / "logs" / "llm_responses" / agent_name
         )
-        base_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(base_dir)
         logger.info(f"📝 Saving agent log to: {base_dir}")
 
         # Unique timestamp
@@ -800,25 +807,25 @@ def save_legacy_agent_log(
 
         # Save prompt (raw list of messages)
         prompt_path = base_dir / f"{base_name}_prompt.txt"
-        with open(prompt_path, "w", encoding="utf-8") as f:
-            for i, msg in enumerate(prompt):
-                content = getattr(msg, "content", str(msg))
-                role = getattr(msg, "type", "unknown")
-                f.write(f"--- Message {i} ({role}) ---\n{content}\n\n")
+        prompt_sections: list[str] = []
+        for i, msg in enumerate(prompt[:100]):
+            content = str(getattr(msg, "content", str(msg)))[:100_000]
+            role = str(getattr(msg, "type", "unknown"))[:80]
+            prompt_sections.append(f"--- Message {i} ({role}) ---\n{content}\n\n")
+        write_private_text(prompt_path, "".join(prompt_sections))
 
         # Save structured input (if possible to extract from prompt)
         # This is harder to reconstruct generically, but we save the full prompt
 
         # Save raw response
         raw_path = base_dir / f"{base_name}_raw_response.txt"
-        with open(raw_path, "w", encoding="utf-8") as f:
-            f.write(response_content)
+        write_private_text(raw_path, response_content[:1_000_000])
 
         # Save output JSON
         if parsed_json:
             output_path = base_dir / f"{base_name}_output.json"
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(parsed_json, f, indent=2, ensure_ascii=False)
+            encoded_output = json.dumps(parsed_json, indent=2, ensure_ascii=False)
+            write_private_text(output_path, encoded_output[:1_000_000])
 
     except Exception as e:
         logger.warning(f"Error saving legacy log for {agent_name}: {e}")
@@ -1524,11 +1531,24 @@ Retry with valid JSON.
 
             report["_attempts"] = attempt + 1
 
-            # DEBUG LOGGING
-            with open("debug_visual_raw.log", "a") as f:
-                f.write(
-                    f"\n--- {datetime.now()} ---\n{json.dumps(report, indent=2)}\n----------------\n"
-                )
+            # Raw model output can contain sensitive context. Persist it only
+            # when an operator explicitly enables the private debug log.
+            if os.getenv("FENIX_DEBUG_VISUAL_RAW", "0") == "1":
+                try:
+                    debug_file = Path(
+                        os.getenv(
+                            "FENIX_DEBUG_VISUAL_RAW_PATH",
+                            "logs/debug_visual_raw.log",
+                        )
+                    )
+                    ensure_private_directory(debug_file.parent)
+                    with open_private_text(debug_file, "a") as handle:
+                        handle.write(
+                            f"\n--- {datetime.now()} ---\n"
+                            f"{json.dumps(report, indent=2)}\n----------------\n"
+                        )
+                except (OSError, TypeError, ValueError):
+                    logger.warning("Visual raw debug output could not be written securely")
 
             logger.info(f"🖼️ Visual Agent: Parsed JSON with action={report.get('action')}")
 

@@ -32,7 +32,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import aiosqlite
-from sqlalchemy import text
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.config.database import Base
@@ -44,6 +45,7 @@ logger = logging.getLogger("migrate")
 
 # Table list in dependency order (parents before children).
 TABLES = [User, Order, Trade, Position, AgentOutput]
+TABLE_BY_NAME = {model.__tablename__: model.__table__ for model in TABLES}
 
 COLUMN_MAP = {
     "users": ["id", "email", "hashed_password", "full_name", "role", "is_active", "created_at"],
@@ -60,8 +62,17 @@ COLUMN_MAP = {
 }
 
 
+def _validate_schema_selection(table: str, columns: list[str] | None = None) -> None:
+    expected_columns = COLUMN_MAP.get(table)
+    if expected_columns is None:
+        raise ValueError(f"unsupported migration table: {table}")
+    if columns is not None and columns != expected_columns:
+        raise ValueError(f"columns do not match the declared schema for {table}")
+
+
 async def _count_sqlite(db: aiosqlite.Connection, table: str) -> int:
-    async with db.execute(f"SELECT COUNT(*) FROM {table}") as cursor:
+    _validate_schema_selection(table)
+    async with db.execute(f'SELECT COUNT(*) FROM "{table}"') as cursor:  # nosec B608
         row = await cursor.fetchone()
         return row[0] if row else 0
 
@@ -73,28 +84,33 @@ async def _read_sqlite_batch(
     offset: int,
     batch_size: int,
 ) -> list[dict[str, Any]]:
-    placeholders = ",".join(columns)
+    _validate_schema_selection(table, columns)
+    if offset < 0 or not 1 <= batch_size <= 10_000:
+        raise ValueError("invalid migration batch bounds")
+    placeholders = ",".join(f'"{column}"' for column in columns)
     async with db.execute(
-        f"SELECT {placeholders} FROM {table} LIMIT {batch_size} OFFSET {offset}"
+        f'SELECT {placeholders} FROM "{table}" LIMIT ? OFFSET ?',  # nosec B608
+        (batch_size, offset),
     ) as cursor:
         rows = await cursor.fetchall()
     return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
 async def _count_pg(pg_engine, table: str) -> int:
+    _validate_schema_selection(table)
     async with pg_engine.connect() as conn:
-        result = await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))
+        result = await conn.execute(select(func.count()).select_from(TABLE_BY_NAME[table]))
         return result.scalar() or 0
 
 
 async def _insert_batch(pg_engine, table: str, columns: list[str], rows: list[dict]) -> int:
     if not rows:
         return 0
-    col_list = ",".join(columns)
-    param_list = ",".join(f":{c}" for c in columns)
-    stmt = text(f"INSERT INTO {table} ({col_list}) VALUES ({param_list}) ON CONFLICT DO NOTHING")
+    _validate_schema_selection(table, columns)
+    table_definition = TABLE_BY_NAME[table]
+    stmt = pg_insert(table_definition).values(rows).on_conflict_do_nothing()
     async with pg_engine.begin() as conn:
-        result = await conn.execute(stmt, rows)
+        result = await conn.execute(stmt)
         return result.rowcount or 0
 
 

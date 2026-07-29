@@ -178,7 +178,7 @@ def test_get_exchange_leverage_returns_none_when_symbol_missing_or_failed():
 @pytest.mark.asyncio
 async def test_ambiguous_market_submission_is_reconciled_by_client_id(monkeypatch):
     monkeypatch.setenv("FENIX_GLOBAL_PORTFOLIO_GUARD", "0")
-    executor = OrderExecutor(symbol="SOLUSDT", testnet=False)
+    executor = OrderExecutor(symbol="SOLUSDT", testnet=False, allow_mutations=True)
     service = MagicMock()
     service.place_market_order.side_effect = TimeoutError("response timed out")
     service.get_order_by_client_id.return_value = {

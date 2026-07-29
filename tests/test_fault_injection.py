@@ -41,7 +41,12 @@ class TestSubmissionTimeout:
         """Verify that a timeout leads to reconciliation by clientOrderId, not blind retry."""
         from src.trading.executor import OrderExecutor
 
-        executor = OrderExecutor(symbol="SOLUSDT", testnet=True, timeframe="1m")
+        executor = OrderExecutor(
+            symbol="SOLUSDT",
+            testnet=True,
+            timeframe="1m",
+            allow_mutations=True,
+        )
         service = MagicMock()
         executor._service = service
 
@@ -77,7 +82,12 @@ class TestDelayedFill:
         """Verify that a slow-filling order is polled until FILLED."""
         from src.trading.executor import OrderExecutor
 
-        executor = OrderExecutor(symbol="SOLUSDT", testnet=True, timeframe="1m")
+        executor = OrderExecutor(
+            symbol="SOLUSDT",
+            testnet=True,
+            timeframe="1m",
+            allow_mutations=True,
+        )
         service = MagicMock()
         executor._service = service
 
@@ -109,7 +119,12 @@ class TestProtectiveRejection:
         """Verify that SL/TP rejection triggers a fail-safe position close."""
         from src.trading.executor import OrderExecutor
 
-        executor = OrderExecutor(symbol="SOLUSDT", testnet=True, timeframe="1m")
+        executor = OrderExecutor(
+            symbol="SOLUSDT",
+            testnet=True,
+            timeframe="1m",
+            allow_mutations=True,
+        )
         service = MagicMock()
         executor._service = service
 

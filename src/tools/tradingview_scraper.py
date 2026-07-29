@@ -21,6 +21,12 @@ import logging
 
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
 
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_text,
+    write_private_text,
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -45,12 +51,28 @@ class TradingViewCredentials:
 
     @classmethod
     def from_file(cls, path: str = "config/tradingview_credentials.json") -> Optional["TradingViewCredentials"]:
-        """Cargar credenciales desde archivo"""
+        """Load a legacy credential file only with an explicit, private-file opt-in."""
+        if os.getenv("FENIX_ALLOW_LEGACY_CREDENTIAL_FILE", "0").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return None
         try:
-            with open(path) as f:
-                data = json.load(f)
-                return cls(username=data["username"], password=data["password"])
-        except:
+            credential_path = Path(path)
+            data = json.loads(
+                read_private_text(
+                    credential_path,
+                    max_bytes=64 * 1024,
+                    require_owner_private=True,
+                )
+            )
+            return cls(username=data["username"], password=data["password"])
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            return None
+        except ValueError:
+            logger.error("Legacy TradingView credential file must be a regular owner-only file")
             return None
 
 
@@ -90,24 +112,47 @@ class TradingViewScraper:
 
     def _setup_dirs(self):
         """Crear directorios necesarios"""
-        self.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-        self.INDICATORS_DIR.mkdir(exist_ok=True)
-        self.SCREENSHOTS_DIR.mkdir(exist_ok=True)
+        ensure_private_directory(self.STORAGE_DIR)
+        ensure_private_directory(self.INDICATORS_DIR)
+        ensure_private_directory(self.SCREENSHOTS_DIR)
+
+    def _load_private_session(self) -> dict | None:
+        if not self.SESSION_FILE.exists() and not self.SESSION_FILE.is_symlink():
+            return None
+        try:
+            session = json.loads(
+                read_private_text(
+                    self.SESSION_FILE,
+                    max_bytes=1_000_000,
+                    require_owner_private=True,
+                )
+            )
+            return session if isinstance(session, dict) else None
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            logger.error("Ignoring unsafe or invalid TradingView session state")
+            return None
+
+    async def _save_session(self) -> None:
+        if self.context is None:
+            return
+        state = await self.context.storage_state()
+        write_private_text(
+            self.SESSION_FILE,
+            json.dumps(state, separators=(",", ":"), ensure_ascii=True) + "\n",
+        )
 
     async def start(self, headless: bool = True):
         """Iniciar navegador"""
         playwright = await async_playwright().start()
 
-        self.browser = await playwright.chromium.launch(
-            headless=headless,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
-        )
+        self.browser = await playwright.chromium.launch(headless=headless)
 
         # Intentar restaurar sesión
-        if self.SESSION_FILE.exists():
+        session_state = self._load_private_session()
+        if session_state is not None:
             logger.info("📁 Restaurando sesión guardada...")
             self.context = await self.browser.new_context(
-                storage_state=str(self.SESSION_FILE),
+                storage_state=session_state,
                 viewport={'width': 1920, 'height': 1080}
             )
         else:
@@ -130,7 +175,7 @@ class TradingViewScraper:
         """Cerrar navegador y guardar sesión"""
         if self.context:
             # Guardar estado de sesión
-            await self.context.storage_state(path=str(self.SESSION_FILE))
+            await self._save_session()
             logger.info("💾 Sesión guardada")
 
         if self.browser:
@@ -145,7 +190,7 @@ class TradingViewScraper:
             # Buscar botón de usuario (indica sesión activa)
             user_menu = await self.page.query_selector('[data-name="user-menu-button"]')
             return user_menu is not None
-        except:
+        except Exception:
             return False
 
     async def _login(self):
@@ -178,7 +223,7 @@ class TradingViewScraper:
             # Verificar login exitoso
             if await self._is_logged_in():
                 logger.info("✅ Login exitoso")
-                await self.context.storage_state(path=str(self.SESSION_FILE))
+                await self._save_session()
                 return True
             else:
                 logger.error("❌ Login falló")
@@ -333,8 +378,10 @@ class TradingViewScraper:
             safe_name = re.sub(r'[^\w\-]', '_', name.strip())[:50]
             save_path = self.INDICATORS_DIR / f"{safe_name}.json"
 
-            with open(save_path, 'w') as f:
-                json.dump(asdict(indicator), f, indent=2)
+            write_private_text(
+                save_path,
+                json.dumps(asdict(indicator), indent=2, ensure_ascii=False) + "\n",
+            )
 
             logger.info(f"✅ Indicador scrapeado: {name}")
             return indicator

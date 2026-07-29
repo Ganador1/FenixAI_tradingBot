@@ -116,9 +116,9 @@ export function Companions() {
   const refresh = useCallback(async () => {
     try {
       const [statusRes, signalRes, miniRes] = await Promise.all([
-        fetch(`/api/nanofenix/status?symbol=${symbol}`),
-        fetch(`/api/nanofenix/signal?symbol=${symbol}`),
-        fetch('/api/minifenix/regime'),
+        fetch(`/api/nanofenix/status?symbol=${symbol}`, { headers: authHeaders() }),
+        fetch(`/api/nanofenix/signal?symbol=${symbol}`, { headers: authHeaders() }),
+        fetch('/api/minifenix/regime', { headers: authHeaders() }),
       ]);
 
       if (statusRes.ok) setStatus(await statusRes.json());
@@ -147,7 +147,7 @@ export function Companions() {
 
   useEffect(() => {
     refresh();
-    fetch('/api/v25/release-info')
+    fetch('/api/v25/release-info', { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => data && setRelease(data))
       .catch(() => undefined);

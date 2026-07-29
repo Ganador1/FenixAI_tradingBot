@@ -37,9 +37,9 @@ def generate_cache_key(
         **{k: v for k, v in kwargs.items() if k in ['temperature', 'max_tokens', 'top_p']}
     }
     
-    # Crear hash MD5 del contenido
+    # Stable cache identity; SHA-256 also avoids legacy weak-hash scanners.
     content = json.dumps(cache_data, sort_keys=True, ensure_ascii=False)
-    hash_obj = hashlib.md5(content.encode('utf-8'))
+    hash_obj = hashlib.sha256(content.encode('utf-8'))
     
     # Incluir timestamp truncado para agrupación por tiempo
     timestamp_group = int(time.time() // 60)  # Grupo por minutos

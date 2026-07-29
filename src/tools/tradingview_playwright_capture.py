@@ -7,7 +7,14 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Optional
+
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_text,
+    write_private_bytes,
+)
 
 try:
     from playwright.async_api import async_playwright
@@ -23,7 +30,7 @@ class TradingViewPlaywrightCapture:
     def __init__(self, headless: bool = True):
         self.headless = headless
         self.screenshots_dir = Path("screenshots")
-        self.screenshots_dir.mkdir(exist_ok=True)
+        ensure_private_directory(self.screenshots_dir)
         self.playwright = None
         self.browser = None
         if not PLAYWRIGHT_AVAILABLE:
@@ -61,14 +68,21 @@ class TradingViewPlaywrightCapture:
                 'viewport': {'width': 1400, 'height': 900},
                 'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
             }
-            if SESSION_FILE.exists() and SESSION_FILE.stat().st_size > 0:
+            if SESSION_FILE.exists():
                 try:
-                    with open(SESSION_FILE) as f:
-                        storage_state = json.load(f)
+                    storage_state = json.loads(
+                        read_private_text(
+                            SESSION_FILE,
+                            max_bytes=1_000_000,
+                            require_owner_private=True,
+                        )
+                    )
+                    if not isinstance(storage_state, dict):
+                        raise ValueError("browser session must be a JSON object")
                     logger.info("🔄 Usando sesión guardada para el nuevo contexto.")
                     context = await self.browser.new_context(storage_state=storage_state, **context_params)
-                except Exception as e:
-                    logger.error(f"❌ Error leyendo o usando sesión: {e}. Se usará contexto limpio.")
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    logger.error("❌ La sesión privada no es válida. Se usará contexto limpio.")
                     context = await self.browser.new_context(**context_params)
             else:
                 logger.info("🔄 Creando contexto limpio (sin sesión).")
@@ -179,15 +193,19 @@ class TradingViewPlaywrightCapture:
             # Guardar screenshot en carpeta para auditoría
             from datetime import datetime
             ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')
-            symbol_str = symbol if symbol else 'unknown'
+            symbol_str = str(symbol or "unknown").strip().upper()
+            timeframe = str(timeframe or "").strip()
+            if not re.fullmatch(r"[A-Z0-9]{5,20}", symbol_str):
+                raise ValueError("symbol has an invalid format")
+            if not re.fullmatch(r"[1-9][0-9]{0,4}(?:m|h|d|w|M)?", timeframe):
+                raise ValueError("timeframe has an invalid format")
             filename = f"{ts}_{symbol_str}_{timeframe}.png"
             screenshot_path = self.screenshots_dir / filename
             try:
-                with open(screenshot_path, 'wb') as f:
-                    f.write(screenshot_bytes)
+                write_private_bytes(screenshot_path, screenshot_bytes)
                 logger.info(f"🖼️ Screenshot guardado en: {screenshot_path}")
-            except Exception as e:
-                logger.error(f"❌ Error guardando screenshot: {e}")
+            except (OSError, TypeError, ValueError):
+                logger.error("❌ Error guardando screenshot de forma segura")
             return screenshot_bytes
         except Exception as e:
             logger.error(f"❌ Error capturando {timeframe}: {e}")

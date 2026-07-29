@@ -463,6 +463,7 @@ def test_save_load_roundtrip_preserves_drift_and_regime_meta(tmp_path):
 
 def test_load_legacy_model_without_new_keys(tmp_path):
     import pickle
+    from src.security.artifact_integrity import write_signed_artifact
 
     legacy = {
         "short_model": _ConstantModel(2.0),
@@ -471,8 +472,7 @@ def test_load_legacy_model_without_new_keys(tmp_path):
         "long_val_acc": 0.58,
     }
     path = tmp_path / "legacy.pkl"
-    with open(path, "wb") as f:
-        pickle.dump(legacy, f)
+    write_signed_artifact(path, pickle.dumps(legacy))
 
     restored = DualHorizonPredictor(model_path=str(path))
     assert restored.trained

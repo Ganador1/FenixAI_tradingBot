@@ -19,12 +19,20 @@ Features:
 import asyncio
 import base64
 import hashlib
+import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List
-import json
+from typing import Dict, List, Optional
+
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_text,
+    write_private_bytes,
+    write_private_text,
+)
 
 try:
     from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeout
@@ -43,8 +51,10 @@ class ChartCache:
 
     def __init__(self, cache_dir: str = "cache/charts", ttl_seconds: int = 180):
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.ttl_seconds = ttl_seconds
+        ensure_private_directory(self.cache_dir)
+        self.ttl_seconds = int(ttl_seconds)
+        if not 1 <= self.ttl_seconds <= 86_400:
+            raise ValueError("cache TTL must be between 1 and 86400 seconds")
         self.cache_index_file = self.cache_dir / "cache_index.json"
         self.cache_index = self._load_index()
 
@@ -52,19 +62,36 @@ class ChartCache:
         """Load cache index"""
         if self.cache_index_file.exists():
             try:
-                with open(self.cache_index_file, encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Could not load cache index: {e}")
+                raw_index = json.loads(
+                    read_private_text(self.cache_index_file, max_bytes=1_000_000)
+                )
+                if not isinstance(raw_index, dict) or len(raw_index) > 1_000:
+                    raise ValueError("cache index is invalid or unbounded")
+                safe_index = {}
+                for key, entry in raw_index.items():
+                    if (
+                        not re.fullmatch(r"[0-9a-f]{16}", str(key))
+                        or not isinstance(entry, dict)
+                        or entry.get("filename") != f"chart_{key}.txt"
+                        or not isinstance(entry.get("timestamp"), str)
+                    ):
+                        continue
+                    datetime.fromisoformat(entry["timestamp"])
+                    safe_index[str(key)] = entry
+                return safe_index
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("Could not load chart cache index securely")
         return {}
 
     def _save_index(self):
         """Save cache index"""
         try:
-            with open(self.cache_index_file, 'w', encoding='utf-8') as f:
-                json.dump(self.cache_index, f, indent=2)
-        except Exception as e:
-            logger.warning(f"Could not save cache index: {e}")
+            write_private_text(
+                self.cache_index_file,
+                json.dumps(self.cache_index, indent=2, allow_nan=False) + "\n",
+            )
+        except (OSError, TypeError, ValueError):
+            logger.warning("Could not save chart cache index securely")
 
     def _get_cache_key(self, symbol: str, timeframe: str) -> str:
         """Generate cache key"""
@@ -85,26 +112,26 @@ class ChartCache:
 
                 if cache_file.exists():
                     try:
-                        with open(cache_file, encoding='utf-8') as f:
-                            cached_data = f.read()
+                        cached_data = read_private_text(cache_file, max_bytes=20_000_000)
 
                         logger.info(f"✅ Cache HIT for {symbol} {timeframe} (age: {(datetime.now() - cached_time).seconds}s)")
                         return cached_data
-                    except Exception as e:
-                        logger.warning(f"Error reading cache: {e}")
+                    except (OSError, TypeError, ValueError):
+                        logger.warning("Error reading chart cache securely")
 
         logger.info(f"❌ Cache MISS for {symbol} {timeframe}")
         return None
 
     def set(self, symbol: str, timeframe: str, image_b64: str):
         """Cache a chart capture"""
+        if not isinstance(image_b64, str) or len(image_b64) > 20_000_000:
+            raise ValueError("chart cache payload is invalid or exceeds 20 MB")
         cache_key = self._get_cache_key(symbol, timeframe)
         filename = f"chart_{cache_key}.txt"
         cache_file = self.cache_dir / filename
 
         try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                f.write(image_b64)
+            write_private_text(cache_file, image_b64)
 
             # Update index
             self.cache_index[cache_key] = {
@@ -118,8 +145,8 @@ class ChartCache:
             self._save_index()
             logger.info(f"💾 Cached chart for {symbol} {timeframe}")
 
-        except Exception as e:
-            logger.warning(f"Could not cache chart: {e}")
+        except (OSError, TypeError, ValueError):
+            logger.warning("Could not cache chart securely")
 
     def clear_old_entries(self):
         """Remove expired cache entries"""
@@ -132,8 +159,8 @@ class ChartCache:
                 expired_keys.append(cache_key)
 
                 # Delete file
-                cache_file = self.cache_dir / entry['filename']
-                if cache_file.exists():
+                cache_file = self.cache_dir / f"chart_{cache_key}.txt"
+                if cache_file.exists() and not cache_file.is_symlink():
                     cache_file.unlink()
 
         # Remove from index
@@ -222,14 +249,21 @@ class EnhancedPlaywrightCapture:
         }
 
         # Load TradingView session if available
-        if SESSION_FILE.exists() and SESSION_FILE.stat().st_size > 0:
+        if SESSION_FILE.exists():
             try:
-                with open(SESSION_FILE) as f:
-                    storage_state = json.load(f)
+                storage_state = json.loads(
+                    read_private_text(
+                        SESSION_FILE,
+                        max_bytes=1_000_000,
+                        require_owner_private=True,
+                    )
+                )
+                if not isinstance(storage_state, dict):
+                    raise ValueError("browser session must be a JSON object")
                 logger.info("🔄 Using saved TradingView session")
                 self.context = await self.browser.new_context(storage_state=storage_state, **context_params)
-            except Exception as e:
-                logger.warning(f"⚠️ Error loading session: {e}. Using clean context.")
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("⚠️ Error loading the private session. Using clean context.")
                 self.context = await self.browser.new_context(**context_params)
         else:
             logger.warning(f"⚠️ Session file not found: {SESSION_FILE}. Chart may require login.")
@@ -610,8 +644,7 @@ if __name__ == "__main__":
                 # Save to file for verification
                 output_file = Path("test_chart_capture.png")
                 img_bytes = base64.b64decode(result1)
-                with open(output_file, 'wb') as f:
-                    f.write(img_bytes)
+                write_private_bytes(output_file, img_bytes)
                 print(f"💾 Saved to: {output_file}")
             else:
                 print("❌ Capture failed!")

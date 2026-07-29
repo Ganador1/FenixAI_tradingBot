@@ -36,23 +36,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Load .env file before anything else
-try:
-    from dotenv import load_dotenv
+os.umask(0o077)
 
-    load_dotenv(Path(__file__).parent.parent / ".env")
-    print("📝 Loaded .env file")
-except ImportError:
-    # If python-dotenv not installed, try manual loading
-    env_path = Path(__file__).parent.parent / ".env"
-    if env_path.exists():
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-        print("📝 Loaded .env file (manual)")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.security.dotenv_security import secure_load_dotenv
+from src.security.plan_security import (
+    read_bounded_json,
+    require_slot_count,
+    strict_bool,
+    strict_number,
+    strict_text,
+)
+from src.security.private_files import ensure_private_directory, open_private_text
+from src.security.subprocess_environment import experiment_child_environment
+
+if secure_load_dotenv(PROJECT_ROOT / ".env"):
+    print("📝 Loaded validated .env file")
 
 
 @dataclass
@@ -79,23 +81,26 @@ class BenchmarkSlot:
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
+    return (re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("._-") or "slot")[:80]
 
 
 def _append_jsonl(path: Path, payload: dict) -> None:
-    with path.open("a") as f:
+    with open_private_text(path, "a") as f:
         f.write(json.dumps(payload, default=str) + "\n")
 
 
 def _load_plan(path: Path) -> list[BenchmarkSlot]:
     """Load experiment plan from JSON file."""
-    raw = json.loads(path.read_text())
+    raw = require_slot_count(read_bounded_json(path))
     slots: list[BenchmarkSlot] = []
     for i, item in enumerate(raw, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"Invalid plan item at index {i}: expected dict")
-        mode = str(item.get("mode", "individual")).strip().lower()
-        name = str(item.get("name", f"slot-{i}")).strip()
+        mode = strict_text(item, "mode", default="individual", maximum=16)
+        if mode is None:
+            raise ValueError(f"Slot {i} mode cannot be null")
+        mode = mode.lower()
+        name = strict_text(item, "name", default=f"slot-{i}", maximum=120)
+        if not name:
+            raise ValueError(f"Slot {i} name cannot be empty")
         if mode not in {"individual", "team"}:
             raise ValueError(f"Invalid mode at slot {i}: {mode}")
         if mode == "individual" and not item.get("base_model"):
@@ -106,21 +111,27 @@ def _load_plan(path: Path) -> list[BenchmarkSlot]:
         slot = BenchmarkSlot(
             name=name,
             mode=mode,
-            symbol=item.get("symbol", "BTCUSDT"),
-            base_model=item.get("base_model"),
-            team_models=item.get("team_models"),
-            experiment=item.get("experiment", ""),
-            experiment_id=item.get("experiment_id", 0),
-            slot_index=item.get("slot_index", i),
-            description=item.get("description", ""),
-            monolithic_mode=item.get("monolithic_mode", False),
-            disable_reasoning_bank=item.get("disable_reasoning_bank", False),
-            disable_risk_manager=item.get("disable_risk_manager", False),
-            disable_judge=item.get("disable_judge", False),
-            single_timeframe=item.get("single_timeframe"),
-            bias_tf=item.get("bias_tf"),
-            entry_tf=item.get("entry_tf"),
-            scout_tf=item.get("scout_tf"),
+            symbol=strict_text(item, "symbol", default="BTCUSDT", maximum=20) or "BTCUSDT",
+            base_model=strict_text(item, "base_model", maximum=256),
+            team_models=strict_text(item, "team_models", maximum=4096),
+            experiment=strict_text(item, "experiment", default="", maximum=120) or "",
+            experiment_id=strict_number(
+                item, "experiment_id", minimum=0, maximum=2_147_483_647, integer=True, default=0
+            )
+            or 0,
+            slot_index=strict_number(
+                item, "slot_index", minimum=1, maximum=1_000_000, integer=True, default=i
+            )
+            or i,
+            description=strict_text(item, "description", default="", maximum=2_000) or "",
+            monolithic_mode=strict_bool(item, "monolithic_mode"),
+            disable_reasoning_bank=strict_bool(item, "disable_reasoning_bank"),
+            disable_risk_manager=strict_bool(item, "disable_risk_manager"),
+            disable_judge=strict_bool(item, "disable_judge"),
+            single_timeframe=strict_text(item, "single_timeframe", maximum=16),
+            bias_tf=strict_text(item, "bias_tf", maximum=16),
+            entry_tf=strict_text(item, "entry_tf", maximum=16),
+            scout_tf=strict_text(item, "scout_tf", maximum=16),
         )
         slots.append(slot)
     return slots
@@ -443,24 +454,31 @@ def main() -> None:
         slots = slots[: args.max_slots]
 
     # Setup logging
-    log_dir = Path("logs")
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = ensure_private_directory(Path("logs"))
     run_tag = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     python_bin = args.python_bin
-    if not Path(python_bin).exists():
+    python_path = Path(python_bin).expanduser()
+    if (
+        not python_path.exists()
+        or not python_path.is_file()
+        or not os.access(python_path, os.X_OK)
+    ):
         print(f"❌ Python binary not found: {python_bin}")
         sys.exit(1)
+    args.python_bin = str(python_path.resolve())
 
     # Environment setup
-    env = os.environ.copy()
+    env = experiment_child_environment(api_key_index=args.api_key_index)
     env["PYTHONPATH"] = "."
     env["LLM_PROFILE"] = "OLLAMA_CLOUD"
     env["OLLAMA_CLOUD_URL"] = env.get("OLLAMA_CLOUD_URL", "https://api.ollama.com")
     env["DISABLE_MLX"] = env.get("DISABLE_MLX", "1")
     env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered output so slot logs flush in real time
-    env["MPLCONFIGDIR"] = env.get("MPLCONFIGDIR", "/tmp/matplotlib")
-    env["XDG_CACHE_HOME"] = env.get("XDG_CACHE_HOME", "/tmp")
+    runtime_cache = ensure_private_directory(log_dir / "runtime_cache" / run_tag)
+    matplotlib_cache = ensure_private_directory(runtime_cache / "matplotlib")
+    env["MPLCONFIGDIR"] = env.get("MPLCONFIGDIR", str(matplotlib_cache))
+    env["XDG_CACHE_HOME"] = env.get("XDG_CACHE_HOME", str(runtime_cache))
 
     # Multi-API key support: select Ollama Cloud and Binance Testnet keys by index
     api_key_idx = args.api_key_index
@@ -469,8 +487,7 @@ def main() -> None:
         env["OLLAMA_CLOUD_API_KEY"] = ollama_key
         # Some clients still expect OLLAMA_API_KEY.
         env["OLLAMA_API_KEY"] = ollama_key
-        key_fingerprint = f"***{ollama_key[-6:]}" if len(ollama_key) >= 6 else "***"
-        print(f"🔑 Using OLLAMA_CLOUD_API_KEY_{api_key_idx} ({key_fingerprint})")
+        print(f"🔑 Using OLLAMA_CLOUD_API_KEY_{api_key_idx} (configured)")
     else:
         print(
             f"⚠️ OLLAMA_CLOUD_API_KEY_{api_key_idx} not found, falling back to OLLAMA_CLOUD_API_KEY"
@@ -494,7 +511,7 @@ def main() -> None:
 
     # Run tag suffix for parallel runs
     if args.run_tag_suffix:
-        run_tag = f"{run_tag}{args.run_tag_suffix}"
+        run_tag = f"{run_tag}_{_slug(args.run_tag_suffix)}"
 
     # Use final run_tag everywhere to keep logs/report names aligned.
     schedule_path = log_dir / f"benchmark_schedule_{run_tag}.jsonl"
@@ -561,7 +578,7 @@ def main() -> None:
     print(f"  Run tag: {run_tag}")
     print(f"{'=' * 70}\n")
 
-    with master_log_path.open("a") as master:
+    with open_private_text(master_log_path, "a") as master:
         master.write(
             f"[{datetime.now(timezone.utc).isoformat()}] START run_tag={run_tag} "
             f"slots={total} slot_minutes={args.slot_minutes}\n"
@@ -628,10 +645,12 @@ def main() -> None:
             # Run slot
             rc = None
             timeout_sec = max(120, args.slot_minutes * 60 + 900)
-            with slot_log.open("w") as out:
+            with open_private_text(slot_log, "w") as out:
                 try:
-                    result = subprocess.run(
-                        cmd,
+                    # The argv list is built from bounded plan fields, the
+                    # executable is resolved above, and no shell is involved.
+                    result = subprocess.run(  # nosemgrep
+                        cmd,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                         env=env,
                         stdout=out,
                         stderr=subprocess.STDOUT,

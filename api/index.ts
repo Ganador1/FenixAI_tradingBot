@@ -1,9 +1,12 @@
 /**
- * Vercel deploy entry handler, for serverless deployment, please don't modify this file
+ * The historical serverless Express handler is permanently unavailable.
+ * Returning a fixed 410 avoids importing any of the retired mock routes.
  */
-import type { Request, Response } from 'express';
-import app from './app.js';
-
-export default function handler(req: Request, res: Response) {
-  return app(req, res);
+export default function retiredLegacyApi(
+  _request: unknown,
+  response: { status: (code: number) => { json: (body: object) => unknown } },
+) {
+  return response.status(410).json({
+    error: 'The legacy API has been retired. Deploy the supported FastAPI application.',
+  });
 }

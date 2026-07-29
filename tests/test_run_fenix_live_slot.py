@@ -3,6 +3,9 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import os
+from types import SimpleNamespace
+
+import pytest
 
 os.environ.setdefault("FENIX_LIVE_SLOT_REEXECED", "1")
 
@@ -49,6 +52,7 @@ def test_configure_slot_runtime_env_respects_existing_cleanup_override(monkeypat
     applied = configure_slot_runtime_env(args, mode_cfg)
 
     assert applied == {}
+    assert os.getenv("FENIX_RISK_MANAGER_STORAGE_PATH") is None
     assert os.getenv("FENIX_CLEANUP_ON_STOP") == "0"
 
 
@@ -132,9 +136,52 @@ def test_configure_slot_runtime_env_respects_existing_risk_storage_override(monk
     applied = configure_slot_runtime_env(args, mode_cfg)
 
     assert applied == {}
-    assert os.getenv("FENIX_RISK_MANAGER_STORAGE_PATH") == "logs/custom-risk.jsonl"
 
 
+def test_mainnet_live_slot_refuses_disabled_risk_agent(monkeypatch):
+    from scripts.run_fenix_live_slot import (
+        EngineModeConfig,
+        validate_live_runtime_safety,
+    )
+
+    monkeypatch.delenv("FENIX_DISABLE_RISK_MANAGER", raising=False)
+    args = SimpleNamespace(disable_risk_manager=True, disable_trading=False)
+    mode = EngineModeConfig(
+        paper_trading=False,
+        use_testnet=False,
+        allow_live_trading=True,
+    )
+
+    with pytest.raises(ValueError, match="risk agent disabled"):
+        validate_live_runtime_safety(args, mode)
+
+
+def test_risk_agent_can_only_be_disabled_when_no_mainnet_orders_are_possible(monkeypatch):
+    from scripts.run_fenix_live_slot import (
+        EngineModeConfig,
+        validate_live_runtime_safety,
+    )
+
+    monkeypatch.setenv("FENIX_DISABLE_RISK_MANAGER", "1")
+    args = SimpleNamespace(disable_risk_manager=False, disable_trading=False)
+    validate_live_runtime_safety(
+        args,
+        EngineModeConfig(
+            paper_trading=False,
+            use_testnet=True,
+            allow_live_trading=True,
+        ),
+    )
+
+    args.disable_trading = True
+    validate_live_runtime_safety(
+        args,
+        EngineModeConfig(
+            paper_trading=False,
+            use_testnet=False,
+            allow_live_trading=True,
+        ),
+    )
 def test_configure_experiment_env_applies_lite_mtf_guard_options(monkeypatch):
     from scripts.run_fenix_live_slot import _configure_experiment_env
 

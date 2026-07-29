@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from src.memory.reasoning_bank import get_reasoning_bank
+from src.security.private_files import ensure_private_directory, open_private_text
 from src.tools.chart_generator import FenixChartGenerator
 from src.tools.enhanced_news_scraper import EnhancedNewsScraper
 from src.tools.fear_greed import FearGreedTool
@@ -319,8 +321,12 @@ class TradingEngine:
         llm_config: Any = None,
         trade_flow_window_sec: float | None = None,
     ):
-        self.symbol = symbol.upper()
-        self.timeframe = timeframe
+        self.symbol = str(symbol).strip().upper()
+        self.timeframe = str(timeframe).strip()
+        if not re.fullmatch(r"[A-Z0-9]{5,20}", self.symbol):
+            raise ValueError("symbol must be a 5-20 character market identifier")
+        if not re.fullmatch(r"[1-9][0-9]{0,4}(?:m|h|d|w|M)", self.timeframe):
+            raise ValueError("timeframe has an invalid format")
         self.use_testnet = use_testnet
         self.paper_trading = paper_trading
         self.allow_live_trading = allow_live_trading
@@ -349,7 +355,12 @@ class TradingEngine:
             use_testnet=use_testnet,
             trade_flow_window_sec=trade_flow_window_sec,
         )
-        self.executor = OrderExecutor(symbol=symbol, testnet=use_testnet)
+        self.executor = OrderExecutor(
+            symbol=symbol,
+            testnet=use_testnet,
+            timeframe=timeframe,
+            allow_mutations=not paper_trading and allow_live_trading,
+        )
         self.chart_generator = FenixChartGenerator()
         self.pro_chart_generator = ProfessionalChartGenerator()  # New professional generator
         self.news_scraper = EnhancedNewsScraper()
@@ -371,9 +382,9 @@ class TradingEngine:
             allow_live_trading=self.allow_live_trading,
         )
         self.signal_log_path = (
-            project_root / "logs" / "signals" / f"{symbol}_{timeframe}_signals.jsonl"
+            project_root / "logs" / "signals" / f"{self.symbol}_{self.timeframe}_signals.jsonl"
         )
-        self.signal_log_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.signal_log_path.parent)
 
         # NanoFenix companion observability (advisory mode).
         self._project_root = project_root
@@ -916,7 +927,13 @@ class TradingEngine:
             ):
                 tracked_position = self.trade_manager.get_position(self.symbol)
 
-            if getattr(self, "_engine_cleanup_on_stop", False) and tracked_position is not None:
+            cleanup_live_position = (
+                not self.paper_trading
+                and self.allow_live_trading
+                and getattr(self, "_engine_cleanup_on_stop", False)
+                and tracked_position is not None
+            )
+            if cleanup_live_position:
                 if hasattr(self.executor, "cancel_all_orders"):
                     await self.executor.cancel_all_orders()
 
@@ -1032,6 +1049,10 @@ class TradingEngine:
 
     async def _execute_cleanup_close(self, close_side: str, close_qty: float) -> None:
         """Submit the shutdown reduce-only close, tolerating legacy executors."""
+        if self.paper_trading or not self.allow_live_trading:
+            raise PermissionError(
+                "Shutdown exchange close is forbidden outside explicitly enabled live trading"
+            )
         try:
             await self.executor.execute_market_order(
                 side=close_side,
@@ -1115,8 +1136,8 @@ class TradingEngine:
         verbatim (explicit per-bot control from the launcher). Otherwise the
         offset is a whole-second slot derived from a stable hash of the
         symbol, bounded by FENIX_ANALYSIS_STAGGER_SEC (default 10s in live,
-        0 in paper; <=0 disables) — ETHUSDC lands on 4s and SOLUSDT on 0s, so
-        the two live bots stop hitting the shared Ollama backend at the same
+        0 in paper; <=0 disables). Different symbols occupy stable slots, so
+        the live bots stop hitting the shared Ollama backend at the same
         instant without any cross-process coordination.
         """
         explicit = _safe_float(os.getenv("FENIX_ANALYSIS_STAGGER_OFFSET_SEC"))
@@ -1127,7 +1148,7 @@ class TradingEngine:
         )
         if stagger_max <= 0:
             return 0.0
-        digest = int(hashlib.md5(str(self.symbol).upper().encode()).hexdigest(), 16)
+        digest = int(hashlib.sha256(str(self.symbol).upper().encode()).hexdigest(), 16)
         return float(digest % max(1, int(stagger_max)))
 
     async def _resolve_sizing_leverage(self) -> float:
@@ -1815,12 +1836,16 @@ class TradingEngine:
                 except Exception as e:
                     logger.warning("Balance fetch for risk manager failed: %s", e)
 
-            graph_balance = (
-                exchange_balance
-                or cached_balance
-                or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
-                or None
-            )
+            if self.paper_trading:
+                graph_balance = (
+                    cached_balance
+                    or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
+                    or None
+                )
+            else:
+                # A configured simulation balance must never influence a live
+                # risk-agent decision when the signed exchange read failed.
+                graph_balance = exchange_balance
             if graph_balance is None:
                 logger.warning(
                     "⚠️ No balance available for risk manager this cycle — "
@@ -6700,10 +6725,10 @@ class TradingEngine:
         }
 
         try:
-            with open(self.signal_log_path, "a") as f:
-                f.write(json.dumps(signal_data) + "\n")
-        except Exception as e:
-            logger.error(f"Failed to log signal: {e}")
+            with open_private_text(self.signal_log_path, "a") as handle:
+                handle.write(json.dumps(signal_data, allow_nan=False, default=str) + "\n")
+        except (OSError, TypeError, ValueError):
+            logger.error("Failed to persist the signal audit record securely")
 
     def _get_cached_balance(self) -> float | None:
         """Return the last known balance without an API call.

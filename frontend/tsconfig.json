@@ -29,8 +29,7 @@
       ]
     },
     "types": [
-      "node",
-      "express"
+      "node"
     ]
   },
   "include": [
