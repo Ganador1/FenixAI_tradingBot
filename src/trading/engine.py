@@ -317,6 +317,7 @@ class TradingEngine:
         enable_sentiment_agent: bool = True,
         allow_live_trading: bool = False,
         llm_config: Any = None,
+        trade_flow_window_sec: float | None = None,
     ):
         self.symbol = symbol.upper()
         self.timeframe = timeframe
@@ -346,6 +347,7 @@ class TradingEngine:
             symbol=symbol,
             timeframe=timeframe,
             use_testnet=use_testnet,
+            trade_flow_window_sec=trade_flow_window_sec,
         )
         self.executor = OrderExecutor(symbol=symbol, testnet=use_testnet)
         self.chart_generator = FenixChartGenerator()
@@ -3463,6 +3465,36 @@ class TradingEngine:
         if not close_result:
             return
 
+        if self.paper_trading:
+            gross_pnl = float(close_result.get("pnl", 0.0) or 0.0)
+            exit_price = _safe_float(close_result.get("exit_price")) or 0.0
+            quantity = (
+                _safe_float(close_result.get("quantity"))
+                or _safe_float(getattr(tracked_position, "quantity", None))
+                or 0.0
+            )
+            entry_price = _safe_float(getattr(tracked_position, "entry_price", None)) or 0.0
+            fee_rate = max(
+                0.0,
+                _env_float(
+                    "FENIX_PAPER_TAKER_FEE_RATE",
+                    _env_float("FENIX_ESTIMATED_ROUND_TRIP_FEE_PCT", 0.0008) / 2.0,
+                ),
+            )
+            entry_commission = (
+                _safe_float(getattr(tracked_position, "entry_commission", None))
+                or abs(entry_price * quantity) * fee_rate
+            )
+            exit_commission = abs(exit_price * quantity) * fee_rate
+            net_pnl = gross_pnl - entry_commission - exit_commission
+            close_result["gross_pnl"] = gross_pnl
+            close_result["gross_pnl_pct"] = float(close_result.get("pnl_pct", 0.0) or 0.0)
+            close_result["paper_entry_commission"] = entry_commission
+            close_result["paper_exit_commission"] = exit_commission
+            close_result["pnl"] = net_pnl
+            if entry_price > 0 and quantity > 0:
+                close_result["pnl_pct"] = net_pnl / (entry_price * quantity) * 100.0
+
         trade_id = close_result.get("trade_id")
         realized_pnl = float(close_result.get("pnl", 0.0) or 0.0)
         realized_pnl_pct = float(close_result.get("pnl_pct", 0.0) or 0.0)
@@ -3994,6 +4026,24 @@ class TradingEngine:
                     pass
             await self._close_position_record(close_result, tracked_position=tracked_position)
             return close_result
+
+        if self.paper_trading:
+            try:
+                await persist_open_position(
+                    symbol=self.symbol,
+                    side=position_side,
+                    quantity=float(getattr(tracked_position, "quantity", 0.0) or 0.0),
+                    entry_price=float(getattr(tracked_position, "entry_price", 0.0) or 0.0),
+                    current_price=current_price,
+                    position_id=f"position:{getattr(tracked_position, 'trade_id', self.symbol)}",
+                    opened_at=getattr(tracked_position, "entry_time", None),
+                )
+            except Exception:
+                logger.debug(
+                    "Could not refresh paper position persistence for %s",
+                    self.symbol,
+                    exc_info=True,
+                )
 
         await self._refresh_exchange_protection_if_needed(tracked_position)
         return None
@@ -5947,19 +5997,117 @@ class TradingEngine:
                     adjusted_size = stop_risk_notional_cap
 
         if self.paper_trading:
-            simulated_price = _safe_float(getattr(self.market_data, "current_price", None))
-            if simulated_price is None or simulated_price <= 0:
-                simulated_price = entry_price
-            logger.info("📝 PAPER TRADE: Would %s at %s", decision, simulated_price)
+            existing_position = self._get_tracked_position()
+            desired_side = "LONG" if decision == "BUY" else "SHORT"
+            if existing_position is not None:
+                existing_side = str(getattr(existing_position, "side", "")).upper()
+                if existing_side == desired_side:
+                    logger.info(
+                        "Paper trade skipped: %s position already open for %s",
+                        desired_side,
+                        self.symbol,
+                    )
+                    return
+                await self._manage_open_position(new_signal=decision)
+                if self._get_tracked_position() is not None:
+                    logger.warning(
+                        "Paper reversal skipped: prior %s position did not close",
+                        existing_side,
+                    )
+                    return
+
+            market_price = _safe_float(getattr(self.market_data, "current_price", None))
+            if market_price is None or market_price <= 0:
+                market_price = entry_price
+            slippage_bps = max(0.0, _env_float("FENIX_PAPER_SLIPPAGE_BPS", 0.0))
+            slippage_fraction = slippage_bps / 10_000.0
+            simulated_price = market_price * (
+                1.0 + slippage_fraction if decision == "BUY" else 1.0 - slippage_fraction
+            )
+            simulated_quantity = adjusted_size / simulated_price
+            executed_at = datetime.now(timezone.utc)
+            paper_order_id = (
+                f"paper:{self.symbol}:{self.timeframe}:"
+                f"{executed_at.strftime('%Y%m%dT%H%M%S%fZ')}"
+            )
+            tracked_position = self.trade_manager.open_position(
+                symbol=self.symbol,
+                side=desired_side,
+                entry_price=simulated_price,
+                quantity=simulated_quantity,
+                signal_timestamp=executed_at.isoformat(),
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                trade_id=paper_order_id,
+                reasoning_digest=decision_data.get("_reasoning_digest")
+                or decision_data.get("reasoning_prompt_digest"),
+                decision_agent_name="decision_agent",
+            )
+            fee_rate = max(
+                0.0,
+                _env_float(
+                    "FENIX_PAPER_TAKER_FEE_RATE",
+                    _env_float("FENIX_ESTIMATED_ROUND_TRIP_FEE_PCT", 0.0008) / 2.0,
+                ),
+            )
+            estimated_entry_fee = adjusted_size * fee_rate
+            tracked_position.entry_commission += estimated_entry_fee
+            try:
+                await persist_order_fill(
+                    symbol=self.symbol,
+                    side=decision,
+                    quantity=simulated_quantity,
+                    price=simulated_price,
+                    order_id=paper_order_id,
+                    realized_pnl=0.0,
+                    order_type="paper_market",
+                    status="filled",
+                    executed_at=executed_at,
+                )
+                await persist_open_position(
+                    symbol=self.symbol,
+                    side=desired_side,
+                    quantity=simulated_quantity,
+                    entry_price=simulated_price,
+                    current_price=market_price,
+                    position_id=f"position:{paper_order_id}",
+                    opened_at=executed_at,
+                )
+            except Exception:
+                logger.warning(
+                    "Paper trade opened but persistence failed for %s",
+                    self.symbol,
+                    exc_info=True,
+                )
+
+            logger.info(
+                "📝 PAPER TRADE: Simulated %s %.8f %s @ %.8f "
+                "(notional=%.2f fee=%.4f slippage=%.2fbps id=%s)",
+                decision,
+                simulated_quantity,
+                self.symbol,
+                simulated_price,
+                adjusted_size,
+                estimated_entry_fee,
+                slippage_bps,
+                paper_order_id,
+            )
             if (callback := self.on_agent_event) is not None:
                 await callback(
                     "trade:simulated",
                     {
                         "side": decision,
                         "price": simulated_price,
+                        "market_price": market_price,
+                        "quantity": simulated_quantity,
                         "confidence": confidence,
                         "notional_usd": adjusted_size,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "estimated_entry_fee": estimated_entry_fee,
+                        "slippage_bps": slippage_bps,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                        "order_id": paper_order_id,
+                        "timestamp": executed_at.isoformat(),
                     },
                 )
             return

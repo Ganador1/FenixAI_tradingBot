@@ -28,12 +28,13 @@ except ImportError:  # pragma: no cover - Fenix production hosts are POSIX.
     fcntl = None
 
 # Load .env early so JWT_SECRET, API keys, etc. are visible to every module.
-try:
-    from dotenv import load_dotenv
+if os.getenv("FENIX_SKIP_DOTENV", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    try:
+        from dotenv import load_dotenv
 
-    load_dotenv()
-except ImportError:
-    pass
+        load_dotenv()
+    except ImportError:
+        pass
 
 # Create logs directory if it doesn't exist
 Path("logs").mkdir(exist_ok=True)
@@ -229,6 +230,7 @@ Examples:
   python run_fenix.py --mode live --allow-live          # Live trading
   python run_fenix.py --symbol ETHUSDT                  # Different pair
   python run_fenix.py --timeframe 5m                    # Different timeframe
+  python run_fenix.py --mode paper --mainnet-data       # Public Mainnet data, simulated orders
   python run_fenix.py --no-visual                       # Without visual agent
   python run_fenix.py --with-nanofenix-companion        # Run NanoFenix v3.5 alongside
   python run_fenix.py --team-models technical=qwen2.5:7b,qabba=qwen2.5:7b
@@ -246,10 +248,19 @@ Examples:
         action="store_true",
         help="Required for live mode execution to prevent accidental trades",
     )
-    parser.add_argument(
+    data_venue = parser.add_mutually_exclusive_group()
+    data_venue.add_argument(
         "--testnet",
         action="store_true",
-        help="Use Binance Futures Testnet (for risk-free testing)",
+        help="Use Binance Futures Testnet market data (paper mode default)",
+    )
+    data_venue.add_argument(
+        "--mainnet-data",
+        action="store_true",
+        help=(
+            "Use public Binance Futures Mainnet market data while keeping "
+            "execution simulated; valid only with --mode paper"
+        ),
     )
     parser.add_argument(
         "--symbol",
@@ -284,6 +295,15 @@ Examples:
         type=int,
         default=cfg_defaults["interval"],
         help=f"Interval between analysis in seconds (default: {cfg_defaults['interval']}, from config/fenix.yaml)",
+    )
+    parser.add_argument(
+        "--trade-flow-window-sec",
+        type=float,
+        default=None,
+        help=(
+            "Recent aggressive-trade window supplied to QABBA, in seconds "
+            "(1-60; defaults to FENIX_TRADE_IMBALANCE_WINDOW_SEC or 5)"
+        ),
     )
     parser.add_argument(
         "--no-visual",
@@ -359,6 +379,15 @@ Examples:
     )
 
     return parser.parse_args()
+
+
+def _market_data_uses_testnet(args: argparse.Namespace) -> bool:
+    """Resolve the data venue without weakening the paper/live boundary."""
+    if args.mainnet_data and (args.mode != "paper" or args.allow_live):
+        raise ValueError(
+            "--mainnet-data requires --mode paper and forbids --allow-live"
+        )
+    return bool(args.testnet or (args.mode == "paper" and not args.mainnet_data))
 
 
 def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subprocess.Popen | None, Path | None]:
@@ -539,6 +568,14 @@ async def main():
     if args.mode == "live" and not args.allow_live:
         logger.error("Live mode requested but --allow-live not provided. Aborting for safety.")
         return 1
+    try:
+        use_testnet = _market_data_uses_testnet(args)
+    except ValueError as exc:
+        logger.error("%s. It selects public Mainnet data only; execution stays simulated.", exc)
+        return 1
+    if args.trade_flow_window_sec is not None and not 1 <= args.trade_flow_window_sec <= 60:
+        logger.error("--trade-flow-window-sec must be between 1 and 60")
+        return 1
 
     if not 0 < args.max_risk <= 100:
         logger.error("--max-risk must be greater than 0 and no more than 100 percent")
@@ -630,9 +667,12 @@ async def main():
             instance_lock.release()
         return 1
 
-    # Verify Binance
-    use_testnet = args.mode == "paper" or args.testnet
-    logger.info(f"Verifying Binance connection {'(TESTNET)' if use_testnet else '(PRODUCTION)'}...")
+    # Execution mode and market-data venue are separate. Paper mode defaults
+    # to Testnet data; Mainnet public data requires the explicit safe flag.
+    data_venue_name = "TESTNET" if use_testnet else "MAINNET PUBLIC DATA"
+    execution_name = "SIMULATED/PAPER" if args.mode == "paper" or args.dry_run else "LIVE"
+    logger.info("Execution=%s | Market data=%s", execution_name, data_venue_name)
+    logger.info(f"Verifying Binance connection ({data_venue_name})...")
     try:
         from src.trading.binance_client import BinanceClient
 
@@ -642,7 +682,7 @@ async def main():
         if connected:
             price = await client.get_price(args.symbol)
             if price:
-                mode_str = "TESTNET" if use_testnet else "LIVE"
+                mode_str = "TESTNET" if use_testnet else "MAINNET DATA"
                 logger.info(f"✅ Binance {mode_str} OK - {args.symbol}: ${price:,.2f}")
             else:
                 logger.warning(f"Could not get price for {args.symbol}")
@@ -669,16 +709,23 @@ async def main():
     logger.info("Starting trading engine (CLI Mode)...")
 
     try:
+        # CLI experiments use isolated databases and need their schema before
+        # the first evaluator or simulated execution writes to them.
+        from src.config.database import init_db
+
+        await init_db()
+
         from src.trading.engine import TradingEngine
 
         engine = TradingEngine(
             symbol=args.symbol,
             timeframe=args.timeframe,
-            use_testnet=args.mode == "paper" or args.testnet,
+            use_testnet=use_testnet,
             paper_trading=args.mode == "paper" or args.dry_run,
             enable_visual_agent=not args.no_visual,
             enable_sentiment_agent=not args.no_sentiment,
             allow_live_trading=args.allow_live,
+            trade_flow_window_sec=args.trade_flow_window_sec,
         )
 
         # ── Redis Bridge: emit engine events to the API server frontend ──

@@ -13,6 +13,8 @@ Use these first when running or testing the current engine.
 
 | Script | Purpose | Notes |
 | --- | --- | --- |
+| `paper_experiment_harness.sh` | Launch isolated paper candidates against Testnet or Mainnet public data. | Always uses paper execution, strips Binance credentials, isolates each timeframe, and supports an optional observer-only NanoFenix companion. See `docs/PAPER_EXPERIMENT_HARNESS.md`. |
+| `inspect_paper_experiment.py` | Summarize process health, aggregate log diagnostics, and database row counts for a harness run. | Does not print raw prompts or model responses; supports JSON output. |
 | `run_fenix_live_slot.py` | Run one engine-first slot in paper, testnet, or live mode. | Preferred for controlled live-like tests. Writes `logs/live_slot_events_*.jsonl` and `logs/live_slot_summary_*.json`. |
 | `run_fenix_live_suite.py` | Run a JSON plan of engine-first slots. | Useful for sequential model/timeframe comparison. Plan files can now declare lite/MTF guard settings explicitly. |
 | `run_hybrid_live_paper.py` | Multi-timeframe hybrid paper/live comparison runner. | Useful for MTF research; not the primary live runner. |

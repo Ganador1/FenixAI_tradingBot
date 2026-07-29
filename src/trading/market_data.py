@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -125,6 +126,7 @@ class MarketDataManager:
         symbol: str = "BTCUSDT",
         timeframe: str = "15m",
         use_testnet: bool = False,
+        trade_flow_window_sec: float | None = None,
     ):
         self.symbol = symbol.upper()
         self.timeframe = timeframe
@@ -148,7 +150,16 @@ class MarketDataManager:
         self.orderbook = OrderBookSnapshot()
         self._previous_orderbook = OrderBookSnapshot()
         self._book_levels = 5
-        self._trade_imbalance_window_sec = 5.0
+        try:
+            configured_window = (
+                trade_flow_window_sec
+                if trade_flow_window_sec is not None
+                else float(os.getenv("FENIX_TRADE_IMBALANCE_WINDOW_SEC", "5") or 5)
+            )
+        except (TypeError, ValueError):
+            logger.warning("Invalid trade-flow window; falling back to 5 seconds")
+            configured_window = 5.0
+        self._trade_imbalance_window_sec = min(60.0, max(1.0, configured_window))
         self.trade_buffer: deque = deque(maxlen=500)
         self.cvd_value: float = 0.0
         self.current_price: float = 0.0
@@ -605,16 +616,33 @@ def get_market_data_manager(
     symbol: str = "BTCUSDT",
     timeframe: str = "15m",
     use_testnet: bool = False,
+    trade_flow_window_sec: float | None = None,
     force_new: bool = False,
 ) -> MarketDataManager:
     """Singleton factory para MarketDataManager."""
     global _market_data_instance
 
-    if _market_data_instance is None or force_new:
+    requested_window = trade_flow_window_sec
+    if requested_window is None:
+        try:
+            requested_window = float(os.getenv("FENIX_TRADE_IMBALANCE_WINDOW_SEC", "5") or 5)
+        except ValueError:
+            requested_window = 5.0
+    requested_window = min(60.0, max(1.0, requested_window))
+
+    if (
+        _market_data_instance is None
+        or force_new
+        or _market_data_instance.symbol != symbol.upper()
+        or _market_data_instance.timeframe != timeframe
+        or _market_data_instance.use_testnet != use_testnet
+        or _market_data_instance._trade_imbalance_window_sec != requested_window
+    ):
         _market_data_instance = MarketDataManager(
             symbol=symbol,
             timeframe=timeframe,
             use_testnet=use_testnet,
+            trade_flow_window_sec=trade_flow_window_sec,
         )
 
     return _market_data_instance
