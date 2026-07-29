@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import traceback
@@ -79,11 +80,19 @@ class StructuredLogger:
     def __init__(self, name: str, log_dir: str = "logs"):
         self.name = name
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(exist_ok=True)
+        if self.log_dir.is_symlink():
+            raise RuntimeError("structured log directory cannot be a symbolic link")
+        self.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.log_dir, 0o700)
 
         # Configurar logger base
         self.logger = logging.getLogger(name)
         self.logger.setLevel(LogLevel.TRACE.value)
+        self.logger.propagate = False
+        for existing_handler in list(self.logger.handlers):
+            if getattr(existing_handler, "_fenix_owned", False):
+                self.logger.removeHandler(existing_handler)
+                existing_handler.close()
 
         # Contexto local del hilo
         self._local = threading.local()
@@ -151,6 +160,10 @@ class StructuredLogger:
             security_handler,
             performance_handler,
         ]:
+            handler._fenix_owned = True
+            stream = getattr(handler, "stream", None)
+            if stream is not None:
+                os.fchmod(stream.fileno(), 0o600)
             self.logger.addHandler(handler)
 
     def _setup_security_filters(self):
@@ -459,19 +472,48 @@ class SensitiveDataFilter(logging.Filter):
 
     def __init__(self, sensitive_patterns: list[str]):
         super().__init__()
-        import re
-
         self.patterns = [re.compile(pattern, re.IGNORECASE) for pattern in sensitive_patterns]
+        labels = "|".join(f"(?:{pattern})" for pattern in sensitive_patterns)
+        self.assignment_pattern = re.compile(
+            rf"(?i)({labels})(\s*[=:]\s*)([^\s,;}}\]]+)"
+        )
+        self.bearer_pattern = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+        self.url_credentials_pattern = re.compile(
+            r"(?i)(https?://)([^/@:\s]+):([^/@\s]+)@"
+        )
+
+    def _is_sensitive_key(self, key: object) -> bool:
+        candidate = str(key)
+        return any(pattern.search(candidate) for pattern in self.patterns)
+
+    def _sanitize_text(self, value: str) -> str:
+        value = self.assignment_pattern.sub(r"\1\2[REDACTED]", value)
+        value = self.bearer_pattern.sub("Bearer [REDACTED]", value)
+        return self.url_credentials_pattern.sub(r"\1[REDACTED]@", value)
+
+    def _sanitize(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: "[REDACTED]" if self._is_sensitive_key(key) else self._sanitize(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._sanitize(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._sanitize(item) for item in value)
+        if isinstance(value, str):
+            return self._sanitize_text(value)
+        return value
 
     def filter(self, record):
         message = record.getMessage()
-
-        # Verificar si el mensaje contiene datos sensibles
-        for pattern in self.patterns:
-            if pattern.search(message):
-                # Reemplazar datos sensibles con [REDACTED]
-                message = pattern.sub("[REDACTED]", message)
-                record.msg = message
+        try:
+            structured = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            record.msg = self._sanitize_text(message)
+        else:
+            record.msg = json.dumps(self._sanitize(structured), ensure_ascii=False)
+        record.args = ()
 
         return True
 

@@ -76,6 +76,9 @@ class TestCircuitBreakerIntegration:
         
         # Force balance
         rm.update_balance(10000.0)
+        # This test isolates the CAUTION multiplier. Keep the independent
+        # portfolio exposure cap from becoming the limiting factor.
+        rm.set_max_exposure_pct(1.0)
         
         # Create 3 losses to trigger CAUTION
         for i in range(3):
@@ -109,6 +112,7 @@ class TestCircuitBreakerIntegration:
         """Verify position size is increased in HOT mode."""
         rm = trading_engine.risk_manager
         rm.update_balance(10000.0)
+        rm.set_max_exposure_pct(1.0)
         
         # Create hot streak: 7 wins out of 8, avg PnL > $12
         for i in range(7):
@@ -157,6 +161,7 @@ class TestCircuitBreakerIntegration:
         """Verify trades are allowed in NORMAL mode."""
         rm = trading_engine.risk_manager
         rm.update_balance(10000.0)
+        rm.set_max_exposure_pct(1.0)
         
         # Mix of wins/losses staying within normal boundaries
         trades = [

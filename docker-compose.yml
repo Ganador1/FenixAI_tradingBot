@@ -16,6 +16,7 @@ services:
       dockerfile: Dockerfile
       args:
         PYTHON_VERSION: ${PYTHON_VERSION:-3.12.13}
+        PYTHON_IMAGE_DIGEST: sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
     container_name: fenix-api
     init: true
     restart: unless-stopped
@@ -30,6 +31,8 @@ services:
       BINANCE_API_KEY: ${BINANCE_API_KEY:-}
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      FENIX_ALLOWED_HOSTS: ${FENIX_ALLOWED_HOSTS:-localhost,127.0.0.1,fenix-api}
+      FENIX_CORS_ORIGINS: ${FENIX_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       # Ollama connection (for local LLM)
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       CREATE_DEMO_USERS: ${CREATE_DEMO_USERS:-false}
@@ -37,10 +40,11 @@ services:
       DEFAULT_DEMO_PASSWORD: ${DEFAULT_DEMO_PASSWORD:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-fenix_redis_change_me}@redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       FENIX_REDIS_CHANNEL: ${FENIX_REDIS_CHANNEL:-fenix_socketio}
       # Prometheus
       PROMETHEUS_ENABLED: "true"
+      FENIX_METRICS_TOKEN: ${FENIX_METRICS_TOKEN:?FENIX_METRICS_TOKEN is required}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -48,7 +52,7 @@ services:
       - ./logs:/app/logs
       - ./config:/app/config:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -57,6 +61,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    pids_limit: 512
     networks:
       - fenix-network
     depends_on:
@@ -67,7 +75,7 @@ services:
   # Prometheus - Metrics Collection
   # =============================================================================
   prometheus:
-    image: prom/prometheus:v3.13.0
+    image: prom/prometheus:v3.13.0@sha256:c6b27ea434f8389bfe233fbc7be381cf50587c286e871bc842008f5a1b1908a7
     container_name: fenix-prometheus
     profiles: ["monitoring"]
     restart: unless-stopped
@@ -76,11 +84,29 @@ services:
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    environment:
+      FENIX_METRICS_TOKEN: ${FENIX_METRICS_TOKEN:?FENIX_METRICS_TOKEN is required}
+    entrypoint: ["/bin/sh", "-ec"]
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
+      - |
+        umask 077
+        test "$${#FENIX_METRICS_TOKEN}" -ge 32 || {
+          echo "FENIX_METRICS_TOKEN must contain at least 32 characters" >&2
+          exit 78
+        }
+        printf '%s' "$$FENIX_METRICS_TOKEN" > /tmp/fenix_metrics_token
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=30d
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    pids_limit: 256
     networks:
       - fenix-network
     depends_on:
@@ -91,7 +117,7 @@ services:
   # Grafana - Visualization
   # =============================================================================
   grafana:
-    image: grafana/grafana:13.1.0
+    image: grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63
     container_name: fenix-grafana
     profiles: ["monitoring"]
     restart: unless-stopped
@@ -99,8 +125,10 @@ services:
       - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-fenix_admin_change_me}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3001}
     volumes:
       - grafana-data:/var/lib/grafana
@@ -108,6 +136,14 @@ services:
       - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
     networks:
       - fenix-network
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    pids_limit: 256
     depends_on:
       - prometheus
 
@@ -115,24 +151,45 @@ services:
   # Redis - Cache & Session Store (Optional)
   # =============================================================================
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     container_name: fenix-redis
     restart: unless-stopped
     expose:
       - "6379"
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-fenix_redis_change_me}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     volumes:
       - redis-data:/data
-    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077
+        test "$${#REDIS_PASSWORD}" -ge 32 || {
+          echo "REDIS_PASSWORD must contain at least 32 characters" >&2
+          exit 78
+        }
+        {
+          printf '%s\n' 'appendonly yes'
+          printf 'requirepass %s\n' "$$REDIS_PASSWORD"
+        } > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli --no-auth-warning ping | grep -qx PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
     networks:
       - fenix-network
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    pids_limit: 256
 
 # =============================================================================
 # Networks

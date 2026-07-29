@@ -8,7 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
-import pickle
+import sys
 import threading
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable
@@ -25,6 +25,9 @@ except ImportError:
     REDIS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+_REDIS_VALUE_PREFIX = b"fenix-json-v1:"
+_MAX_REDIS_VALUE_BYTES = 10 * 1024 * 1024
 
 
 class CacheStrategy(Enum):
@@ -237,8 +240,7 @@ class IntelligentCache:
                     self._calculate_size(k) + self._calculate_size(v) for k, v in value.items()
                 )
             else:
-                # Usar pickle para estimar tamaño
-                return len(pickle.dumps(value))
+                return sys.getsizeof(value)
         except Exception:
             return 1024  # Estimación por defecto
 
@@ -247,11 +249,32 @@ class IntelligentCache:
         if isinstance(key, str):
             return key
         elif isinstance(key, (tuple, list)):
-            return hashlib.md5(str(sorted(key)).encode()).hexdigest()
+            return hashlib.sha256(str(sorted(key)).encode()).hexdigest()
         elif isinstance(key, dict):
-            return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()
+            return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
         else:
-            return hashlib.md5(str(key).encode()).hexdigest()
+            return hashlib.sha256(str(key).encode()).hexdigest()
+
+    @staticmethod
+    def _serialize_distributed_value(value: Any) -> bytes:
+        """Serialize only JSON-compatible values; distributed data is untrusted."""
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if len(payload) > _MAX_REDIS_VALUE_BYTES:
+            raise ValueError("cache value exceeds the distributed-cache limit")
+        return _REDIS_VALUE_PREFIX + payload
+
+    @staticmethod
+    def _deserialize_distributed_value(payload: bytes) -> Any:
+        if len(payload) > len(_REDIS_VALUE_PREFIX) + _MAX_REDIS_VALUE_BYTES:
+            raise ValueError("distributed cache value is too large")
+        if not payload.startswith(_REDIS_VALUE_PREFIX):
+            raise ValueError("unsupported distributed cache encoding")
+        return json.loads(payload[len(_REDIS_VALUE_PREFIX) :].decode("utf-8"))
 
     def get(self, key: str | tuple | dict, default: Any = None) -> Any:
         """Obtener valor del caché"""
@@ -263,7 +286,7 @@ class IntelligentCache:
                 redis_key = f"{self.name}:{cache_key}"
                 cached_data = self.redis_client.get(redis_key)
                 if cached_data:
-                    value = pickle.loads(cached_data)
+                    value = self._deserialize_distributed_value(cached_data)
                     self.stats.hits += 1
                     self._execute_callbacks(self._hit_callbacks, cache_key, value)
                     return value
@@ -312,7 +335,7 @@ class IntelligentCache:
         if self.use_redis and self.redis_client:
             try:
                 redis_key = f"{self.name}:{cache_key}"
-                serialized_value = pickle.dumps(value)
+                serialized_value = self._serialize_distributed_value(value)
                 if ttl:
                     self.redis_client.setex(redis_key, ttl, serialized_value)
                 else:

@@ -193,7 +193,8 @@ class PaperExecutor:
         self, close: float, signal: str, dir_acc: float, volatility_state: str = "MEDIUM"
     ) -> str | None:
         pos = self._position
-        assert pos is not None
+        if pos is None:
+            raise RuntimeError("Cannot evaluate an exit without an open position")
         bars_held = self._bar_idx - pos.entry_bar
         pct = pos.unrealized_pct(close)
 
@@ -373,7 +374,8 @@ class PaperExecutor:
 
     def _close(self, price: float, reason: str) -> str:
         pos = self._position
-        assert pos is not None
+        if pos is None:
+            raise RuntimeError("Cannot close a NanoFenix position that is not open")
 
         if pos.direction == "LONG":
             pnl_gross = (price - pos.entry_price) * pos.quantity

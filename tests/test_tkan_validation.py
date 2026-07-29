@@ -2,8 +2,15 @@
 """Validation tests for NanoFenix v2.0 T-KAN implementation."""
 
 import sys
-import torch
+
 import numpy as np
+import pytest
+import torch
+
+pytest.importorskip(
+    "nanofenix",
+    reason="Legacy NanoFenix v2 T-KAN package is not part of the supported distribution",
+)
 
 def test_device():
     print(f"Python: {sys.version}")
@@ -31,7 +38,7 @@ def test_kan_layers(device):
     out, h_new = rkan(x, h)
     assert out.shape == (4, 8), f"RKAN output shape error: {out.shape}"
     assert h_new.shape == (4, 8), f"RKAN hidden shape error: {h_new.shape}"
-    print(f"  RKANLayer(16→12→8): OK")
+    print("  RKANLayer(16→12→8): OK")
 
     # TKANCell
     cell = TKANCell(16, 32, n_rkan_layers=3, grid_size=5, spline_order=3).to(device)
@@ -39,7 +46,7 @@ def test_kan_layers(device):
     c = torch.zeros(4, 32, device=device)
     h_new, c_new, rkan_states = cell(x, h, c)
     assert h_new.shape == (4, 32), f"TKANCell output shape error: {h_new.shape}"
-    print(f"  TKANCell(16→32, 3 sub-layers): OK")
+    print("  TKANCell(16→32, 3 sub-layers): OK")
 
     # TKANLayer (uses n_rkan_layers, return_sequences for full seq output)
     tkan = TKANLayer(16, 32, n_rkan_layers=3, return_sequences=True).to(device)
@@ -52,7 +59,7 @@ def test_kan_layers(device):
     attn = CompactSelfAttention(32, dropout=0.0).to(device)
     out = attn(torch.randn(4, 30, 32, device=device))
     assert out.shape == (4, 32), f"Attention shape error: {out.shape}"
-    print(f"  CompactSelfAttention(32, seq=30): OK")
+    print("  CompactSelfAttention(32, seq=30): OK")
 
     print("✅ Todas las KAN layers validadas")
 
@@ -124,33 +131,33 @@ def test_siamese_tkan_model(device):
 
 def test_training_step(device):
     from nanofenix.neural_predictor import SiameseTKANModel
-    
+
     model = SiameseTKANModel(
         levels=20, lob_features=2, ofi_features=6,
         tkan_hidden=64, n_rkan_layers=3,
         seq_len=30, dropout=0.1,
     ).to(device)
-    
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     loss_fn = torch.nn.HuberLoss(delta=0.001)
-    
+
     B, T = 8, 30
     lob = torch.randn(B, T, 20, 2, 2, device=device)
     ofi = torch.randn(B, T, 20, 6, device=device)
     target = torch.randn(B, 1, device=device) * 0.01
-    
+
     model.train()
     pred = model(lob, ofi)
     loss = loss_fn(pred, target)
     loss.backward()
-    
+
     # Check gradients exist
     grad_count = sum(1 for p in model.parameters() if p.grad is not None)
     total_count = sum(1 for p in model.parameters())
-    
+
     optimizer.step()
     optimizer.zero_grad()
-    
+
     print(f"  Loss: {loss.item():.6f}")
     print(f"  Gradients: {grad_count}/{total_count} params have gradients")
     print("✅ Training step exitoso (backward + optimizer step)")

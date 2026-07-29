@@ -20,6 +20,7 @@ plotly_get_chrome -y
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 # Edit .env - do not commit .env
 ```
 
@@ -39,11 +40,13 @@ cd frontend && npm install && npm run client:dev
 ## Docker
 
 The Docker stack uses Python 3.12 by default, matching the current local virtualenv
-series. Copy `.env.example` to `.env` and set `JWT_SECRET`; for non-local use,
-also replace the Redis and Grafana fallback passwords.
+series. Docker has no credential fallbacks: configure independent values of at
+least 32 characters for `JWT_SECRET`, `FENIX_METRICS_TOKEN`, `REDIS_PASSWORD`,
+and `GRAFANA_ADMIN_PASSWORD`.
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 # Edit .env with real secrets before live/testnet use.
 
 # API + Redis only
@@ -65,13 +68,19 @@ the internal Compose network.
 ## Environment Variables (Important)
 
 - `ALLOW_EXPOSE_API` (default: false) — Set to `true` explicitly to bind to `0.0.0.0` (external exposure). Only enable if intentionally exposing.
+- `FENIX_API_ALLOW_LIVE` (default: false) — Separate deployment capability required before the API may start a non-paper engine.
 - `CREATE_DEMO_USERS` (default: false) — Only enable in local dev/testing to auto-create demo accounts.
-- `DEFAULT_ADMIN_PASSWORD` / `DEFAULT_DEMO_PASSWORD` — Optionally define demo passwords in your local `.env` for ease of use.
+- `DEFAULT_ADMIN_PASSWORD` / `DEFAULT_DEMO_PASSWORD` — Required, independently chosen values of at least 16 characters when demo users are explicitly enabled.
+- `FENIX_MASTER_PASSWORD` — Required for encrypted settings/vault persistence; use at least 16 characters and never reuse the JWT secret.
+- `FENIX_MODEL_SIGNING_KEY_FILE` — Optional private key path used to authenticate mutable pickle/joblib model artifacts. The generated key and signatures must remain local.
+- `FENIX_HF_LOG_RESPONSES`, `FENIX_HF_LOG_CONTENT`, and `FENIX_DEBUG_VISUAL_RAW` — Keep disabled except during short, controlled diagnostics because provider content can be sensitive.
 - `OPENAI_API_KEY`, `GROQ_API_KEY`, `BINANCE_API_KEY`, `BINANCE_API_SECRET`, etc — set these in `.env` for runtime but keep them private and do not commit.
 
 ## Recommended Local Security Practices
 
-- Never commit `.env` or local venvs to git. They should be ignored by `.gitignore`.
+- Never commit `.env`, browser storage-state/cookie files, signing keys, or local venvs.
+- Run `chmod 600 .env` and `chmod 600 tradingview_session_state.json` when that browser state is used. Fenix refuses permissive credential files.
+- Leave API docs, public binding, unauthenticated loopback control, and raw provider logging disabled outside isolated development.
 - Use `scripts/release_cleanup.sh` before creating a release.
 - Add `pre-commit` and `detect-secrets` in your local environment.
 

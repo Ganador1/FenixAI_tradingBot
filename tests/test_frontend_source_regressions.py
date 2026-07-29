@@ -23,11 +23,11 @@ def test_api_server_redis_channel_is_configurable():
     assert 'channel="fenix_socketio"' not in source
 
 
-def test_compose_redis_password_has_development_fallback():
+def test_compose_redis_password_is_required_without_a_fallback():
     source = _read("docker-compose.yml")
 
-    assert "${REDIS_PASSWORD:-" in source
-    assert "${REDIS_PASSWORD:?" not in source
+    assert "${REDIS_PASSWORD:?REDIS_PASSWORD is required}" in source
+    assert "${REDIS_PASSWORD:-" not in source
 
 
 def test_frontend_auth_reads_only_the_zustand_store():

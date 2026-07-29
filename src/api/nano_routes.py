@@ -10,17 +10,21 @@ The router is mounted by ``src.api.server`` via ``app.include_router``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
+import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.auth import get_current_active_user, require_control_access
 logger = logging.getLogger("FenixAPI.nano")
 
 router = APIRouter(prefix="/api", tags=["v25"])
@@ -31,6 +35,8 @@ DEFAULT_SIGNAL_DIR = REPO_ROOT / "logs"
 
 # Process registry: symbol_upper -> Popen.
 _NANO_PROCESSES: dict[str, subprocess.Popen] = {}
+_PROCESS_LOCK = asyncio.Lock()
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{5,20}$")
 
 # Recommended release configuration. Team updated 2026-07-01 after the Ollama
 # Cloud Max benchmark: deepseek-v4-flash analysts (21-27s cycles, 0 timeouts) +
@@ -76,7 +82,11 @@ RELEASE_INFO = {
 # ---- Schemas -------------------------------------------------------------
 
 
-class NanoSignal(BaseModel):
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class NanoSignal(_StrictModel):
     symbol: str
     timestamp_utc: str | None = None
     signal: str | None = None
@@ -112,16 +122,15 @@ class NanoSignal(BaseModel):
     age_seconds: float | None = Field(
         None, description="Seconds since the companion last wrote this signal."
     )
-    raw: dict | None = None
 
 
-class NanoStartRequest(BaseModel):
-    symbol: str = Field("SOLUSDT", description="Trading pair")
+class NanoStartRequest(_StrictModel):
+    symbol: str = Field("SOLUSDT", pattern=r"^[A-Z0-9]{5,20}$", description="Trading pair")
     observer_only: bool = Field(True, description="Observer-only mode (recommended).")
     adaptive_fusion: bool = Field(True, description="Use AdaptiveDualHorizonFusion.")
 
 
-class NanoStatus(BaseModel):
+class NanoStatus(_StrictModel):
     symbol: str
     running: bool
     pid: int | None = None
@@ -133,7 +142,66 @@ class NanoStatus(BaseModel):
 
 
 def _signal_path_for(symbol: str) -> Path:
-    return DEFAULT_SIGNAL_DIR / f"nanofenixv3_companion_{symbol.lower()}.json"
+    symbol_upper = symbol.strip().upper()
+    if not _SYMBOL_PATTERN.fullmatch(symbol_upper):
+        raise ValueError("invalid Binance symbol")
+    base = DEFAULT_SIGNAL_DIR.resolve()
+    path = (base / f"nanofenixv3_companion_{symbol_upper.lower()}.json").resolve()
+    if path.parent != base:
+        raise ValueError("signal path escaped its storage directory")
+    return path
+
+
+def _allowed_symbols() -> set[str]:
+    raw = os.getenv(
+        "FENIX_NANOFENIX_ALLOWED_SYMBOLS",
+        "ETHUSDC,SOLUSDT,BTCUSDT,ETHUSDT",
+    )
+    return {
+        value.strip().upper()
+        for value in raw.split(",")
+        if _SYMBOL_PATTERN.fullmatch(value.strip().upper())
+    }
+
+
+def _validate_symbol(symbol: str) -> str:
+    symbol_upper = symbol.strip().upper()
+    if not _SYMBOL_PATTERN.fullmatch(symbol_upper):
+        raise HTTPException(status_code=422, detail="Invalid Binance symbol")
+    if symbol_upper not in _allowed_symbols():
+        raise HTTPException(status_code=403, detail="Symbol is not allowed for API supervision")
+    return symbol_upper
+
+
+def _nanofenix_subprocess_environment(signal_path: Path, observer_only: bool) -> dict[str, str]:
+    """Build a minimal environment; companion processes never inherit secrets."""
+    allowed_names = {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+    }
+    env = {name: os.environ[name] for name in allowed_names if os.getenv(name)}
+    env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}/usr/bin{os.pathsep}/bin"
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["FENIX_SKIP_DOTENV"] = "1"
+    env["NANOFENIX_SIGNAL_STATE_PATH"] = str(signal_path)
+    env["NANOFENIXV3_COMPANION_OBSERVER_ONLY"] = "1" if observer_only else "0"
+    runtime_stem = f"nanofenixv3_runtime_{signal_path.stem}"
+    env["NANOFENIXV3_RUNTIME_STATE_PATH"] = str(signal_path.parent / f"{runtime_stem}.json")
+    env["NANOFENIXV3_RUNTIME_MODEL_PATH"] = str(signal_path.parent / f"{runtime_stem}_model.pkl")
+    env["FENIX_MODEL_SIGNING_KEY_FILE"] = str(
+        signal_path.parent / ".security" / "model-signing.key"
+    )
+    return env
 
 
 def _load_signal(symbol: str) -> dict | None:
@@ -141,11 +209,35 @@ def _load_signal(symbol: str) -> dict | None:
     if not path.exists():
         return None
     try:
-        with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Could not read NanoFenix signal %s: %s", path, exc)
+        return _read_bounded_json_object(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Could not read NanoFenix signal %s (%s)",
+            path.name,
+            exc.__class__.__name__,
+        )
         return None
+
+
+def _read_bounded_json_object(path: Path, *, max_bytes: int = 1_048_576) -> dict:
+    """Read a small regular JSON file without following a final symlink."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("state path is not a regular file")
+        if file_stat.st_size > max_bytes:
+            raise ValueError("state file is too large")
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            fd = -1
+            value = json.load(fh)
+        if not isinstance(value, dict):
+            raise ValueError("state file must contain a JSON object")
+        return value
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def _to_signal_model(symbol: str, raw: dict, path: Path) -> NanoSignal:
@@ -187,23 +279,28 @@ def _to_signal_model(symbol: str, raw: dict, path: Path) -> NanoSignal:
         regime_meta_prob=raw.get("regime_meta_prob"),
         regime_meta_samples=raw.get("regime_meta_samples"),
         age_seconds=age,
-        raw=raw,
     )
 
 
 # ---- REST endpoints ------------------------------------------------------
 
 
-@router.get("/v25/release-info")
+@router.get("/v25/release-info", dependencies=[Depends(get_current_active_user)])
 async def release_info() -> dict:
     """Return the v2.5 release info and recommended config the UI shows."""
     return RELEASE_INFO
 
 
-@router.get("/nanofenix/signal", response_model=NanoSignal)
-async def nano_signal(symbol: str = Query("SOLUSDT", description="Trading pair")):
+@router.get(
+    "/nanofenix/signal",
+    response_model=NanoSignal,
+    dependencies=[Depends(get_current_active_user)],
+)
+async def nano_signal(
+    symbol: str = Query("SOLUSDT", pattern=r"^[A-Z0-9]{5,20}$", description="Trading pair"),
+):
     """Return the latest NanoFenix v3.5 companion signal for a symbol."""
-    symbol_upper = symbol.upper()
+    symbol_upper = _validate_symbol(symbol)
     raw = _load_signal(symbol_upper)
     if raw is None:
         raise HTTPException(
@@ -213,9 +310,13 @@ async def nano_signal(symbol: str = Query("SOLUSDT", description="Trading pair")
     return _to_signal_model(symbol_upper, raw, _signal_path_for(symbol_upper))
 
 
-@router.get("/nanofenix/status", response_model=NanoStatus)
-async def nano_status(symbol: str = Query("SOLUSDT")):
-    symbol_upper = symbol.upper()
+@router.get(
+    "/nanofenix/status",
+    response_model=NanoStatus,
+    dependencies=[Depends(get_current_active_user)],
+)
+async def nano_status(symbol: str = Query("SOLUSDT", pattern=r"^[A-Z0-9]{5,20}$")):
+    symbol_upper = _validate_symbol(symbol)
     proc = _NANO_PROCESSES.get(symbol_upper)
     path = _signal_path_for(symbol_upper)
     age = None
@@ -234,100 +335,110 @@ async def nano_status(symbol: str = Query("SOLUSDT")):
         symbol=symbol_upper,
         running=owned_running or external_running,
         pid=proc.pid if owned_running else None,
-        signal_path=str(path) if path.exists() else None,
+        signal_path=path.name if path.exists() else None,
         signal_age_seconds=age,
     )
 
 
-@router.post("/nanofenix/start", response_model=NanoStatus)
+@router.post(
+    "/nanofenix/start",
+    response_model=NanoStatus,
+    dependencies=[Depends(require_control_access)],
+)
 async def nano_start(req: NanoStartRequest):
     """Spawn a NanoFenix v3.5 companion subprocess for the given symbol."""
     if not NANOFENIX_LAUNCHER.exists():
-        raise HTTPException(status_code=500, detail=f"{NANOFENIX_LAUNCHER} not found")
+        raise HTTPException(status_code=500, detail="NanoFenix launcher is unavailable")
 
-    symbol_upper = req.symbol.upper()
-    existing = _NANO_PROCESSES.get(symbol_upper)
-    if existing is not None and existing.poll() is None:
-        return await nano_status(symbol=symbol_upper)  # type: ignore[arg-type]
+    symbol_upper = _validate_symbol(req.symbol)
+    async with _PROCESS_LOCK:
+        existing = _NANO_PROCESSES.get(symbol_upper)
+        if existing is not None and existing.poll() is None:
+            return await nano_status(symbol=symbol_upper)  # type: ignore[arg-type]
 
-    # Si hay un companion EXTERNO publicando señal fresca (p.ej. el de la
-    # sesión live), rechazar el spawn: dos companions sobre el mismo archivo
-    # de señal se pisan entre sí.
-    external_path = _signal_path_for(symbol_upper)
-    if external_path.exists():
+        active_count = sum(proc.poll() is None for proc in _NANO_PROCESSES.values())
+        max_processes = max(1, min(16, int(os.getenv("FENIX_MAX_API_NANO_PROCESSES", "4"))))
+        if active_count >= max_processes:
+            raise HTTPException(status_code=409, detail="NanoFenix process limit reached")
+
+        # Refuse duplicate writers when another process already publishes the
+        # same symbol's signal.
+        external_path = _signal_path_for(symbol_upper)
+        if external_path.exists():
+            try:
+                external_age = max(0.0, time.time() - external_path.stat().st_mtime)
+            except OSError:
+                external_age = None
+            if external_age is not None and external_age < 30.0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A companion for {symbol_upper} is already publishing a fresh signal",
+                )
+
+        signal_path = _signal_path_for(symbol_upper)
+        signal_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        env = _nanofenix_subprocess_environment(signal_path, req.observer_only)
+
+        cmd = [
+            sys.executable,
+            str(NANOFENIX_LAUNCHER),
+            "--symbol",
+            symbol_upper,
+            "--companion",
+            "--output-path",
+            str(signal_path),
+        ]
+        if req.adaptive_fusion:
+            cmd.append("--adaptive-fusion")
+
+        logger.info("Spawning NanoFenix companion for %s", symbol_upper)
         try:
-            external_age = max(0.0, time.time() - external_path.stat().st_mtime)
-        except OSError:
-            external_age = None
-        if external_age is not None and external_age < 30.0:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"A NanoFenix companion for {symbol_upper} is already publishing "
-                    f"a fresh signal (age {external_age:.1f}s) from another process "
-                    "(e.g. the live session). Refusing to spawn a duplicate."
-                ),
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                close_fds=True,
+                start_new_session=True,
             )
+        except (OSError, ValueError) as exc:
+            logger.error("NanoFenix launch failed", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to launch NanoFenix") from exc
 
-    signal_path = _signal_path_for(symbol_upper)
-    signal_path.parent.mkdir(parents=True, exist_ok=True)
-
-    env = os.environ.copy()
-    if req.observer_only:
-        env["NANOFENIXV3_COMPANION_OBSERVER_ONLY"] = "1"
-    env["NANOFENIX_SIGNAL_STATE_PATH"] = str(signal_path)
-
-    cmd = [
-        sys.executable,
-        str(NANOFENIX_LAUNCHER),
-        "--symbol",
-        symbol_upper,
-        "--companion",
-        "--output-path",
-        str(signal_path),
-    ]
-    if req.adaptive_fusion:
-        cmd.append("--adaptive-fusion")
-
-    logger.info("Spawning NanoFenix companion: %s", " ".join(cmd))
-    try:
-        proc = subprocess.Popen(cmd, env=env)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to launch NanoFenix: {exc}") from exc
-
-    _NANO_PROCESSES[symbol_upper] = proc
+        _NANO_PROCESSES[symbol_upper] = proc
     return NanoStatus(
         symbol=symbol_upper,
         running=True,
         pid=proc.pid,
-        signal_path=str(signal_path),
+        signal_path=signal_path.name,
         signal_age_seconds=None,
     )
 
 
-@router.post("/nanofenix/stop")
+@router.post("/nanofenix/stop", dependencies=[Depends(require_control_access)])
 async def nano_stop(symbol: str = Query("SOLUSDT")):
     """Terminate the NanoFenix companion subprocess for a symbol."""
-    symbol_upper = symbol.upper()
-    proc = _NANO_PROCESSES.pop(symbol_upper, None)
-    if proc is None or proc.poll() is not None:
-        return {"symbol": symbol_upper, "stopped": False, "reason": "not running"}
-    try:
-        proc.terminate()
+    symbol_upper = _validate_symbol(symbol)
+    async with _PROCESS_LOCK:
+        proc = _NANO_PROCESSES.pop(symbol_upper, None)
+        if proc is None or proc.poll() is not None:
+            return {"symbol": symbol_upper, "stopped": False, "reason": "not running"}
         try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"Stop error: {exc}") from exc
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        except (OSError, ValueError) as exc:
+            logger.error("NanoFenix stop failed", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to stop NanoFenix") from exc
     return {"symbol": symbol_upper, "stopped": True}
 
 
 # ---- MiniFenix ------------------------------------------------------------
 
 
-@router.get("/minifenix/regime")
+@router.get("/minifenix/regime", dependencies=[Depends(get_current_active_user)])
 async def minifenix_regime():
     """Read the latest MiniFenix Brain regime if a state file exists.
 
@@ -341,14 +452,16 @@ async def minifenix_regime():
             status_code=404,
             detail="No MiniFenix regime file found. MiniFenix is a research prototype; expose it via logs/minifenix_regime*.json if needed.",
         )
-    latest = candidates[-1]
+    latest = candidates[-1].resolve()
+    if latest.parent != DEFAULT_SIGNAL_DIR.resolve():
+        raise HTTPException(status_code=400, detail="Invalid MiniFenix state path")
     try:
-        with latest.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read {latest}: {exc}") from exc
+        data = _read_bounded_json_object(latest)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.error("Could not read MiniFenix regime", exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not read MiniFenix regime") from exc
     return {
-        "source": str(latest),
+        "source": latest.name,
         "regime": data,
         "age_seconds": max(0.0, time.time() - latest.stat().st_mtime),
     }

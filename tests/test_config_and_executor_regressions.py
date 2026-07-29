@@ -121,7 +121,14 @@ def test_cli_flags_override_yaml(monkeypatch):
 
 
 def _make_executor() -> tuple[OrderExecutor, MagicMock]:
-    executor = OrderExecutor(symbol="BTCUSDT", testnet=True, timeframe="15m")
+    # These tests intentionally exercise exchange-write paths against a mock
+    # service, so the mutation capability must be granted explicitly.
+    executor = OrderExecutor(
+        symbol="BTCUSDT",
+        testnet=True,
+        timeframe="15m",
+        allow_mutations=True,
+    )
     svc = MagicMock()
     svc.get_symbol_config.return_value = SymbolConfig(
         symbol="BTCUSDT",

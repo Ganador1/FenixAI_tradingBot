@@ -1591,6 +1591,98 @@ async def test_execute_trade_paper_uses_balance_fallback_when_executor_balance_i
 
 
 @pytest.mark.asyncio
+async def test_execute_trade_paper_opens_and_persists_simulated_position(monkeypatch):
+    import src.trading.engine as engine_module
+    from src.trading.engine import TradingEngine
+    from src.trading.trade_manager import TradeManager
+
+    persist_fill = AsyncMock()
+    persist_position = AsyncMock()
+    monkeypatch.setattr(engine_module, "persist_order_fill", persist_fill)
+    monkeypatch.setattr(engine_module, "persist_open_position", persist_position)
+    monkeypatch.setenv("FENIX_BALANCE_FALLBACK_USDT", "1000")
+    monkeypatch.setenv("FENIX_PAPER_SLIPPAGE_BPS", "2")
+    monkeypatch.setenv("FENIX_PAPER_TAKER_FEE_RATE", "0.0004")
+
+    engine = _build_minimal_engine(symbol="BTCUSDT", timeframe="5m")
+    engine.paper_trading = True
+    engine.market_data.current_price = 50000.0
+    engine.trade_manager = TradeManager()
+    engine.on_agent_event = AsyncMock()
+
+    await TradingEngine._execute_trade(
+        engine,
+        "BUY",
+        "HIGH",
+        {
+            "risk_assessment": {
+                "entry_price": 50000.0,
+                "stop_loss": 49500.0,
+                "take_profit": 51000.0,
+            }
+        },
+    )
+
+    position = engine.trade_manager.get_position("BTCUSDT")
+    assert position is not None
+    assert position.side == "LONG"
+    assert position.entry_price == pytest.approx(50010.0)
+    assert position.entry_commission > 0
+    persist_fill.assert_awaited_once()
+    persist_position.assert_awaited_once()
+    assert persist_fill.await_args.kwargs["order_type"] == "paper_market"
+    assert persist_position.await_args.kwargs["side"] == "LONG"
+    engine.executor.get_balance.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paper_close_persists_fee_aware_net_pnl(monkeypatch):
+    import src.trading.engine as engine_module
+    from src.trading.engine import TradingEngine
+
+    persist_close = AsyncMock()
+    monkeypatch.setattr(engine_module, "persist_position_close", persist_close)
+    monkeypatch.setenv("FENIX_PAPER_TAKER_FEE_RATE", "0.0004")
+
+    engine = _build_minimal_engine(symbol="BTCUSDT", timeframe="5m")
+    engine.paper_trading = True
+    engine.on_agent_event = None
+    tracked = SimpleNamespace(
+        side="LONG",
+        quantity=1.0,
+        entry_price=1000.0,
+        entry_time=datetime.now(timezone.utc),
+        entry_commission=0.4,
+        reasoning_digest=None,
+        decision_agent_name=None,
+    )
+    close_result = {
+        "trade_id": "paper:test",
+        "side": "LONG",
+        "quantity": 1.0,
+        "exit_price": 1010.0,
+        "pnl": 10.0,
+        "pnl_pct": 1.0,
+        "exit_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await TradingEngine._close_position_record(
+        engine,
+        close_result,
+        tracked_position=tracked,
+    )
+
+    assert close_result["gross_pnl"] == pytest.approx(10.0)
+    assert close_result["paper_entry_commission"] == pytest.approx(0.4)
+    assert close_result["paper_exit_commission"] == pytest.approx(0.404)
+    assert close_result["pnl"] == pytest.approx(9.196)
+    assert close_result["gross_pnl_pct"] == pytest.approx(1.0)
+    assert close_result["pnl_pct"] == pytest.approx(0.9196)
+    persist_close.assert_awaited_once()
+    assert persist_close.await_args.kwargs["close_result"]["pnl"] == pytest.approx(9.196)
+
+
+@pytest.mark.asyncio
 async def test_execute_trade_does_not_record_no_exposure_failure_as_loss():
     engine = _build_minimal_engine(symbol="SOLUSDT", timeframe="15m")
     engine.market_data.current_price = 86.42

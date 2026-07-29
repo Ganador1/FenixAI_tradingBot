@@ -13,10 +13,10 @@ from pathlib import Path
 import watchdog.events
 import watchdog.observers
 import yaml
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from src.risk.runtime_feedback import RiskFeedbackLoopConfig
+from src.security.dotenv_security import secure_load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 # Función para cargar .env de manera robusta
 def load_env_variables():
     """Carga variables de entorno de manera robusta"""
+    if os.getenv("FENIX_SKIP_DOTENV", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
     # Intentar cargar desde múltiples ubicaciones
     possible_paths = [
         Path(__file__).parent.parent / ".env",  # Desde config/
@@ -36,7 +38,7 @@ def load_env_variables():
             # Explicit process environment always wins. This is required for
             # CLI flags, per-instance isolation, and hermetic test databases;
             # reloading .env with override=True silently replaced all three.
-            load_dotenv(env_path, override=False)
+            secure_load_dotenv(env_path, override=False)
             return True
 
     return False

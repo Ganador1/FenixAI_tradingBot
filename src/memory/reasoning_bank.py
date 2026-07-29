@@ -8,9 +8,10 @@ con metadatos ricos y se puede recuperar por palabras clave o por agente.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import tempfile
+import re
 import threading
 from collections import deque
 from dataclasses import dataclass, asdict, field
@@ -23,10 +24,16 @@ import hashlib
 import logging
 import math
 
-try:  # sentence-transformers es opcional; fallback a Jaccard si no está disponible
-    from sentence_transformers import SentenceTransformer
-except Exception:  # pragma: no cover - fallback silencioso para entornos sin dependencia
-    SentenceTransformer = None  # type: ignore
+from src.security.private_files import (
+    ensure_private_directory,
+    open_private_text,
+    read_private_text,
+    write_private_text,
+)
+
+_SENTENCE_TRANSFORMERS_AVAILABLE = (
+    importlib.util.find_spec("sentence_transformers") is not None
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,13 +119,16 @@ class ReasoningBank:
         embedding_backend: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.storage_dir)
+        if not 1 <= max_entries_per_agent <= 10_000:
+            raise ValueError("max_entries_per_agent must be between 1 and 10000")
         self.max_entries_per_agent = max_entries_per_agent
         self._embedding_backend = embedding_backend
         self.embedding_model_name = embedding_model_name
         self.embedding_device = embedding_device
         self.use_embeddings = bool(
-            embedding_backend is not None or (use_embeddings and SentenceTransformer is not None)
+            embedding_backend is not None
+            or (use_embeddings and _SENTENCE_TRANSFORMERS_AVAILABLE)
         )
         self._embedding_model: Any | None = None
         self._lock = threading.RLock()
@@ -129,10 +139,20 @@ class ReasoningBank:
         self._embedding_warning_emitted = False
         self._load_stats()
 
+    def _agent_file(self, agent_name: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", agent_name):
+            raise ValueError("agent_name contains unsafe path characters")
+        agent_file = self.storage_dir / f"{agent_name}.jsonl"
+        if agent_file.is_symlink():
+            raise ValueError("ReasoningBank agent storage cannot be a symbolic link")
+        return agent_file
+
     def _load_stats(self) -> None:
         if self._stats_path.exists():
             try:
-                self._stats = json.loads(self._stats_path.read_text())
+                self._stats = json.loads(
+                    read_private_text(self._stats_path, max_bytes=1_048_576)
+                )
             except Exception as exc:
                 logger.warning("ReasoningBank: no se pudo leer el index: %s", exc)
                 self._stats = {}
@@ -146,25 +166,12 @@ class ReasoningBank:
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:
         """Replace a state file atomically after flushing its complete contents."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, path)
-        except Exception:
-            try:
-                os.unlink(temp_name)
-            except OSError:
-                pass
-            raise
+        write_private_text(path, content)
 
     def _get_embedding_model(self) -> Any | None:
         if not self.use_embeddings or self._embedding_backend is not None:
             return None
-        if SentenceTransformer is None:
+        if not _SENTENCE_TRANSFORMERS_AVAILABLE:
             if not self._embedding_warning_emitted:
                 logger.info(
                     "ReasoningBank: sentence-transformers no disponible, usando similitud por palabras"
@@ -176,6 +183,8 @@ class ReasoningBank:
             with self._embedding_lock:
                 if self._embedding_model is None:
                     try:
+                        from sentence_transformers import SentenceTransformer
+
                         self._embedding_model = SentenceTransformer(
                             self.embedding_model_name,
                             device=self.embedding_device,
@@ -236,6 +245,7 @@ class ReasoningBank:
         latency_ms: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ReasoningEntry:
+        agent_file = self._agent_file(agent_name)
         digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
         action_value = str(normalized_result.get("action", "") or "").strip()
         if not action_value:
@@ -296,8 +306,7 @@ class ReasoningBank:
         with self._lock:
             agent_cache = self._cache.setdefault(agent_name, deque(maxlen=self.max_entries_per_agent))
             agent_cache.append(entry)
-            agent_file = self.storage_dir / f"{agent_name}.jsonl"
-            with agent_file.open("a", encoding="utf-8") as fh:
+            with open_private_text(agent_file, "a") as fh:
                 fh.write(json.dumps(asdict(entry)) + "\n")
 
             stats = self._stats.setdefault(agent_name, {"total": 0})
@@ -312,8 +321,12 @@ class ReasoningBank:
             total_recorded = int(stats.get("total", 0))
             if total_recorded % 200 == 0:
                 try:
-                    with agent_file.open("r", encoding="utf-8") as fh:
-                        line_count = sum(1 for _ in fh)
+                    line_count = len(
+                        read_private_text(
+                            agent_file,
+                            max_bytes=64 * 1024 * 1024,
+                        ).splitlines()
+                    )
                     if line_count > self.max_entries_per_agent * 4:
                         if len(agent_cache) < min(line_count, self.max_entries_per_agent):
                             # Cache may be cold; hydrate before rewriting.
@@ -327,24 +340,28 @@ class ReasoningBank:
                                 line_count,
                                 len(agent_cache),
                             )
-                except OSError as exc:
+                except (OSError, ValueError) as exc:
                     logger.debug("ReasoningBank: compaction skipped for %s: %s", agent_name, exc)
 
         return entry
 
     def get_recent(self, agent_name: str, limit: int = 5) -> list[ReasoningEntry]:
+        agent_file = self._agent_file(agent_name)
+        limit = max(1, min(int(limit), self.max_entries_per_agent))
         with self._lock:
             agent_cache = self._cache.get(agent_name)
             if not agent_cache:
-                agent_file = self.storage_dir / f"{agent_name}.jsonl"
                 if agent_file.exists():
                     agent_cache = deque(maxlen=self.max_entries_per_agent)
-                    with agent_file.open("r", encoding="utf-8") as fh:
-                        for line in fh.readlines()[-self.max_entries_per_agent :]:
-                            try:
-                                agent_cache.append(ReasoningEntry(**json.loads(line)))
-                            except Exception:
-                                continue
+                    lines = read_private_text(
+                        agent_file,
+                        max_bytes=64 * 1024 * 1024,
+                    ).splitlines()
+                    for line in lines[-self.max_entries_per_agent :]:
+                        try:
+                            agent_cache.append(ReasoningEntry(**json.loads(line)))
+                        except Exception:
+                            continue
                     self._cache[agent_name] = agent_cache
                 else:
                     return []
@@ -569,7 +586,7 @@ class ReasoningBank:
 
     def _rewrite_agent_file(self, agent_name: str, agent_cache: deque[ReasoningEntry]) -> bool:
         """Persiste todas las entradas del agente nuevamente en disco."""
-        agent_file = self.storage_dir / f"{agent_name}.jsonl"
+        agent_file = self._agent_file(agent_name)
         try:
             content = "".join(json.dumps(asdict(entry)) + "\n" for entry in agent_cache)
             self._atomic_write_text(agent_file, content)

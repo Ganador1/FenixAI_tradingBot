@@ -61,6 +61,7 @@ class OpenPosition:
     last_synced_take_profit: float | None = None
     protection_refresh_pending: bool = False
     entry_count: int = 1
+    entry_commission: float = 0.0
 
     def update_price(
         self,

@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -37,6 +38,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+
+from src.security.private_files import ensure_private_directory
 
 # Añadir path del proyecto
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -216,12 +219,28 @@ class ChartCaptureScheduler:
         save_to_disk: bool = True,
         cache_dir: str = "cache/charts",
     ):
-        self.symbols = symbols or DEFAULT_SYMBOLS
-        self.timeframes = timeframes or list(TIMEFRAME_CONFIG.keys())
+        requested_symbols = symbols or DEFAULT_SYMBOLS
+        requested_timeframes = timeframes or list(TIMEFRAME_CONFIG.keys())
+        if not 1 <= len(requested_symbols) <= 20:
+            raise ValueError("chart scheduler requires between 1 and 20 symbols")
+        if not 1 <= len(requested_timeframes) <= len(TIMEFRAME_CONFIG):
+            raise ValueError("chart scheduler has an invalid timeframe count")
+        self.symbols = [str(symbol).strip().upper() for symbol in requested_symbols]
+        self.timeframes = [str(timeframe).strip() for timeframe in requested_timeframes]
+        if any(
+            not re.fullmatch(r"[A-Z0-9]{5,20}", symbol) for symbol in self.symbols
+        ):
+            raise ValueError("chart scheduler contains an invalid symbol")
+        if any(timeframe not in TIMEFRAME_CONFIG for timeframe in self.timeframes):
+            raise ValueError("chart scheduler contains an unsupported timeframe")
+        if len(set(self.symbols)) != len(self.symbols) or len(set(self.timeframes)) != len(
+            self.timeframes
+        ):
+            raise ValueError("chart scheduler inputs must not contain duplicates")
         self.enable_playwright = enable_playwright
         self.save_to_disk = save_to_disk
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.cache_dir)
 
         # Cache compartido
         self.cache = ChartCache(max_size=len(self.symbols) * len(self.timeframes) * 2)

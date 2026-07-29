@@ -28,7 +28,7 @@ def test_core_uses_default_pretrained_path(monkeypatch):
 
     assert captured["model_path"] == "nanofenixv3/pretrained_ethusdt.pkl"
     assert str(bot._model_save_path) == "nanofenixv3/runtime_ethusdt_1s_model.pkl"
-    assert str(bot._runtime_state_path) == "nanofenixv3/runtime_ethusdt_1s.pkl"
+    assert str(bot._runtime_state_path) == "nanofenixv3/runtime_ethusdt_1s.json"
 
 
 def test_core_ws_url_uses_raw_trade_feed_for_futures():

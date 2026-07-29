@@ -17,6 +17,7 @@ from src.core.orchestrator.bank_helper import (
     store_agent_decision,
 )
 from src.core.orchestrator.retry_system import invoke_with_retry_and_validation
+from src.security.private_files import ensure_private_directory, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +33,20 @@ def save_legacy_agent_log(
     Useful for debugging and detailed analysis.
     """
     try:
-        log_dir = Path(os.getenv("FENIX_LLM_RESPONSE_LOG_DIR", "logs/llm_responses"))
-        log_dir.mkdir(parents=True, exist_ok=True)
+        if not agent_name.replace("_", "").replace("-", "").isalnum():
+            raise ValueError("agent_name contains unsafe path characters")
+        safe_agent_name = agent_name[:80]
+        log_dir = ensure_private_directory(
+            Path(os.getenv("FENIX_LLM_RESPONSE_LOG_DIR", "logs/llm_responses"))
+        )
 
         # Include microseconds to avoid collisions when the same agent logs
         # multiple times within the same second (e.g., before/after fallback normalization).
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{agent_name}_{timestamp}.json"
+        filename = f"{safe_agent_name}_{timestamp}.json"
 
         log_data = {
-            "agent": agent_name,
+            "agent": safe_agent_name,
             "timestamp": timestamp,
             "prompt": prompt,
             "raw_response": response_content[:2000] if response_content else None,
@@ -49,7 +54,7 @@ def save_legacy_agent_log(
         }
 
         log_path = log_dir / filename
-        log_path.write_text(json.dumps(log_data, indent=2, default=str))
+        write_private_text(log_path, json.dumps(log_data, indent=2, default=str))
 
     except Exception as e:
         logger.debug(f"Failed to save legacy log for {agent_name}: {e}")

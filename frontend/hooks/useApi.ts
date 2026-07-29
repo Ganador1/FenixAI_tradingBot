@@ -17,6 +17,15 @@ interface UseApiState<T> {
   error: Error | null;
 }
 
+function resolveSameOriginApiUrl(path: string): string {
+  const base = API_CONFIG.baseURL || window.location.origin;
+  const resolved = new URL(path, base);
+  if (resolved.origin !== window.location.origin) {
+    throw new Error('Cross-origin API destinations are not permitted');
+  }
+  return `${resolved.pathname}${resolved.search}`;
+}
+
 /**
  * Custom hook for making API requests with error handling and retry logic
  */
@@ -43,9 +52,7 @@ export const useApi = <T = unknown,>(
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const fullUrl = url.startsWith('http')
-        ? url
-        : `${API_CONFIG.baseURL}${url}`;
+      const fullUrl = resolveSameOriginApiUrl(url);
 
       const headers: Record<string, string> = {
         ...API_CONFIG.defaultHeaders,
@@ -158,9 +165,7 @@ export const useApiMutation = <T = unknown,>() => {
       setState((prev) => ({ ...prev, loading: true, isLoading: true, error: null }));
 
       try {
-        const fullUrl = url.startsWith('http')
-          ? url
-          : `${API_CONFIG.baseURL}${url}`;
+        const fullUrl = resolveSameOriginApiUrl(url);
 
         const headers: Record<string, string> = {
           ...API_CONFIG.defaultHeaders,

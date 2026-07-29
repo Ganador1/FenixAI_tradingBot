@@ -95,24 +95,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
     """Middleware to collect HTTP metrics for all requests."""
 
     async def dispatch(self, request: Request, call_next):
-        method = request.method
-        # Normalize path to avoid cardinality explosion
-        path = request.url.path
-        if path.startswith("/api/"):
-            # Keep API paths but remove dynamic segments
-            parts = path.split("/")
-            normalized_parts = []
-            for part in parts:
-                # Replace UUIDs and numeric IDs with placeholder
-                if len(part) == 36 and "-" in part:
-                    normalized_parts.append("{id}")
-                elif part.isdigit():
-                    normalized_parts.append("{id}")
-                else:
-                    normalized_parts.append(part)
-            path = "/".join(normalized_parts)
-        else:
-            path = "other"
+        method = request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE"} else "OTHER"
 
         HTTP_IN_PROGRESS.labels(method=method).inc()
         start = time.perf_counter()
@@ -125,6 +108,10 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             raise
         finally:
             latency = time.perf_counter() - start
+            # Starlette exposes the finite route template after routing. Never
+            # use attacker-controlled raw paths as Prometheus label values.
+            route = request.scope.get("route")
+            path = str(getattr(route, "path", "unmatched"))
             HTTP_IN_PROGRESS.labels(method=method).dec()
             HTTP_REQUESTS.labels(method=method, endpoint=path, status=status).inc()
             HTTP_LATENCY.labels(method=method, endpoint=path).observe(latency)

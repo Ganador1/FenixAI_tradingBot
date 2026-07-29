@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import io
 import logging
 import os
 import time
@@ -31,6 +32,8 @@ import warnings
 import numpy as np
 import pandas as pd
 import joblib
+
+from src.security.artifact_integrity import load_verified_joblib, write_signed_artifact
 
 # Silence sklearn warnings about feature names
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
@@ -105,7 +108,7 @@ class SOTAPredictor:
         # First try to load the pretrained model (takes priority)
         if os.path.exists(self.pretrained_path):
             try:
-                saved = joblib.load(self.pretrained_path)
+                saved = load_verified_joblib(self.pretrained_path)
                 self.model = saved["model"]
                 self.is_trained = True
                 acc = saved.get('accuracy', '?')
@@ -118,7 +121,7 @@ class SOTAPredictor:
         # Fallback to live-trading model
         if os.path.exists(self.model_path):
             try:
-                saved = joblib.load(self.model_path)
+                saved = load_verified_joblib(self.model_path)
                 self.model = saved["model"]
                 self.is_trained = True
                 logger.info(f"[BRAIN] [SOTA] Online model loaded ({saved.get('accuracy', '?')} accuracy)")
@@ -370,7 +373,9 @@ class SOTAPredictor:
 
         # Save model
         try:
-            joblib.dump({"model": self.model, "accuracy": f"{val_accuracy:.1%}"}, self.model_path)
+            buffer = io.BytesIO()
+            joblib.dump({"model": self.model, "accuracy": f"{val_accuracy:.1%}"}, buffer)
+            write_signed_artifact(self.model_path, buffer.getvalue())
         except Exception as e:
             logger.warning(f"Could not save model: {e}")
 

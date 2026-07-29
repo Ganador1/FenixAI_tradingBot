@@ -217,13 +217,33 @@ class TestAPIIntegration:
     @pytest.fixture
     def test_client(self):
         """Cliente de prueba para la API."""
+        from types import SimpleNamespace
+
         from fastapi.testclient import TestClient
         
         # Mock del engine para evitar inicialización completa
         with patch('src.api.server.TradingEngine'):
             with patch('src.api.server.engine', None):
-                from src.api.server import app
-                return TestClient(app)
+                from src.api import server
+
+                async def authenticated_user():
+                    return SimpleNamespace(
+                        id="integration-user",
+                        username="integration",
+                        role="admin",
+                        is_active=True,
+                    )
+
+                server.app.dependency_overrides[
+                    server.get_current_active_user
+                ] = authenticated_user
+                try:
+                    yield TestClient(server.app)
+                finally:
+                    server.app.dependency_overrides.pop(
+                        server.get_current_active_user,
+                        None,
+                    )
 
     def test_health_endpoint(self, test_client):
         """Verificar endpoint de health."""

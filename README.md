@@ -447,7 +447,8 @@ If you want to enable demo accounts for local development, set `CREATE_DEMO_USER
 
 ```bash
 cp .env.example .env
-# Set JWT_SECRET; replace Redis/Grafana fallback passwords before non-local use.
+chmod 600 .env
+# Set independent 32+ character JWT, metrics, Redis, and Grafana secrets.
 
 # API + Redis
 docker compose up -d --build
@@ -478,9 +479,16 @@ python run_fenix.py --help
 python run_fenix.py                      # Paper trading (default)
 python run_fenix.py --symbol ETHUSDT     # Different symbol
 python run_fenix.py --timeframe 5m       # Different timeframe
+python run_fenix.py --mode paper --mainnet-data  # Mainnet public data, simulated orders
 python run_fenix.py --no-visual          # Disable visual agent
 python run_fenix.py --mode live --allow-live  # Live trading (⚠️ real money)
 ```
+
+For isolated multi-timeframe paper research, use
+`scripts/paper_experiment_harness.sh`. It can run against Testnet or Mainnet
+public data, separates each candidate's database and memory, strips Binance
+credentials, and includes an aggregate-only inspector. See
+[`docs/PAPER_EXPERIMENT_HARNESS.md`](docs/PAPER_EXPERIMENT_HARNESS.md).
 
 ---
 

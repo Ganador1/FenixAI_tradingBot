@@ -6,8 +6,10 @@ Mantiene la misma API pública para compatibilidad.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -17,14 +19,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from collections.abc import Callable
 
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
-
 from src.memory.reasoning_bank import ReasoningEntry
+from src.security.private_files import ensure_private_directory
 
 logger = logging.getLogger(__name__)
+_SENTENCE_TRANSFORMERS_AVAILABLE = (
+    importlib.util.find_spec("sentence_transformers") is not None
+)
 
 _KEYWORD_STOPWORDS = {
     "a",
@@ -64,13 +65,16 @@ class ReasoningBankOptimized:
         embedding_backend: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.storage_dir)
+        if not 1 <= max_entries_per_agent <= 10_000:
+            raise ValueError("max_entries_per_agent must be between 1 and 10000")
         self.max_entries_per_agent = max_entries_per_agent
         self._embedding_backend = embedding_backend
         self.embedding_model_name = embedding_model_name
         self.embedding_device = embedding_device
         self.use_embeddings = bool(
-            embedding_backend is not None or (use_embeddings and SentenceTransformer is not None)
+            embedding_backend is not None
+            or (use_embeddings and _SENTENCE_TRANSFORMERS_AVAILABLE)
         )
         self._embedding_model: Any | None = None
         self._embedding_lock = threading.Lock()
@@ -78,13 +82,23 @@ class ReasoningBankOptimized:
 
         # SQLite path
         self.db_path = self.storage_dir / "reasoning_bank.db"
+        if self.db_path.is_symlink():
+            raise ValueError("ReasoningBank database cannot be a symbolic link")
 
         # Inicializar schema
         self._init_db()
+        os.chmod(self.db_path, 0o600, follow_symlinks=False)
+
+    def _connect(self) -> sqlite3.Connection:
+        if self.db_path.is_symlink():
+            raise ValueError("ReasoningBank database cannot be a symbolic link")
+        connection = sqlite3.connect(self.db_path, timeout=10)
+        connection.execute("PRAGMA trusted_schema = OFF")
+        return connection
 
     def _init_db(self) -> None:
         """Inicializa el schema SQLite."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS reasoning_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,12 +150,14 @@ class ReasoningBankOptimized:
                 return None
 
         # Cargar modelo SentenceTransformer si no está disponible
-        if SentenceTransformer is None:
+        if not _SENTENCE_TRANSFORMERS_AVAILABLE:
             return None
 
         with self._embedding_lock:
             if self._embedding_model is None:
                 try:
+                    from sentence_transformers import SentenceTransformer
+
                     self._embedding_model = SentenceTransformer(
                         self.embedding_model_name,
                         device=self.embedding_device,
@@ -211,7 +227,7 @@ class ReasoningBankOptimized:
 
         # Insertar en SQLite
         with self._lock:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 try:
                     conn.execute("""
                         INSERT INTO reasoning_entries (
@@ -261,8 +277,9 @@ class ReasoningBankOptimized:
 
     def get_recent(self, agent_name: str, limit: int = 5) -> list[ReasoningEntryOptimized]:
         """Obtiene entries recientes (O(log n) con índice)."""
+        limit = max(1, min(int(limit), self.max_entries_per_agent))
         with self._lock:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT * FROM reasoning_entries
@@ -318,7 +335,7 @@ class ReasoningBankOptimized:
     ) -> bool:
         """Actualiza outcome de una entry (O(log n) con índice)."""
         with self._lock:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 cursor = conn.execute("""
                     UPDATE reasoning_entries SET
                         success = ?, reward = ?, trade_id = ?, reward_signal = ?,
@@ -346,7 +363,7 @@ class ReasoningBankOptimized:
     ) -> bool:
         """Atacha feedback del LLM-as-Judge."""
         with self._lock:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 success_estimate = judge_payload.get("success_estimate")
                 cursor = conn.execute("""
                     UPDATE reasoning_entries SET
@@ -375,7 +392,7 @@ class ReasoningBankOptimized:
         """Búsqueda por keywords (full-scan, optimizado con índice)."""
         query_lower = f"%{query.lower()}%"
         with self._lock:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT * FROM reasoning_entries
@@ -455,7 +472,7 @@ class ReasoningBankOptimized:
 
     def get_success_rate(self, agent_name: str, lookback: int = 50) -> dict[str, Any]:
         """Calcula tasa de éxito para un agente."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute("""
                 SELECT success, reward FROM reasoning_entries
                 WHERE agent = ? AND success IS NOT NULL

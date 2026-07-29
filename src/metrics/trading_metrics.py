@@ -16,7 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.security.private_files import (
+    ensure_private_directory,
+    open_private_text,
+    write_private_text,
+)
+
 logger = logging.getLogger(__name__)
+
+_MAX_METRICS_FILE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass
@@ -63,7 +71,8 @@ class TradingMetricsDashboard:
 
     def __init__(self, storage_path: str = "logs/metrics.jsonl"):
         self.storage_path = Path(storage_path)
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.storage_path.is_absolute() and self.storage_path.parent != Path("."):
+            ensure_private_directory(self.storage_path.parent)
         self._pnl_history: list[float] = []
         self._return_history: list[float] = []  # Returns como %
 
@@ -277,10 +286,29 @@ class TradingMetricsDashboard:
     def save_metrics(self, dashboard: dict[str, Any]) -> None:
         """Persiste métricas a JSONL."""
         try:
-            with open(self.storage_path, "a") as f:
-                f.write(json.dumps(dashboard) + "\n")
-        except Exception as e:
-            logger.warning(f"Could not save metrics: {e}")
+            def json_safe(value: Any) -> Any:
+                if isinstance(value, float) and not math.isfinite(value):
+                    return None
+                if isinstance(value, dict):
+                    return {str(key): json_safe(item) for key, item in value.items()}
+                if isinstance(value, (list, tuple)):
+                    return [json_safe(item) for item in value]
+                return value
+
+            record = (
+                json.dumps(json_safe(dashboard), allow_nan=False, separators=(",", ":")) + "\n"
+            )
+            if (
+                self.storage_path.exists()
+                and not self.storage_path.is_symlink()
+                and self.storage_path.stat().st_size >= _MAX_METRICS_FILE_BYTES
+            ):
+                write_private_text(self.storage_path, record)
+                return
+            with open_private_text(self.storage_path, "a") as handle:
+                handle.write(record)
+        except (OSError, TypeError, ValueError):
+            logger.warning("Could not save trading metrics securely")
 
 
 # Singleton

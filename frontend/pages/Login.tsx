@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { Shield, Eye, EyeOff } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
@@ -43,15 +43,6 @@ export function Login() {
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8">
-          {/* Demo Credentials Info */}
-          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <p className="text-sm font-semibold text-blue-900 mb-2">📝 Demo Credentials:</p>
-            <div className="text-xs text-blue-800 space-y-1">
-              <p><strong>Email:</strong> admin@trading.com or trader@trading.com</p>
-              <p><strong>Password:</strong> password</p>
-            </div>
-          </div>
-
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">

@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from config.llm_provider_config import AgentProviderConfig, LLMProvidersConfig
@@ -24,10 +25,13 @@ from src.models.outputs import (
     TechnicalAgentOutput,
     VisualAgentOutput,
 )
+from src.security.private_files import open_private_text
 
 logger = logging.getLogger(__name__)
 
-_ROTATION_USAGE_LOG = os.getenv("FENIX_ROTATE_MODELS_LOG", "logs/llm_rotation_usage.jsonl")
+_ROTATION_USAGE_LOG = Path(
+    os.getenv("FENIX_ROTATE_MODELS_LOG", "logs/llm_rotation_usage.jsonl")
+)
 
 
 def _parse_rotation_list(raw: str | None) -> list[str]:
@@ -78,9 +82,9 @@ class RotatingLLM:
                 "agent_type": self._agent_type,
                 "model": model,
             }
-            with open(_ROTATION_USAGE_LOG, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-        except Exception:
+            with open_private_text(_ROTATION_USAGE_LOG, "a") as handle:
+                handle.write(json.dumps(entry, allow_nan=False) + "\n")
+        except (OSError, TypeError, ValueError):
             # Never fail the call on logging.
             pass
 

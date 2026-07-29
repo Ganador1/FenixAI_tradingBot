@@ -192,8 +192,5 @@ if __name__ == "__main__":
     print(f"   Groq: {'✅ CONFIGURADA' if groq_key else '❌ NO CONFIGURADA'}")
     print(f"   HuggingFace: {'✅ CONFIGURADA' if hf_key else '❌ NO CONFIGURADA'}")
 
-    if ollama_key:
-        print(f"   Ollama Key (primeros 20 chars): {ollama_key[:20]}...")
-
     print("\n✅ Listo para iniciar Paper Trading con Ollama Cloud!")
     print("   Ejecuta: python run_fenix.py --mode paper --symbol BTCUSDT")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
-import shlex
+import os
+from pathlib import Path
+import re
+import shutil
 import subprocess
 import time
 from typing import Any
@@ -22,15 +25,12 @@ class OllamaProvider(InferenceProvider):
     """
 
     def __init__(self):
-        # Detect if Ollama binary exists
-        self._cli_path = None
-        try:
-            # `which` works across macOS and Linux
-            proc = subprocess.run(["which", "ollama"], capture_output=True, text=True)
-            if proc.returncode == 0:
-                self._cli_path = proc.stdout.strip()
-        except Exception:
-            self._cli_path = None
+        candidate = shutil.which("ollama")
+        self._cli_path = (
+            str(Path(candidate).resolve())
+            if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK)
+            else None
+        )
 
     def name(self) -> str:
         return "ollama"
@@ -53,14 +53,17 @@ class OllamaProvider(InferenceProvider):
         This method quotes the prompt to avoid shell injections and returns the text output.
         """
         self._ensure_cli()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", model_id):
+            raise ProviderError("Invalid Ollama model identifier")
+        if not isinstance(prompt, str) or len(prompt.encode("utf-8")) > 2_000_000:
+            raise ProviderError("Ollama prompt exceeds the 2 MB safety limit")
         start_ts = time.time()
         try:
-            quoted_prompt = shlex.quote(prompt)
-            cmd = [self._cli_path, "run", model_id, "--json", quoted_prompt]
+            cmd = [self._cli_path, "run", model_id, "--json", prompt]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             if proc.returncode != 0:
                 # Try legacy text mode
-                cmd = [self._cli_path, "run", model_id, quoted_prompt]
+                cmd = [self._cli_path, "run", model_id, prompt]
                 proc2 = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
                 if proc2.returncode != 0:
                     raise ProviderError(f"Ollama CLI run failed: {proc2.stderr or proc.stderr}")

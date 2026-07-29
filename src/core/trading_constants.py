@@ -5,9 +5,10 @@ Replaces hardcoded global constants with proper configuration management
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from src.security.private_files import write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -224,15 +225,15 @@ class TradingConstants:
                 "min_candles_for_bot_start": self.min_candles_for_bot_start,
             }
 
-            tmp_path = f"{config_path}.tmp"
-            with open(tmp_path, "w") as f:
-                json.dump(config, f, indent=2)
-            os.replace(tmp_path, config_path)
+            write_private_text(
+                Path(config_path),
+                json.dumps(config, indent=2, allow_nan=False) + "\n",
+            )
 
             logger.info(f"Saved trading constants to {config_path}")
 
-        except Exception as e:
-            logger.error(f"Error saving configuration: {e}")
+        except (OSError, TypeError, ValueError):
+            logger.error("Error saving trading constants securely")
 
     def get_symbol_config(self, symbol: str) -> SymbolConfig | None:
         """Get configuration for specific symbol"""

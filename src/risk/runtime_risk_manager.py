@@ -9,12 +9,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
+import re
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_last_line,
+    write_private_text,
+)
 
 try:
     from src.risk.circuit_breaker_alerts import CircuitBreakerNotifier, get_circuit_breaker_notifier
@@ -82,7 +90,8 @@ class RuntimeRiskManager:
             "logs/risk_manager.jsonl",
         )
         self.storage_path = Path(resolved_storage_path)
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.storage_path.is_absolute() and self.storage_path.parent != Path("."):
+            ensure_private_directory(self.storage_path.parent)
 
         # Notificador
         if NOTIFIER_AVAILABLE and get_circuit_breaker_notifier:
@@ -92,6 +101,7 @@ class RuntimeRiskManager:
 
         # Estado actual
         self.current_status = RiskFeedbackStatus(mode="NORMAL", risk_bias=1.0)
+        self._state_integrity_error = False
         self._last_evaluation: datetime | None = None
 
         # Historial de trades para métricas
@@ -126,31 +136,70 @@ class RuntimeRiskManager:
         """Carga estado previo del día si existe."""
         if self.storage_path.exists():
             try:
-                with open(self.storage_path) as f:
-                    # Append-only JSONL: only the last line matters.
-                    last_raw = deque(f, maxlen=1)
-                if last_raw:
-                    last_line = json.loads(last_raw[0])
-                    self._peak_balance = last_line.get("peak_balance", 0.0)
-                    self._all_time_peak = max(
-                        last_line.get("all_time_peak", 0.0), self._peak_balance
+                last_line = json.loads(read_private_last_line(self.storage_path))
+                if not isinstance(last_line, dict):
+                    raise ValueError("Risk state must be a JSON object")
+
+                def finite_number(
+                    key: str,
+                    default: float | None = 0.0,
+                    *,
+                    minimum: float | None = None,
+                    maximum: float | None = None,
+                ) -> float | None:
+                    raw = last_line.get(key, default)
+                    if raw is None and default is None:
+                        return None
+                    if isinstance(raw, bool):
+                        raise ValueError(f"{key} must be numeric")
+                    value = float(raw)
+                    if not math.isfinite(value):
+                        raise ValueError(f"{key} must be finite")
+                    if minimum is not None and value < minimum:
+                        raise ValueError(f"{key} is below its minimum")
+                    if maximum is not None and value > maximum:
+                        raise ValueError(f"{key} exceeds its maximum")
+                    return value
+
+                trading_day = last_line.get("trading_day")
+                if trading_day is not None and not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}", str(trading_day)
+                ):
+                    raise ValueError("trading_day has an invalid format")
+                mode = str(last_line.get("current_mode") or "NORMAL").upper()
+                if mode not in {"NORMAL", "CAUTION", "SEVERE", "HOT"}:
+                    raise ValueError("current_mode is invalid")
+
+                self._peak_balance = finite_number("peak_balance", minimum=0.0) or 0.0
+                self._all_time_peak = max(
+                    finite_number("all_time_peak", minimum=0.0) or 0.0,
+                    self._peak_balance,
+                )
+                self._current_balance = (
+                    finite_number("current_balance", self._peak_balance, minimum=0.0) or 0.0
+                )
+                self._last_trading_day = str(trading_day) if trading_day is not None else None
+                last_line["current_mode"] = mode
+                last_line["risk_bias"] = finite_number(
+                    "risk_bias", 1.0, minimum=0.0, maximum=1.0
+                )
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if self._last_trading_day == today:
+                    # Same trading day: restore daily metrics so the daily
+                    # loss limit survives a process restart.
+                    self._daily_pnl = finite_number("daily_pnl", 0.0) or 0.0
+                    self._daily_start_balance = finite_number(
+                        "daily_start_balance", None, minimum=0.0
                     )
-                    self._current_balance = last_line.get("current_balance", self._peak_balance)
-                    self._last_trading_day = last_line.get("trading_day")
-                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    if self._last_trading_day == today:
-                        # Same trading day: restore daily metrics so the daily
-                        # loss limit survives a process restart.
-                        self._daily_pnl = last_line.get("daily_pnl", 0.0)
-                        self._daily_start_balance = last_line.get("daily_start_balance")
-                    else:
-                        self._daily_pnl = 0.0
-                        self._daily_start_balance = None
-                    if self._current_balance <= 0 and self._peak_balance > 0:
-                        self._current_balance = self._peak_balance
-                    self._restore_active_status(last_line)
-            except Exception as e:
-                logger.warning(f"Could not load risk state: {e}")
+                else:
+                    self._daily_pnl = 0.0
+                    self._daily_start_balance = None
+                if self._current_balance <= 0 and self._peak_balance > 0:
+                    self._current_balance = self._peak_balance
+                self._restore_active_status(last_line)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                self._state_integrity_error = True
+                logger.critical("Risk state failed integrity validation; new trades are blocked")
 
     def _restore_active_status(self, last_line: dict) -> None:
         """Restore an active CAUTION/SEVERE cooldown across a process restart.
@@ -165,13 +214,13 @@ class RuntimeRiskManager:
             return
         cooldown_start_raw = last_line.get("cooldown_start")
         if not cooldown_start_raw:
-            return
+            raise ValueError(f"{mode} risk state is missing cooldown_start")
         try:
             cooldown_start = datetime.fromisoformat(str(cooldown_start_raw).replace("Z", "+00:00"))
             if cooldown_start.tzinfo is None:
                 cooldown_start = cooldown_start.replace(tzinfo=timezone.utc)
-        except Exception:
-            return
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{mode} risk state has an invalid cooldown_start") from exc
 
         cooldown_seconds = (
             self.config.caution_cooldown_seconds
@@ -206,6 +255,9 @@ class RuntimeRiskManager:
 
     def _save_state(self) -> None:
         """Persiste estado actual."""
+        if self._state_integrity_error:
+            logger.error("Refusing to overwrite a risk state that failed integrity validation")
+            return
         trading_day = self._last_trading_day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         state = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -222,10 +274,12 @@ class RuntimeRiskManager:
             ),
         }
         try:
-            with open(self.storage_path, "a") as f:
-                f.write(json.dumps(state) + "\n")
-        except Exception as e:
-            logger.warning(f"Could not save risk state: {e}")
+            write_private_text(
+                self.storage_path,
+                json.dumps(state, allow_nan=False, separators=(",", ":")) + "\n",
+            )
+        except (OSError, TypeError, ValueError):
+            logger.error("Could not persist risk state securely")
 
     def update_balance(self, balance: float) -> None:
         """Actualiza balance y recalcula drawdown."""
@@ -596,6 +650,19 @@ class RuntimeRiskManager:
 
         Este es el CORE del circuit breaker.
         """
+        if self._state_integrity_error:
+            try:
+                self.current_status = RiskFeedbackStatus(
+                    mode="SEVERE",
+                    risk_bias=0.0,
+                    block_trading=True,
+                    reason="Risk state integrity validation failed",
+                    cooldown_seconds=0,
+                )
+            except TypeError:
+                self.current_status = RiskFeedbackStatus(mode="SEVERE", risk_bias=0.0)
+            return self.current_status
+
         if not self.config.enabled:
             return RiskFeedbackStatus(mode="NORMAL", risk_bias=1.0, reason="Risk loop disabled")
 

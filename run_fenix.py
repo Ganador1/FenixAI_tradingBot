@@ -16,27 +16,32 @@ import asyncio
 import atexit
 import logging
 import os
+import re
 import signal
+import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+os.umask(0o077)
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Fenix production hosts are POSIX.
     fcntl = None
 
-# Load .env early so JWT_SECRET, API keys, etc. are visible to every module.
-try:
-    from dotenv import load_dotenv
+# Load a private, non-symlinked .env early so credentials are never parsed as code.
+from src.security.dotenv_security import secure_load_dotenv
 
-    load_dotenv()
-except ImportError:
-    pass
+secure_load_dotenv(Path(__file__).resolve().parent / ".env")
 
-# Create logs directory if it doesn't exist
-Path("logs").mkdir(exist_ok=True)
+# Create a private, non-symlinked log directory.
+_LOG_DIR = Path("logs")
+if _LOG_DIR.is_symlink():
+    raise RuntimeError("logs directory cannot be a symbolic link")
+_LOG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+os.chmod(_LOG_DIR, 0o700)
 
 # Configure logging
 logging.basicConfig(
@@ -44,7 +49,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(f"logs/fenix_{datetime.now():%Y%m%d_%H%M%S}.log"),
+        logging.FileHandler(_LOG_DIR / f"fenix_{datetime.now():%Y%m%d_%H%M%S}.log"),
     ],
 )
 logger = logging.getLogger("Fenix")
@@ -55,7 +60,10 @@ class InstanceLock:
 
     def __init__(self, symbol: str):
         lock_dir = Path(os.getenv("FENIX_INSTANCE_LOCK_DIR", "logs/runtime_locks"))
-        lock_dir.mkdir(parents=True, exist_ok=True)
+        if lock_dir.is_symlink():
+            raise RuntimeError("instance lock directory cannot be a symbolic link")
+        lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(lock_dir, 0o700)
         slug = "".join(ch for ch in symbol.lower() if ch.isalnum()) or "unknown"
         self.path = lock_dir / f"fenix_{slug}.lock"
         self._handle = None
@@ -63,7 +71,21 @@ class InstanceLock:
     def acquire(self) -> None:
         if fcntl is None:
             raise RuntimeError("Fenix instance locking requires a POSIX host")
-        handle = self.path.open("a+", encoding="utf-8")
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            fd = os.open(self.path, flags, 0o600)
+        except OSError as exc:
+            raise RuntimeError("instance lock file could not be opened safely") from exc
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise RuntimeError("instance lock must be a regular file")
+        os.fchmod(fd, 0o600)
+        handle = os.fdopen(fd, "a+", encoding="utf-8")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -73,6 +95,9 @@ class InstanceLock:
             raise RuntimeError(
                 f"Another Fenix process already owns {self.path} ({owner})"
             ) from exc
+        except Exception:
+            handle.close()
+            raise
         handle.seek(0)
         handle.truncate()
         handle.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n")
@@ -105,6 +130,127 @@ def _api_port(value: str) -> int:
     if not 1 <= port <= 65535:
         raise argparse.ArgumentTypeError("API port must be between 1 and 65535")
     return port
+
+
+def _symbol(value: str) -> str:
+    normalized = value.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{5,20}", normalized):
+        raise argparse.ArgumentTypeError("symbol must be a 5-20 character Binance pair")
+    return normalized
+
+
+def _timeframe(value: str) -> str:
+    normalized = value.strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,4}(?:m|h|d|w|M)", normalized):
+        raise argparse.ArgumentTypeError("timeframe has an invalid format")
+    return normalized
+
+
+def _bounded_text(value: str, *, label: str, maximum: int = 4096) -> str:
+    if not value or len(value) > maximum or any(char in value for char in "\x00\r\n"):
+        raise argparse.ArgumentTypeError(f"{label} is empty, too long, or contains control data")
+    return value
+
+
+_TEAM_AGENTS = {"technical", "qabba", "visual", "sentiment", "decision", "risk_manager"}
+
+
+def _team_models(value: str) -> str:
+    raw = _bounded_text(value, label="team model assignment")
+    assignments: list[str] = []
+    seen: set[str] = set()
+    for pair in raw.split(","):
+        if pair.count("=") != 1:
+            raise argparse.ArgumentTypeError("each team model entry must use agent=model")
+        raw_agent, model = (part.strip() for part in pair.split("=", 1))
+        agent = raw_agent.lower()
+        if agent not in _TEAM_AGENTS or agent in seen:
+            raise argparse.ArgumentTypeError(f"invalid or duplicate team model agent: {agent!r}")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", model):
+            raise argparse.ArgumentTypeError(f"invalid model identifier for {agent}")
+        seen.add(agent)
+        assignments.append(f"{agent}={model}")
+    return ",".join(assignments)
+
+
+def _veto_reasons(value: str) -> str:
+    raw = _bounded_text(value, label="NanoFenix veto reason list", maximum=2048)
+    reasons = [reason.strip() for reason in raw.split(",")]
+    if not reasons or len(reasons) > 64 or any(
+        not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason) for reason in reasons
+    ):
+        raise argparse.ArgumentTypeError("NanoFenix veto reasons must be comma-separated slugs")
+    return ",".join(dict.fromkeys(reasons))
+
+
+def _nanofenix_child_environment(repo_root: Path) -> dict[str, str]:
+    """Build the least-privilege environment needed by the NanoFenix child."""
+    inherited_names = {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "FENIX_MODEL_SIGNING_KEY",
+        "FENIX_MODEL_SIGNING_KEY_FILE",
+    }
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in inherited_names or name.startswith("NANOFENIX")
+    }
+    env["FENIX_SKIP_DOTENV"] = "1"
+    env["PYTHONPATH"] = str(repo_root)
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
+def _open_private_append(path: Path):
+    """Open a private regular log file without following a final symlink."""
+    flags = (
+        os.O_WRONLY
+        | os.O_APPEND
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(path, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise RuntimeError(f"{path} must be a regular file")
+    os.fchmod(fd, 0o600)
+    return os.fdopen(fd, "a", buffering=1, encoding="utf-8")
+
+
+def _write_private_text(path: Path, value: str) -> None:
+    """Atomically replace a private text file in an already-private directory."""
+    if path.is_symlink():
+        raise RuntimeError(f"{path} cannot be a symbolic link")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        os.write(fd, value.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temporary, path)
+        os.chmod(path, 0o600, follow_symlinks=False)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _start_log_retention_thread() -> None:
@@ -229,6 +375,7 @@ Examples:
   python run_fenix.py --mode live --allow-live          # Live trading
   python run_fenix.py --symbol ETHUSDT                  # Different pair
   python run_fenix.py --timeframe 5m                    # Different timeframe
+  python run_fenix.py --mode paper --mainnet-data       # Public Mainnet data, simulated orders
   python run_fenix.py --no-visual                       # Without visual agent
   python run_fenix.py --with-nanofenix-companion        # Run NanoFenix v3.5 alongside
   python run_fenix.py --team-models technical=qwen2.5:7b,qabba=qwen2.5:7b
@@ -246,23 +393,35 @@ Examples:
         action="store_true",
         help="Required for live mode execution to prevent accidental trades",
     )
-    parser.add_argument(
+    data_venue = parser.add_mutually_exclusive_group()
+    data_venue.add_argument(
         "--testnet",
         action="store_true",
-        help="Use Binance Futures Testnet (for risk-free testing)",
+        help="Use Binance Futures Testnet market data (paper mode default)",
+    )
+    data_venue.add_argument(
+        "--mainnet-data",
+        action="store_true",
+        help=(
+            "Use public Binance Futures Mainnet market data while keeping "
+            "execution simulated; valid only with --mode paper"
+        ),
     )
     parser.add_argument(
         "--symbol",
+        type=_symbol,
         default=cfg_defaults["symbol"],
         help=f"Trading pair (default: {cfg_defaults['symbol']}, from config/fenix.yaml)",
     )
     parser.add_argument(
         "--timeframe",
+        type=_timeframe,
         default=cfg_defaults["timeframe"],
         help=f"Analysis timeframe (default: {cfg_defaults['timeframe']}, from config/fenix.yaml)",
     )
     parser.add_argument(
         "--model",
+        type=lambda value: _bounded_text(value, label="model identifier", maximum=256),
         default=cfg_defaults["model"],
         help=(
             "Ollama model to use when --team-models is not provided "
@@ -271,6 +430,7 @@ Examples:
     )
     parser.add_argument(
         "--team-models",
+        type=_team_models,
         default=None,
         help=(
             "Per-agent model assignment, e.g. "
@@ -284,6 +444,15 @@ Examples:
         type=int,
         default=cfg_defaults["interval"],
         help=f"Interval between analysis in seconds (default: {cfg_defaults['interval']}, from config/fenix.yaml)",
+    )
+    parser.add_argument(
+        "--trade-flow-window-sec",
+        type=float,
+        default=None,
+        help=(
+            "Recent aggressive-trade window supplied to QABBA, in seconds "
+            "(1-60; defaults to FENIX_TRADE_IMBALANCE_WINDOW_SEC or 5)"
+        ),
     )
     parser.add_argument(
         "--no-visual",
@@ -350,6 +519,7 @@ Examples:
     )
     parser.add_argument(
         "--nanofenix-hard-veto-reasons",
+        type=_veto_reasons,
         default="direction_mismatch,no_directional_signal,high_uncertainty,stale_signal,symbol_mismatch,run_id_mismatch,signal_file_missing,signal_file_empty,signal_parse_error,missing_or_invalid_timestamp",
         help=(
             "Comma-separated NanoFenix veto reasons that hard-block a Fenix entry. "
@@ -359,6 +529,15 @@ Examples:
     )
 
     return parser.parse_args()
+
+
+def _market_data_uses_testnet(args: argparse.Namespace) -> bool:
+    """Resolve the data venue without weakening the paper/live boundary."""
+    if args.mainnet_data and (args.mode != "paper" or args.allow_live):
+        raise ValueError(
+            "--mainnet-data requires --mode paper and forbids --allow-live"
+        )
+    return bool(args.testnet or (args.mode == "paper" and not args.mainnet_data))
 
 
 def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subprocess.Popen | None, Path | None]:
@@ -373,8 +552,7 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
         logger.warning("--with-nanofenix-companion set but %s not found; skipping", nano_launcher)
         return None, None
 
-    Path("logs").mkdir(exist_ok=True)
-    signal_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.json"
+    signal_path = _LOG_DIR / f"nanofenixv3_companion_{symbol.lower()}.json"
     if _env_bool("FENIX_NANOFENIX_COMPANION_SINGLETON", True):
         existing_pids = _find_nanofenix_companion_pids(symbol)
         if existing_pids:
@@ -385,7 +563,7 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
             )
             return None, None
 
-    env = os.environ.copy()
+    env = _nanofenix_child_environment(repo_root)
     if observer_only:
         env["NANOFENIXV3_COMPANION_OBSERVER_ONLY"] = "1"
     env["NANOFENIX_SIGNAL_STATE_PATH"] = str(signal_path)
@@ -420,18 +598,22 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
         cmd.extend(["--model", model_path])
 
     # Persist live training so each session continues learning from the last.
-    runtime_path = nano_dir / f"runtime_{symbol.lower()}_live.pkl"
-    runtime_model_path = nano_dir / f"runtime_{symbol.lower()}_live_model.pkl"
+    runtime_path = _LOG_DIR / f"nanofenix_runtime_{symbol.lower()}_live.json"
+    runtime_model_path = _LOG_DIR / f"nanofenix_runtime_{symbol.lower()}_live_model.pkl"
+    env.setdefault(
+        "FENIX_MODEL_SIGNING_KEY_FILE",
+        str(_LOG_DIR / ".security" / "model-signing.key"),
+    )
     env["NANOFENIXV3_RUNTIME_STATE_PATH"] = str(runtime_path)
     env["NANOFENIXV3_RUNTIME_MODEL_PATH"] = str(runtime_model_path)
     cmd.extend(["--runtime-state-path", str(runtime_path)])
 
     logger.info("Launching NanoFenix companion: %s", " ".join(cmd))
-    companion_log_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.log"
+    companion_log_path = _LOG_DIR / f"nanofenixv3_companion_{symbol.lower()}.log"
     companion_log = None
     try:
         os.environ["FENIX_NANOFENIX_EXPECTED_RUN_ID"] = run_id
-        companion_log = companion_log_path.open("a", buffering=1, encoding="utf-8")
+        companion_log = _open_private_append(companion_log_path)
         proc = subprocess.Popen(
             cmd,
             env=env,
@@ -446,10 +628,10 @@ def _start_nanofenix_companion(symbol: str, observer_only: bool) -> tuple[subpro
     finally:
         if companion_log is not None:
             companion_log.close()
-    pid_path = Path("logs") / f"nanofenixv3_companion_{symbol.lower()}.pid"
+    pid_path = _LOG_DIR / f"nanofenixv3_companion_{symbol.lower()}.pid"
     try:
-        pid_path.write_text(str(proc.pid), encoding="utf-8")
-    except OSError as e:
+        _write_private_text(pid_path, str(proc.pid))
+    except (OSError, RuntimeError) as e:
         logger.debug("Could not write NanoFenix companion pidfile %s: %s", pid_path, e)
     logger.info("NanoFenix companion PID=%s, signal=%s", proc.pid, signal_path)
     return proc, signal_path
@@ -539,6 +721,17 @@ async def main():
     if args.mode == "live" and not args.allow_live:
         logger.error("Live mode requested but --allow-live not provided. Aborting for safety.")
         return 1
+    try:
+        use_testnet = _market_data_uses_testnet(args)
+    except ValueError as exc:
+        logger.error("%s. It selects public Mainnet data only; execution stays simulated.", exc)
+        return 1
+    if args.trade_flow_window_sec is not None and not 1 <= args.trade_flow_window_sec <= 60:
+        logger.error("--trade-flow-window-sec must be between 1 and 60")
+        return 1
+    if not 1 <= args.interval <= 86_400:
+        logger.error("--interval must be between 1 and 86400 seconds")
+        return 1
 
     if not 0 < args.max_risk <= 100:
         logger.error("--max-risk must be greater than 0 and no more than 100 percent")
@@ -575,16 +768,8 @@ async def main():
     # factory picks them up without any code change.
     if args.team_models:
         os.environ["FENIX_TEAM_MODELS"] = args.team_models  # informational
-        valid_agents = {"technical", "qabba", "visual", "sentiment", "decision", "risk_manager"}
         for pair in args.team_models.split(","):
-            if "=" not in pair:
-                continue
             agent, model = pair.split("=", 1)
-            agent = agent.strip().lower()
-            model = model.strip()
-            if not agent or not model or agent not in valid_agents:
-                logger.warning(f"  Ignoring unknown --team-models entry: {pair!r}")
-                continue
             env_var = f"FENIX_ROTATE_MODELS_{agent.upper()}"
             os.environ[env_var] = model
             logger.info(f"  Override {agent} -> {model} ({env_var})")
@@ -630,9 +815,12 @@ async def main():
             instance_lock.release()
         return 1
 
-    # Verify Binance
-    use_testnet = args.mode == "paper" or args.testnet
-    logger.info(f"Verifying Binance connection {'(TESTNET)' if use_testnet else '(PRODUCTION)'}...")
+    # Execution mode and market-data venue are separate. Paper mode defaults
+    # to Testnet data; Mainnet public data requires the explicit safe flag.
+    data_venue_name = "TESTNET" if use_testnet else "MAINNET PUBLIC DATA"
+    execution_name = "SIMULATED/PAPER" if args.mode == "paper" or args.dry_run else "LIVE"
+    logger.info("Execution=%s | Market data=%s", execution_name, data_venue_name)
+    logger.info(f"Verifying Binance connection ({data_venue_name})...")
     try:
         from src.trading.binance_client import BinanceClient
 
@@ -642,7 +830,7 @@ async def main():
         if connected:
             price = await client.get_price(args.symbol)
             if price:
-                mode_str = "TESTNET" if use_testnet else "LIVE"
+                mode_str = "TESTNET" if use_testnet else "MAINNET DATA"
                 logger.info(f"✅ Binance {mode_str} OK - {args.symbol}: ${price:,.2f}")
             else:
                 logger.warning(f"Could not get price for {args.symbol}")
@@ -669,16 +857,23 @@ async def main():
     logger.info("Starting trading engine (CLI Mode)...")
 
     try:
+        # CLI experiments use isolated databases and need their schema before
+        # the first evaluator or simulated execution writes to them.
+        from src.config.database import init_db
+
+        await init_db()
+
         from src.trading.engine import TradingEngine
 
         engine = TradingEngine(
             symbol=args.symbol,
             timeframe=args.timeframe,
-            use_testnet=args.mode == "paper" or args.testnet,
+            use_testnet=use_testnet,
             paper_trading=args.mode == "paper" or args.dry_run,
             enable_visual_agent=not args.no_visual,
             enable_sentiment_agent=not args.no_sentiment,
             allow_live_trading=args.allow_live,
+            trade_flow_window_sec=args.trade_flow_window_sec,
         )
 
         # ── Redis Bridge: emit engine events to the API server frontend ──
@@ -859,13 +1054,20 @@ if __name__ == "__main__":
         print("🚀 Starting API server (Frontend Backend)...")
         import uvicorn
         host = args.host or "127.0.0.1"
-        if host == "0.0.0.0":
+        # Wildcard binding remains disabled unless the operator opts in below.
+        if host == "0.0.0.0":  # nosec B104
             allow_expose = os.getenv("ALLOW_EXPOSE_API", "false").lower() == "true"
             if not allow_expose:
                 logger.warning("API host set to 0.0.0.0; to expose the API explicitly set ALLOW_EXPOSE_API=true")
                 logger.info("Binding to 127.0.0.1 instead for safety")
                 host = "127.0.0.1"
-        uvicorn.run("src.api.server:app_socketio", host=host, port=args.port, reload=False)
+        # A wildcard bind is reachable only through the explicit ALLOW_EXPOSE_API gate above.
+        uvicorn.run(  # nosec B104
+            "src.api.server:app_socketio",
+            host=host,
+            port=args.port,
+            reload=False,
+        )
         sys.exit(0)
 
     try:

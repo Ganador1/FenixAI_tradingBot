@@ -8,6 +8,7 @@ from fastapi.routing import APIRoute
 
 
 def test_system_settings_persist_mask_secrets_and_reset(monkeypatch, tmp_path):
+    from src.security.secure_secrets_manager import reset_secrets_manager_for_tests
     from src.api.system_settings import (
         DEFAULT_SYSTEM_SETTINGS,
         load_system_settings,
@@ -18,6 +19,10 @@ def test_system_settings_persist_mask_secrets_and_reset(monkeypatch, tmp_path):
 
     path = tmp_path / "settings.json"
     monkeypatch.setenv("FENIX_SYSTEM_SETTINGS_PATH", str(path))
+    monkeypatch.setenv("FENIX_MASTER_PASSWORD", "test-master-password-at-least-32-chars")
+    monkeypatch.setenv("FENIX_VAULT_PATH", str(tmp_path / "vault.enc"))
+    monkeypatch.setenv("FENIX_VAULT_SALT_PATH", str(tmp_path / "vault.salt"))
+    reset_secrets_manager_for_tests()
 
     updated = update_system_settings(
         "notifications",
@@ -31,6 +36,10 @@ def test_system_settings_persist_mask_secrets_and_reset(monkeypatch, tmp_path):
 
     persisted = load_system_settings()
     assert persisted["notifications"]["email_password"] == "not-returned-to-clients"
+    assert "not-returned-to-clients" not in path.read_text(encoding="utf-8")
+    assert "not-returned-to-clients" not in (tmp_path / "vault.enc").read_text(
+        encoding="ascii"
+    )
 
     public = public_system_settings(persisted)
     assert public["notifications"]["email_password"] == ""
@@ -43,6 +52,7 @@ def test_system_settings_persist_mask_secrets_and_reset(monkeypatch, tmp_path):
     reset = reset_system_settings("notifications")
     assert reset == DEFAULT_SYSTEM_SETTINGS["notifications"]
     assert load_system_settings()["notifications"] == DEFAULT_SYSTEM_SETTINGS["notifications"]
+    reset_secrets_manager_for_tests()
 
 
 def test_system_settings_reject_unknown_keys(monkeypatch, tmp_path):
@@ -53,7 +63,7 @@ def test_system_settings_reject_unknown_keys(monkeypatch, tmp_path):
         update_system_settings("general", {"unexpected": True})
 
 
-def test_settings_routes_use_control_access_guard():
+def test_settings_routes_use_admin_guard():
     import src.api.server as server
 
     guarded_paths = {
@@ -70,7 +80,7 @@ def test_settings_routes_use_control_access_guard():
     assert routes.keys() == guarded_paths
     for route in routes.values():
         dependencies = {dependency.call for dependency in route.dependant.dependencies}
-        assert server.require_control_access in dependencies
+        assert server.get_current_admin_user in dependencies
 
 
 @pytest.mark.asyncio
