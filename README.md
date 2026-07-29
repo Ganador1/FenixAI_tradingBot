@@ -416,7 +416,8 @@ python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
 
 # Install dependencies
-pip install -e ".[dev,vision,monitoring]"
+pip install -e ".[dev,llm,vision,monitoring]"
+python -m playwright install chromium
 
 # Configure environment
 cp .env.example .env
@@ -455,6 +456,9 @@ docker compose --profile monitoring up -d --build
 ```
 
 Docker defaults to Python 3.12, publishes the API only on `127.0.0.1:8001`, and keeps Redis internal to the Compose network.
+For local (non-Docker) runs, the API defaults to `127.0.0.1:8000`; override it
+with `FENIX_API_PORT` or `--port`. For Docker Compose, change the published host
+port with `FENIX_API_HOST_PORT` while the container remains on port 8000.
 
 ---
 

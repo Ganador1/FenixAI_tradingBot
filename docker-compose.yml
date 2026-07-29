@@ -20,8 +20,10 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${FENIX_API_PORT:-8001}:8000"
+      - "127.0.0.1:${FENIX_API_HOST_PORT:-8001}:8000"
     environment:
+      # Keep the container port stable; FENIX_API_HOST_PORT controls publishing.
+      FENIX_API_PORT: "8000"
       # Database
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./data/fenix.db}
       # Secrets from .env file

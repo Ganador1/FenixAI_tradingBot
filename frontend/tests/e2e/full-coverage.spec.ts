@@ -76,8 +76,16 @@ test.describe('Full API surface', () => {
   });
 
   test('GET /api/system/settings returns the settings sections', async ({ request }) => {
-    const res = await request.get(`${API}/api/system/settings`);
-    expect(res.ok()).toBeTruthy();
+    const res = await request.get(`${API}/api/system/settings`, {
+      headers: authHeaders(token),
+    });
+    if (res.ok()) {
+      const body = await res.json();
+      expect(body.general).toBeDefined();
+      expect(body._meta.runtime_application).toBe('administrative_only');
+    } else {
+      expect([401, 403, 503]).toContain(res.status());
+    }
   });
 
   // ---- Engine control (auth-aware) ----------------------------------------

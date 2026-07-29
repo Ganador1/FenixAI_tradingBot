@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { authHeaders } from '@/lib/auth';
 
 interface NanoSignal {
   symbol: string;
@@ -77,11 +78,6 @@ interface MiniRegime {
 }
 
 const SYMBOLS = ['ETHUSDC', 'SOLUSDT', 'BTCUSDT', 'ETHUSDT'];
-
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 function fmtAge(seconds?: number | null): string {
   if (seconds === null || seconds === undefined) return '—';

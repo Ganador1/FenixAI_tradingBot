@@ -1798,26 +1798,24 @@ class TradingEngine:
             except Exception as e:
                 logger.debug("MTF context unavailable: %s", e)
 
-            # Fetch real account balance from Binance for the risk manager.
-            # NOTE: self.binance_client does not exist as an engine attribute
-            # (legacy reference); the reliable source is the executor, which is
-            # the same client _execute_trade uses. Log at INFO when missing so
-            # a sizing-blind risk manager is never silent again (2026-07-04:
-            # every risk prompt showed "Balance: N/A" and the LLM approved $20
-            # minimum-notional trades that were skipped).
-            real_balance = None
-            try:
-                real_balance = await asyncio.to_thread(self.executor.get_balance)
-                if real_balance is not None:
-                    real_balance = float(real_balance)
-                    if real_balance <= 0:
-                        real_balance = None
-            except Exception as e:
-                logger.warning("Balance fetch for risk manager failed: %s", e)
+            # Paper mode must not depend on a signed exchange endpoint. Use the
+            # configured simulated balance (or the risk manager's current
+            # in-memory ledger) and reserve executor balance reads for live mode.
+            cached_balance = self._get_cached_balance()
+            exchange_balance = None
+            if not self.paper_trading:
+                try:
+                    exchange_balance = await asyncio.to_thread(self.executor.get_balance)
+                    if exchange_balance is not None:
+                        exchange_balance = float(exchange_balance)
+                        if exchange_balance <= 0:
+                            exchange_balance = None
+                except Exception as e:
+                    logger.warning("Balance fetch for risk manager failed: %s", e)
 
             graph_balance = (
-                real_balance
-                or self._get_cached_balance()
+                exchange_balance
+                or cached_balance
                 or float(os.getenv("FENIX_BALANCE_FALLBACK_USDT", "0") or 0)
                 or None
             )
@@ -6563,20 +6561,13 @@ class TradingEngine:
         """Return the last known balance without an API call.
 
         Used to pass the balance into the LangGraph state so that the risk
-        manager agent can size positions. The actual balance API call is made
-        later in _execute_trade; here we just supply the best available value.
+        manager agent can size positions. Live exchange reads happen explicitly
+        in the analysis or execution paths; this helper is intentionally I/O-free.
         """
         if self.risk_manager and hasattr(self.risk_manager, "_current_balance"):
             bal = self.risk_manager._current_balance
             if bal and bal > 0:
                 return bal
-        try:
-            bal = self.executor.get_balance()
-            if bal and bal > 0:
-                logger.debug("_get_cached_balance: from executor = %.2f", bal)
-                return bal
-        except Exception as e:
-            logger.debug("_get_cached_balance: executor failed: %s", e)
         logger.warning("_get_cached_balance: returning None (balance unavailable)")
         return None
 
