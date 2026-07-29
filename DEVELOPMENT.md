@@ -68,6 +68,7 @@ the internal Compose network.
 ## Environment Variables (Important)
 
 - `ALLOW_EXPOSE_API` (default: false) — Set to `true` explicitly to bind to `0.0.0.0` (external exposure). Only enable if intentionally exposing.
+- `FENIX_REQUIRE_SHARED_LOGIN_RATE_LIMIT` — Require the Redis-backed login limiter. It defaults to enabled whenever `ALLOW_EXPOSE_API=true`; externally reachable and multi-worker deployments must provide a working `REDIS_URL`.
 - `FENIX_API_ALLOW_LIVE` (default: false) — Separate deployment capability required before the API may start a non-paper engine.
 - `CREATE_DEMO_USERS` (default: false) — Only enable in local dev/testing to auto-create demo accounts.
 - `DEFAULT_ADMIN_PASSWORD` / `DEFAULT_DEMO_PASSWORD` — Required, independently chosen values of at least 16 characters when demo users are explicitly enabled.
@@ -110,4 +111,5 @@ the internal Compose network.
 ## Troubleshooting
 
 - If the server binds publicly when you don't expect it, check `ALLOW_EXPOSE_API`.
+- If authentication returns 503 in an exposed deployment, verify the private Redis connection used by the shared login limiter.
 - If the demo accounts exist unexpectedly, check `CREATE_DEMO_USERS` and `DEFAULT_DEMO_PASSWORD`.

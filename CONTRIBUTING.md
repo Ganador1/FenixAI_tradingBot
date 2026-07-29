@@ -17,7 +17,9 @@ Thank you for contributing to FenixAI! This document provides basic instructions
 ## Security and Secrets
 
 - Never commit `.env` or private keys.
-- Use `detect-secrets` locally and follow `SECURITY.md` remediation steps.
+- Use `detect-secrets` locally.
+- Submit suspected vulnerabilities through the private process in
+  [SECURITY.md](./SECURITY.md), not through a public issue or pull request.
 
 ## Creating a Pull Request
 

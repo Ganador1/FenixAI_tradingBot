@@ -54,16 +54,17 @@ Among these improvements are the removal of the Sentiment agent, as well as refi
 
 ### 🌍 Update (July 2026): the Sentiment agent is back — and macro-aware
 
-The Sentiment agent has been **reactivated and substantially upgraded**. The original removal happened because it added noise without edge: it only read crypto-native feeds (CoinDesk, Cointelegraph, Decrypt) and was structurally blind to the macro/geopolitical events that actually move risk assets. During the July 2026 US–Iran escalation, the market sold off for hours while the agent kept reporting NEUTRAL — it literally could not see the news.
+The Sentiment agent has been reactivated with broader macro context, bounded
+source handling, and deterministic risk controls. Private evaluation prompts,
+event-level outputs, and operator-specific thresholds are not published.
 
 The new Sentiment stack fixes the root cause:
 
 - **Macro/geopolitical news scanner** (`src/tools/macro_news.py`): world-news RSS feeds (BBC, Al Jazeera, CNBC) filtered by high-impact keywords with word-boundary matching and a `severe`/`high` severity classifier. Fresh high-impact headlines are injected into the sentiment prompt ahead of crypto news.
 - **Fear & Greed with day-over-day trend**: the prompt now receives `"20 (yesterday 27, change -7)"` instead of a bare number — a sharp drop flags an active macro shock with causal context.
 - **Macro alert rules in the prompt**: a fresh severe event (military strikes, war escalation, major default) justifies NEGATIVE sentiment on its own; stale or mild items only modulate confidence.
-- **Deterministic macro risk-off window** (engine-level, grounded in event-study literature): while a severe event is fresh (<6h), new longs are blocked and short sizing is capped at 0.6× — the system defends instead of chasing the panic, and the window expires automatically.
-
-Validated offline with a live A/B test against the real LLM: before the upgrade the agent output NEUTRAL (0.85) while ignoring the Iran strikes; after it, NEGATIVE (0.95) citing *"US military strikes on Iran"* as the key event.
+- **Deterministic macro risk controls**: configurable safeguards can reduce or
+  block exposure during fresh high-severity events.
 
 I will keep testing and improving Fenix. I know I don't push commits very often, but I strongly prefer to test everything exhaustively in a local environment before sharing my findings with you all, just to ensure everything is perfect. 
 
@@ -95,10 +96,10 @@ Thank you all so much for your massive support!
 
 | Fix | Details |
 |-----|---------|
-| **Closed-candle indicator buffer** | The engine was feeding every in-progress candle snapshot into the indicator buffer, turning the "15m" series into pseudo-ticks. A live trade was closed on a phantom RSI of 88.9 when the real 15m RSI was ~31. Partial candles now only refresh the market price. |
+| **Closed-candle indicator buffer** | Indicators use closed candles while partial updates refresh market price only. |
 | **REST candle backfill on startup** | The indicator buffer is seeded with the last ~60 closed candles before the WebSocket starts (`FENIX_KLINE_BACKFILL_LIMIT`), so the very first analysis cycle works with a real series instead of warming up on ticks. |
 | **Entry-filter observability** | Every blocked entry now logs its exact reason (MTF veto, directional score, min confidence, cooldown…) instead of only emitting a silent frontend event. |
-| **Limit-order cancel race** | `OrderExecutor` no longer falls back to a market order when a GTX limit cancel cannot be confirmed — removes a double-position risk. |
+| **Order reconciliation** | Ambiguous order outcomes fail closed and are reconciled before another action is attempted. |
 
 ### 🤖 NanoFenix v3.6 — Self-Monitoring Companion
 
@@ -106,7 +107,7 @@ Thank you all so much for your massive support!
 |---------|---------|
 | **Drift-triggered retraining** | Page-Hinkley test on normalized forecast error forces an early retrain when the market shifts, instead of waiting for the fixed retrain cadence. A post-retrain cooldown prevents echo firing. |
 | **Per-regime meta-labeling** | Signal success is tracked per market regime (TRENDING / CHOP / VOLATILE / DEAD) with exponential decay; the meta-probability gate tightens only in regimes where the signal historically fails. |
-| **Safeguards composing** | Observed live: drift fired, candidate retrains validated below threshold, and the old model was kept — drift detection and the retrain quality gate working together. |
+| **Safeguards composing** | Drift detection and retrain-quality gates are evaluated together before replacing an active model. |
 | **Honest telemetry** | `drift_retrain_count`, `regime_meta_prob` and regime sample counts are reported even on HOLD signals, and surfaced in the dashboard. |
 
 ### 👁️ Vision Pipeline Overhaul
@@ -126,10 +127,12 @@ Thank you all so much for your massive support!
 
 ### ☁️ LLM Serving — Ollama Cloud Max
 
-- Benchmarked 7 team mixes across two symbols with the statistical harness: **zero LLM timeouts** across all runs, and 10 concurrent heavy-model requests confirmed.
-- **deepseek-v4-flash** runs the full 6-agent cycle in **21–27s** (vs ~60–90s baselines); deepseek-v4-pro is nearly as fast once warm. `qwen3.5:397b`, `minimax-m3` and `nemotron-3-ultra` were ruled out for short timeframes with data.
-- New recommended team: v4-flash analysts + v4-pro on decision/risk.
-- Sentiment data sources repaired: Reddit via RSS with TTL cache and fair rotation, dead news feeds replaced, gzip feed-parsing fix.
+- Cloud and local providers can be selected through configuration.
+- Provider experiments remain paper-only by default. Private benchmark results,
+  prompts, account data, and operator-specific model assignments are not
+  published.
+- Contributors can use the public benchmark harness with their own isolated
+  configuration.
 
 ### 📊 Dashboard
 
@@ -193,27 +196,12 @@ Thank you all so much for your massive support!
 
 ### New LLM Integrations
 
-| Model | Role | Notes |
-|-------|------|-------|
-| **DeepSeek v4 Flash** (`deepseek-v4-flash:cloud`) | Technical / Decision | Fast, cost-efficient cloud inference |
-| **DeepSeek v4 Pro** (`deepseek-v4-pro:cloud`) | Full pipeline | Highest-accuracy cloud option tested |
-| **cogito-2.1:671b-cloud** | QABBA | Benchmark winner: 75–80% directional accuracy |
-| **nemotron-3-nano:30b-cloud** | Technical + Decision | 66.7% accuracy; most active decision model |
-| **glm-5:cloud** | Risk Manager | 77.8% activity rate, score 0.504 in benchmark |
+FenixAI supports configurable local and cloud inference providers. No model is
+presented as profitable or universally suitable. Evaluate provider and prompt
+changes with isolated paper runs using your own data, costs, and risk limits.
 
-### v2.5 Benchmark Results (32 models tested)
-
-See [docs/benchmarks/BENCHMARK_FINAL_SUMMARY.md](./docs/benchmarks/BENCHMARK_FINAL_SUMMARY.md) for the full winner table.
-
-| Agent | Recommended Model | Accuracy |
-|-------|-------------------|---------|
-| QABBA | cogito-2.1:671b-cloud | 75–80% |
-| Technical | nemotron-3-nano:30b-cloud | 66.7% |
-| Visual | gemini-3-flash-preview:cloud | 55–75% |
-| Decision | nemotron-3-nano:30b-cloud | Score 0.450 |
-| Risk | glm-5:cloud | Score 0.504 |
-
-See [v2.5 release notes](./docs/releases/v2.5.md), [v2.5 new systems guide](./docs/releases/v2.5-new-systems.md), [NanoFenix HTF v2.5 changes](./docs/NANOFENIX_HTF_V2_5_CHANGES.md), and [release checklist](./RELEASE_CHECKLIST.md).
+See [NanoFenix HTF v2.5 changes](./docs/NANOFENIX_HTF_V2_5_CHANGES.md)
+and the [release checklist](./RELEASE_CHECKLIST.md).
 
 ---
 
@@ -469,7 +457,6 @@ port with `FENIX_API_HOST_PORT` while the container remains on port 8000.
 - This release-candidate cleanup keeps the security defaults from v2.0: API binds to `127.0.0.1` by default, demo users are gated, and secrets scanning is part of the developer workflow.
 - Please follow `RELEASE_CHECKLIST.md` before publishing. Dev-focused run instructions are in `DEVELOPMENT.md`.
 - Archived development reports can be found in `docs/archives/reports/`.
-- Demo credentials information moved to: `docs/security/docs/security/DEMO_CREDENTIALS.md`.
 
 ### CLI Options
 
@@ -677,6 +664,10 @@ pytest tests/test_langgraph_orchestrator.py -v
 
 ## 🛡️ Security Considerations
 
+Report vulnerabilities privately by following [SECURITY.md](./SECURITY.md).
+Do not include vulnerability details, credentials, production configuration, or
+exploit steps in public issues or pull requests.
+
 ### Trading Safety
 
 | Feature | Description |
@@ -797,9 +788,9 @@ Ouyang et al., arXiv:2509.25140, 2025
 **[Large Language Model-based Multi-Agent Systems for Trading Firms](https://arxiv.org/abs/2402.03755)**
 (Multi-agent role specialisation in financial LLM systems, 2024)
 
-> Inspires the specialised agent roles in Fenix: Technical, Sentiment, QABBA, Visual, Decision, and
-> Risk Manager mirror a professional trading desk structure. Empirical benchmarks in FenixAI show
-> multi-agent outperforms monolithic by +15.8 pp win rate and +$1.54 per trade.
+> Inspires the specialised agent roles in Fenix: Technical, Sentiment, QABBA,
+> Visual, Decision, and Risk Manager mirror a professional trading desk
+> structure. Private benchmark outcomes are not published as performance claims.
 
 ---
 
@@ -883,16 +874,14 @@ Sangiorgio et al., 2023 — *cited in `minifenix/feature_engine.py`*
 
 **[Ollama Cloud](https://ollama.com/) — Multi-model cloud inference**
 
-> v2.5 routes specialised model-role assignment through Ollama Cloud: Technical and QABBA use
-> Ministral-3 14B, Decision uses Nemotron-3-Nano 30B, Risk Manager uses DeepSeek's Devstral-Small-2
-> 24B. The recommended team is exposed by the `/api/v25/release-info` endpoint and forwarded
-> through `FENIX_TEAM_MODELS`.
+> FenixAI supports configurable model-role assignments. Public examples are
+> illustrative and are not recommendations or copies of private operator
+> configurations.
 
 **[DeepSeek V4](https://www.deepseek.com/) — Frontier reasoning model**
 
-> Tested as an experimental Decision/Risk option via Ollama Cloud. The v2.5 release ships the
-> stable Nemotron + Devstral team by default and keeps DeepSeek V4 as a configurable opt-in until
-> more long-run benchmarks are available.
+> Supported as an optional provider choice. Users should validate model changes
+> in isolated paper runs.
 
 ---
 

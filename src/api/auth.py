@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 import secrets
 import time
@@ -12,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from redis import asyncio as redis_async
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +52,7 @@ elif len(SECRET_KEY.encode("utf-8")) < 32:
     logger.error("JWT_SECRET is too short; use at least 32 random bytes.")
 
 
-# --- Login rate limiting (in-memory, per client IP, failed attempts only) ---
+# --- Login rate limiting (shared when configured; bounded local fallback) ---
 def _bounded_numeric_env(
     name: str,
     default: float,
@@ -75,13 +78,55 @@ LOGIN_RATE_LIMIT_WINDOW_SECONDS = _bounded_numeric_env(
 )
 _failed_login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _MAX_RATE_LIMIT_BUCKETS = 10_000
+_login_rate_redis: redis_async.Redis | None = None
 
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _check_login_rate_limit(request: Request) -> None:
+def _enabled_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _shared_login_rate_limit_required() -> bool:
+    return _enabled_env(
+        "FENIX_REQUIRE_SHARED_LOGIN_RATE_LIMIT",
+        default=_enabled_env("ALLOW_EXPOSE_API"),
+    )
+
+
+def _rate_limit_key(scope: str, value: str) -> str:
+    secret_key = _require_valid_jwt_configuration()
+    digest = hmac.new(
+        secret_key.encode("utf-8"),
+        f"{scope}:{value}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"fenix:auth:failed:{scope}:{digest}"
+
+
+async def _shared_rate_limit_client() -> redis_async.Redis | None:
+    global _login_rate_redis
+    redis_url = os.getenv("REDIS_URL", os.getenv("FENIX_REDIS_URL", "")).strip()
+    if not redis_url:
+        return None
+    if _login_rate_redis is None:
+        _login_rate_redis = redis_async.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            health_check_interval=30,
+        )
+    await _login_rate_redis.ping()
+    return _login_rate_redis
+
+
+def _check_local_login_rate_limit(request: Request) -> None:
     """Raise 429 if the client IP exceeded the allowed FAILED login attempts."""
     client_ip = _client_ip(request)
     now = time.monotonic()
@@ -106,12 +151,71 @@ def _check_login_rate_limit(request: Request) -> None:
             detail="Too many login attempts. Try again later.",
             headers={"Retry-After": str(int(LOGIN_RATE_LIMIT_WINDOW_SECONDS))},
         )
+
+
+async def _check_login_rate_limit(request: Request, email: str) -> None:
+    try:
+        client = await _shared_rate_limit_client()
+        if client is not None:
+            keys = (
+                _rate_limit_key("ip", _client_ip(request)),
+                _rate_limit_key("account", email),
+            )
+            counts = await client.mget(keys)
+            if any(int(value or 0) >= LOGIN_RATE_LIMIT_ATTEMPTS for value in counts):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many login attempts. Try again later.",
+                    headers={"Retry-After": str(int(LOGIN_RATE_LIMIT_WINDOW_SECONDS))},
+                )
+            return
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Shared login rate limiter is unavailable")
+        if _shared_login_rate_limit_required():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service is temporarily unavailable",
+            )
+
+    if _shared_login_rate_limit_required():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable",
+        )
+    _check_local_login_rate_limit(request)
+
+
 def _record_failed_login(request: Request) -> None:
     _failed_login_attempts[_client_ip(request)].append(time.monotonic())
 
 
-def _clear_failed_logins(request: Request) -> None:
-    _failed_login_attempts.pop(_client_ip(request), None)
+async def _record_shared_failed_login(request: Request, email: str) -> None:
+    try:
+        client = await _shared_rate_limit_client()
+        if client is None:
+            if _shared_login_rate_limit_required():
+                raise RuntimeError("shared login rate limiter is required")
+            _record_failed_login(request)
+            return
+        keys = (
+            _rate_limit_key("ip", _client_ip(request)),
+            _rate_limit_key("account", email),
+        )
+        async with client.pipeline(transaction=True) as pipeline:
+            for key in keys:
+                pipeline.incr(key)
+                pipeline.expire(key, int(LOGIN_RATE_LIMIT_WINDOW_SECONDS))
+            await pipeline.execute()
+    except Exception:
+        logger.exception("Failed to record shared login rate limit")
+        if _shared_login_rate_limit_required():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service is temporarily unavailable",
+            )
+        _record_failed_login(request)
 
 
 # --- Schemas ---
@@ -158,7 +262,6 @@ class UserProfile(_StrictInput):
 
 class UserSettings(_StrictInput):
     notifications_enabled: bool = True
-    two_factor_enabled: bool = False
     theme: str = "auto"
 
 
@@ -397,7 +500,6 @@ async def list_users(
             "profile": {"first_name": user.full_name or "", "last_name": ""},
             "settings": {
                 "notifications_enabled": True,
-                "two_factor_enabled": False,
                 "theme": "auto",
             },
         }
@@ -439,24 +541,6 @@ async def reset_password(user_id: str, _: User = Depends(get_current_admin_user)
     )
 
 
-class TwoFactorPayload(_StrictInput):
-    enabled: bool
-
-
-@router.put("/users/{user_id}/two-factor", response_model=dict[str, Any])
-async def toggle_two_factor(
-    user_id: str,
-    payload: TwoFactorPayload,
-    current_user: User = Depends(get_current_active_user),
-):
-    if getattr(current_user, "role", None) != "admin" and str(current_user.id) != user_id:
-        raise HTTPException(status_code=403, detail="Cannot modify another user's settings")
-    raise HTTPException(
-        status_code=501,
-        detail="Two-factor authentication is not implemented and no setting was changed",
-    )
-
-
 # --- Routes ---
 
 
@@ -467,7 +551,7 @@ async def login_for_access_token(
     form_data: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)
 ):
     # Note: Frontend sends JSON body {email, password}, not Form data
-    _check_login_rate_limit(request)
+    await _check_login_rate_limit(request, form_data.email)
     logger.info("Login attempt from ip=%s", _client_ip(request))
     result = await db.execute(select(User).where(User.email == form_data.email))
     user = result.scalar_one_or_none()
@@ -476,7 +560,7 @@ async def login_for_access_token(
 
     if not user or not password_valid:
         logger.warning("Authentication failed from ip=%s", _client_ip(request))
-        _record_failed_login(request)
+        await _record_shared_failed_login(request, form_data.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -484,14 +568,13 @@ async def login_for_access_token(
         )
 
     if not user.is_active:
-        _record_failed_login(request)
+        await _record_shared_failed_login(request, form_data.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    _clear_failed_logins(request)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email, "role": user.role, "userId": user.id},

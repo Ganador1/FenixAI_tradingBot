@@ -27,7 +27,6 @@ interface User {
   };
   settings?: {
     notifications_enabled: boolean;
-    two_factor_enabled: boolean;
     theme: 'light' | 'dark' | 'auto';
   };
 }
@@ -263,27 +262,6 @@ export const UsersPage: React.FC = () => {
     }
   };
 
-  const handleToggleTwoFactor = async (userId: string, enable: boolean) => {
-    try {
-      const response = await fetch(`/api/auth/users/${userId}/two-factor`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
-        body: JSON.stringify({ enabled: enable })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update two-factor authentication');
-      }
-
-      await fetchUsersData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update two-factor authentication');
-    }
-  };
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -485,9 +463,6 @@ export const UsersPage: React.FC = () => {
                     Last Login
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    2FA
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
                   </th>
                 </tr>
@@ -524,13 +499,6 @@ export const UsersPage: React.FC = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {user.last_login ? new Date(user.last_login).toLocaleDateString() : 'Never'}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {user.settings?.two_factor_enabled ? (
-                        <Badge variant="success">Enabled</Badge>
-                      ) : (
-                        <Badge variant="default">Disabled</Badge>
-                      )}
-                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       <div className="flex items-center space-x-2">
                         <Button
@@ -548,14 +516,6 @@ export const UsersPage: React.FC = () => {
                           className="p-1"
                         >
                           <Key className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleToggleTwoFactor(user.id, !user.settings?.two_factor_enabled)}
-                          className="p-1"
-                        >
-                          <Shield className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="outline"

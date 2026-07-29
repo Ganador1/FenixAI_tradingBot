@@ -16,8 +16,4 @@ All archived reports and older documents are stored under `docs/archives/reports
 - `docs/archives/reports/PROYECTO_FINAL.md` - Final project report
 - `docs/archives/reports/INICIO_RAPIDO_v2.md` - Legacy quickstart v2 (Spanish)
 
-## Security docs
-
-- `docs/security/DEMO_CREDENTIALS.md` - Demo credentials for local development
-
 If you want to restore or add more files to archives, please contact the maintainers or open a PR.

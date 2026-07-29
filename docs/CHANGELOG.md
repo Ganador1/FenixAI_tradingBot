@@ -8,10 +8,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- v2.5 release notes in `docs/releases/v2.5.md`.
-- Long-form v2.0-to-v2.5 development history in `docs/releases/v2.5-development-history.md`.
-- Public new-systems guide in `docs/releases/v2.5-new-systems.md`, covering NanoFenix, MiniFenix, Fenix Experimental, new agent paths, model-role teams, and live runners.
-- Script evolution and release-surface guide in `docs/releases/v2.5-script-evolution.md`, covering the v25/v31 live-safe launcher lineage and historical script families.
+- Sanitized public release documentation without private operational reports or
+  operator-specific model assignments.
 - v2.5 release checklist in `RELEASE_CHECKLIST.md`.
 - Script release-surface index in `scripts/README.md`.
 - English NanoFenix HTF v2.5 documentation in `docs/NANOFENIX_HTF_V2_5_CHANGES.md`.
