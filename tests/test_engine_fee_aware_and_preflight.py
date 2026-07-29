@@ -286,7 +286,7 @@ def test_analysis_stagger_is_deterministic_and_separates_live_bots(monkeypatch):
     assert 0.0 <= sol_offset < 10.0
     # Stable across calls (hash-derived, not random).
     assert eth_offset == TradingEngine._analysis_stagger_seconds(eth)
-    # The two live symbols land on different slots (4s vs 0s for max=10).
+    # The two live symbols land on different stable slots.
     assert eth_offset != sol_offset
 
 

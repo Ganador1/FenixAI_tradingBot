@@ -3,6 +3,11 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from src.memory.reasoning_bank import get_reasoning_bank
+from src.security.private_files import (
+    ensure_private_directory,
+    read_private_text,
+    write_private_text,
+)
 from datetime import datetime, timedelta
 import logging
 
@@ -11,7 +16,11 @@ logger = logging.getLogger(__name__)
 class TradeMemory:
     def __init__(self, memory_file: str = "logs/trade_memory.json", max_trades: int = 100):
         self.memory_file = Path(memory_file)
-        self.memory_file.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.memory_file.parent)
+        if self.memory_file.is_symlink():
+            raise ValueError("Trade memory file cannot be a symbolic link")
+        if not 1 <= max_trades <= 10_000:
+            raise ValueError("max_trades must be between 1 and 10000")
         self.max_trades = max_trades
         self.trades: list[dict[str, Any]] = []
         # Parámetros de reward shaping inspirados en ReasoningBank paper
@@ -26,11 +35,15 @@ class TradeMemory:
         """Carga trades anteriores del archivo"""
         if self.memory_file.exists():
             try:
-                with open(self.memory_file) as f:
-                    data = json.load(f)
-                    self.trades = data.get('trades', [])
-                    # Mantener solo los últimos max_trades
-                    self.trades = self.trades[-self.max_trades:]
+                data = json.loads(
+                    read_private_text(self.memory_file, max_bytes=16 * 1024 * 1024)
+                )
+                trades = data.get("trades", []) if isinstance(data, dict) else []
+                if not isinstance(trades, list):
+                    raise ValueError("Trade memory trades must be a list")
+                self.trades = [trade for trade in trades if isinstance(trade, dict)][
+                    -self.max_trades:
+                ]
             except Exception as e:
                 logger.error(f"Error cargando memoria de trades: {e}")
                 self.trades = []
@@ -69,11 +82,13 @@ class TradeMemory:
     def _save_to_file(self):
         """Guarda la memoria en archivo"""
         try:
-            with open(self.memory_file, 'w') as f:
-                json.dump({
+            write_private_text(
+                self.memory_file,
+                json.dumps({
                     'last_updated': datetime.now().isoformat(),
                     'trades': self.trades
-                }, f, indent=2)
+                }, indent=2),
+            )
         except Exception as e:
             logger.error(f"Error guardando memoria: {e}")
 

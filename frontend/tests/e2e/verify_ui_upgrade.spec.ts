@@ -2,10 +2,12 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Verificación visual de las mejoras del dashboard (2026-07-01):
 // panel de salud de NanoFenix, feed de flujo de ejecución, y conexión de datos.
-// Requiere API en :8000 y frontend en :5173 con el usuario devtest sembrado.
+// Requires explicit test credentials; the repository never provides defaults.
 
-const EMAIL = 'devtest@fenix.local';
-const PASSWORD = 'devtest1234';
+const EMAIL = process.env.FENIX_E2E_EMAIL || '';
+const PASSWORD = process.env.FENIX_E2E_PASSWORD || '';
+
+test.skip(!EMAIL || !PASSWORD, 'FENIX_E2E_EMAIL and FENIX_E2E_PASSWORD are required');
 
 type DebugSocket = {
   listeners: (event: string) => Array<(data: unknown) => void>;

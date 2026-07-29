@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from src.inference.providers.base import (
     GenerationParams,
@@ -24,7 +25,34 @@ class OllamaCloudProvider(InferenceProvider):
     """Ollama Cloud provider con soporte para múltiples API keys."""
 
     def __init__(self):
-        self._base_url = os.getenv("OLLAMA_CLOUD_URL", "https://api.ollama.com")
+        configured = os.getenv("OLLAMA_CLOUD_URL", "https://api.ollama.com").strip().rstrip("/")
+        parsed = urlsplit(configured)
+        allow_insecure_loopback = (
+            os.getenv("FENIX_ALLOW_INSECURE_OLLAMA_CLOUD", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme != "https" and not (
+            parsed.scheme == "http"
+            and parsed.hostname in loopback_hosts
+            and allow_insecure_loopback
+        ):
+            raise ProviderError("OLLAMA_CLOUD_URL must use HTTPS")
+        if not parsed.hostname or parsed.username or parsed.password:
+            raise ProviderError("OLLAMA_CLOUD_URL contains an invalid authority")
+        if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+            raise ProviderError("OLLAMA_CLOUD_URL must be a bare origin")
+
+        allowed_hosts = {
+            value.strip().lower()
+            for value in os.getenv("OLLAMA_CLOUD_ALLOWED_HOSTS", "api.ollama.com").split(",")
+            if value.strip()
+        }
+        if parsed.hostname.lower() not in allowed_hosts and parsed.hostname not in loopback_hosts:
+            raise ProviderError("OLLAMA_CLOUD_URL host is not explicitly allowed")
+        self._base_url = urlunsplit(
+            (parsed.scheme, parsed.netloc, "", "", "")
+        )
 
     def name(self) -> str:
         return "ollama_cloud"
@@ -82,8 +110,14 @@ class OllamaCloudProvider(InferenceProvider):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=45) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=45) as response:  # nosec B310
+                raw = response.read(10 * 1024 * 1024 + 1)
+                if len(raw) > 10 * 1024 * 1024:
+                    raise ProviderError("Ollama Cloud response exceeded 10 MiB")
+                result = json.loads(raw.decode("utf-8"))
+                if not isinstance(result, dict):
+                    raise ProviderError("Ollama Cloud returned an invalid response")
+                return result
         except urllib.error.HTTPError as e:
             raise ProviderError(f"Ollama Cloud HTTP error: {e.code} - {e.reason}")
         except urllib.error.URLError as e:

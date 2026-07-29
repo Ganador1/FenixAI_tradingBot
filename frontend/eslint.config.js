@@ -19,6 +19,11 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // Existing data-fetch effects intentionally update component state.
+      // These React 19-oriented advisory rules are not correctness checks for
+      // the current React 18 application and would require an unrelated rewrite.
+      'react-hooks/immutability': 'off',
+      'react-hooks/set-state-in-effect': 'off',
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

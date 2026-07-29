@@ -5,40 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Fenix Trading Bot - Advanced AI-powered trading platform" />
     <meta name="theme-color" content="#1f2937" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Fenix Trading Bot</title>
-    
-    <!-- Error handling for module scripts -->
-    <script type="module">
-      if (import.meta.hot?.on) {
-        import.meta.hot.on('vite:error', (error) => {
-          if (error.err) {
-            const message = error.err.message;
-            const frame = error.err.frame;
-            console.error(`Vite Error: ${message}`);
-            if (frame) {
-              console.error(frame);
-            }
-            
-            // Show user-friendly error message
-            const errorDiv = document.getElementById('app');
-            if (errorDiv) {
-              errorDiv.innerHTML = `
-                <div style="display: flex; align-items: center; justify-content: center; height: 100vh; background: #fee2e2;">
-                  <div style="max-width: 500px; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                    <h1 style="color: #dc2626; margin: 0;">Development Error</h1>
-                    <p style="color: #666; margin: 16px 0;">${message}</p>
-                    <button onclick="window.location.reload()" style="background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
-                      Reload Page
-                    </button>
-                  </div>
-                </div>
-              `;
-            }
-          }
-        })
-      }
-    </script>
   </head>
   <body>
     <div id="root"></div>

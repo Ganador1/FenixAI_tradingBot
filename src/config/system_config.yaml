@@ -5,7 +5,7 @@ system:
   name: "Advanced Trading System"
   version: "1.0.0"
   environment: "development" # development, staging, production
-  debug: true
+  debug: false
   log_level: "INFO"
 
   # Configuración de timeouts
@@ -334,19 +334,22 @@ database:
 # Configuración de API
 api:
   enabled: false
-  host: "0.0.0.0"
+  # Loopback is the secure default. External binding requires the supported
+  # FastAPI ALLOW_EXPOSE_API capability and an explicit reverse-proxy policy.
+  host: "127.0.0.1"
   port: 8000
 
   # Configuración de autenticación
   authentication:
     enabled: true
     method: "jwt" # jwt, api_key, oauth
-    secret_key: "your-secret-key"
+    # Secrets belong in JWT_SECRET; never commit them to YAML.
+    secret_key: ""
 
   # Configuración de CORS
   cors:
     enabled: true
-    origins: ["*"]
+    origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 # Configuración de Notificaciones
 notifications:

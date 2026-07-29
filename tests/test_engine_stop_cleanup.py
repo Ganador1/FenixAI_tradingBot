@@ -53,14 +53,14 @@ class _LivePositionExecutor(_StrictFailExecutor):
         return {"positionAmt": "0", "markPrice": "101.0"}
 
 
-def _build_stop_engine(executor, tracked):
+def _build_stop_engine(executor, tracked, *, paper_trading=False, allow_live_trading=True):
     from src.trading.engine import TradingEngine
 
     engine = TradingEngine.__new__(TradingEngine)
     engine.symbol = "ETHUSDC"
     engine.timeframe = "15m"
-    engine.paper_trading = False
-    engine.allow_live_trading = True
+    engine.paper_trading = paper_trading
+    engine.allow_live_trading = allow_live_trading
     engine._running = True
     engine._stopping = False
     engine._stopped = False
@@ -74,6 +74,40 @@ def _build_stop_engine(executor, tracked):
     engine._synchronize_live_exit = AsyncMock(return_value=True)
     engine._close_position_record = AsyncMock()
     return engine
+
+
+@pytest.mark.asyncio
+async def test_stop_cleanup_never_mutates_exchange_in_paper_mode():
+    executor = _LivePositionExecutor()
+    tracked = SimpleNamespace(side="LONG", quantity=0.5, entry_price=100.0)
+    engine = _build_stop_engine(
+        executor,
+        tracked,
+        paper_trading=True,
+        allow_live_trading=False,
+    )
+
+    await engine.stop()
+
+    assert executor.cancel_calls == 0
+    assert executor.market_orders == []
+    engine.trade_manager.close_position.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_close_rejects_non_live_engine():
+    executor = _LivePositionExecutor()
+    engine = _build_stop_engine(
+        executor,
+        tracked=None,
+        paper_trading=True,
+        allow_live_trading=False,
+    )
+
+    with pytest.raises(PermissionError, match="forbidden"):
+        await engine._execute_cleanup_close("SELL", 0.5)
+
+    assert executor.market_orders == []
 
 
 @pytest.fixture

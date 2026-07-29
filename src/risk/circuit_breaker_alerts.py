@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from src.security.outbound_urls import (
+    validated_discord_webhook,
+    validated_telegram_chat,
+    validated_telegram_token,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +48,18 @@ class CircuitBreakerNotifier:
 
     def __init__(self, config: AlertConfig | None = None):
         self.config = config or self._load_config_from_env()
+        self.config.telegram_bot_token = validated_telegram_token(
+            self.config.telegram_bot_token
+        )
+        self.config.telegram_chat_id = validated_telegram_chat(
+            self.config.telegram_chat_id
+        )
+        self.config.discord_webhook_url = validated_discord_webhook(
+            self.config.discord_webhook_url
+        )
+        self.config.min_alert_level = self.config.min_alert_level.strip().upper()
+        if self.config.min_alert_level not in {"NORMAL", "HOT", "CAUTION", "SEVERE"}:
+            self.config.min_alert_level = "SEVERE"
         self._last_alert_time: datetime | None = None
         self._alert_cooldown_minutes: int = 5  # Evitar spam
 
@@ -106,16 +124,16 @@ class CircuitBreakerNotifier:
             try:
                 await self._send_telegram(status, metrics)
                 success = True
-            except Exception as e:
-                logger.error(f"Failed to send Telegram alert: {e}")
+            except Exception:
+                logger.error("Failed to send Telegram alert")
 
         # Discord
         if self.config.discord_webhook_url:
             try:
                 await self._send_discord(status, metrics)
                 success = True
-            except Exception as e:
-                logger.error(f"Failed to send Discord alert: {e}")
+            except Exception:
+                logger.error("Failed to send Discord alert")
 
         if success:
             self._last_alert_time = datetime.now(timezone.utc)
@@ -158,21 +176,26 @@ _Time: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC_
             "disable_notification": status.mode not in ("SEVERE",),
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as resp:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            async with session.post(url, json=payload, allow_redirects=False) as resp:
                 if resp.status == 200:
                     logger.info("Telegram alert sent successfully")
                 elif 400 <= resp.status < 500 and resp.status != 429:
                     # Token o chat_id inválidos: error permanente, deshabilitar
                     # el canal para no repetir el error en cada alerta.
-                    response_text = await resp.text()
+                    response_text = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error(
                         f"Telegram API error {resp.status} (credenciales inválidas?); "
                         f"deshabilitando alertas Telegram para esta sesión - {response_text}"
                     )
                     self.config.telegram_bot_token = None
                 else:
-                    response_text = await resp.text()
+                    response_text = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error(f"Telegram API error: {resp.status} - {response_text}")
 
     async def _send_discord(self, status: RiskFeedbackStatus, metrics: dict[str, Any]) -> None:
@@ -224,23 +247,29 @@ _Time: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC_
 
         payload = {"embeds": [embed], "content": "@everyone" if status.mode == "SEVERE" else None}
 
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             async with session.post(
                 self.config.discord_webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
+                allow_redirects=False,
             ) as resp:
                 if resp.status == 204:
                     logger.info("Discord alert sent successfully")
                 elif 400 <= resp.status < 500 and resp.status != 429:
-                    response_text = await resp.text()
+                    response_text = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error(
                         f"Discord API error {resp.status} (webhook inválido?); "
                         f"deshabilitando alertas Discord para esta sesión - {response_text}"
                     )
                     self.config.discord_webhook_url = None
                 else:
-                    response_text = await resp.text()
+                    response_text = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error(f"Discord API error: {resp.status} - {response_text}")
 
 

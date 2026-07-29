@@ -11,6 +11,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from src.utils.log_cleanup import PROTECTED_DIRS, clean_old_logs, run_retention_pass
 
 
@@ -93,3 +95,45 @@ def test_clean_old_logs_counts_overlapping_patterns_once(tmp_path):
 
 def test_protected_dirs_cover_audit_and_runtime_state():
     assert {"live_ledger", "runtime_locks", "runtime_instances"} <= PROTECTED_DIRS
+
+
+def test_cleanup_never_follows_symlinked_files_or_directories(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    outside_log = outside / "valuable.log"
+    outside_log.write_text("keep", encoding="utf-8")
+    _age(outside_log, days=45)
+
+    (tmp_path / "linked-file.log").symlink_to(outside_log)
+    (tmp_path / "linked-directory").symlink_to(outside, target_is_directory=True)
+
+    stats = clean_old_logs(
+        log_dir=str(tmp_path),
+        days_old=30,
+        patterns=["*.log", "**/*.log"],
+    )
+
+    assert stats["deleted"] == 0
+    assert outside_log.read_text(encoding="utf-8") == "keep"
+
+
+def test_cleanup_rejects_symlinked_root(tmp_path):
+    real_logs = tmp_path / "real"
+    real_logs.mkdir()
+    linked_logs = tmp_path / "linked"
+    linked_logs.symlink_to(real_logs, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        clean_old_logs(log_dir=str(linked_logs), days_old=30)
+
+
+@pytest.mark.parametrize("days_old", [0, -1, float("inf"), float("nan"), 36_501])
+def test_direct_cleanup_rejects_dangerous_retention_windows(tmp_path, days_old):
+    with pytest.raises(ValueError, match="days_old"):
+        clean_old_logs(log_dir=str(tmp_path), days_old=days_old)
+
+
+@pytest.mark.parametrize("pattern", ["../*.log", "/tmp/*.log", "x\x00.log"])
+def test_cleanup_rejects_patterns_that_can_escape_root(tmp_path, pattern):
+    with pytest.raises(ValueError, match="Unsafe"):
+        clean_old_logs(log_dir=str(tmp_path), days_old=30, patterns=[pattern])

@@ -35,6 +35,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.security.artifact_integrity import load_verified_pickle, write_signed_artifact
+
 from .adaptive_fusion import AdaptiveDualHorizonFusion
 from .feature_engine import FEATURE_NAMES
 
@@ -1794,8 +1796,9 @@ class DualHorizonPredictor:
             logger.warning(f"Pre-trained model not found: {model_path}")
             return
         try:
-            with open(p, "rb") as f:
-                data = pickle.load(f)
+            data = load_verified_pickle(p)
+            if not isinstance(data, dict):
+                raise ValueError("model artifact must contain a mapping")
             if "short_model" in data:
                 self._short._model = data["short_model"]
                 self._short._trained = True
@@ -1848,7 +1851,7 @@ class DualHorizonPredictor:
                 f"buffer={len(self._feat_buf)} bars"
             )
         except Exception as e:
-            logger.warning(f"Failed to load pre-trained model: {e}")
+            logger.warning("Failed to load pre-trained model (%s)", e.__class__.__name__)
 
     def _sync_adaptive_fusion_history(self) -> None:
         if self._adaptive_fusion is None:
@@ -1860,7 +1863,6 @@ class DualHorizonPredictor:
 
     def save_model(self, path: str) -> None:
         """Save both models and buffer for warmup."""
-        temp_path: Path | None = None
         try:
             data = {
                 "short_model": self._short._model,
@@ -1885,21 +1887,8 @@ class DualHorizonPredictor:
                 "drift_detector": self._drift_detector.export_state(),
                 "drift_retrain_count": int(self._drift_retrain_count),
             }
-            target = Path(path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = target.with_name(
-                f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
-            )
-            with temp_path.open("wb") as f:
-                pickle.dump(data, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, target)
+            payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+            write_signed_artifact(path, payload)
             logger.info(f"💾 Model saved to {path}")
         except Exception as e:
-            logger.warning(f"Failed to save model: {e}")
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            logger.warning("Failed to save model (%s)", e.__class__.__name__)

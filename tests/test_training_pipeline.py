@@ -28,7 +28,12 @@ faulthandler.enable()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from nanofenix.feature_engine import NanoFeatureEngine, LOBSnapshot
+feature_engine = pytest.importorskip(
+    "nanofenix.feature_engine",
+    reason="legacy NanoFenix v1 is intentionally excluded from the public release",
+)
+NanoFeatureEngine = feature_engine.NanoFeatureEngine
+LOBSnapshot = feature_engine.LOBSnapshot
 from nanofenix.deep_ofi_engine import DeepOFIEngine
 from nanofenix.neural_predictor import NeuralPredictor, SiameseTKANModel
 

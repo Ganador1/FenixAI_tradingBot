@@ -1,37 +1,41 @@
 import os
+import secrets
 import time
 import uuid
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Literal
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config.database import get_db
 from src.models.user import User
 
-# Load .env so JWT_SECRET works regardless of how the server is started
-# (run_fenix.py, uvicorn, etc.). Without this, users must export it manually.
-try:
-    from dotenv import load_dotenv
+from src.security.dotenv_security import secure_load_dotenv
 
-    load_dotenv()
-except ImportError:
-    pass
+# Uvicorn can import the API without going through run_fenix.py.
+secure_load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # Security Config
 SECRET_KEY = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+JWT_ISSUER = os.getenv("FENIX_JWT_ISSUER", "fenix-api")
+JWT_AUDIENCE = os.getenv("FENIX_JWT_AUDIENCE", "fenix-dashboard")
 
-pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256", "bcrypt"],
+    deprecated=["bcrypt"],
+    pbkdf2_sha256__default_rounds=600_000,
+)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -40,13 +44,37 @@ import logging
 logger = logging.getLogger("FenixAuth")
 
 if not SECRET_KEY:
-    logger.warning("JWT_SECRET no está configurado; los endpoints de auth devolverán error 500.")
+    logger.warning("JWT_SECRET is not configured; authenticated endpoints are disabled.")
+elif len(SECRET_KEY.encode("utf-8")) < 32:
+    logger.error("JWT_SECRET is too short; use at least 32 random bytes.")
 
 
 # --- Login rate limiting (in-memory, per client IP, failed attempts only) ---
-LOGIN_RATE_LIMIT_ATTEMPTS = int(os.getenv("FENIX_LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
-LOGIN_RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("FENIX_LOGIN_RATE_LIMIT_WINDOW", "60"))
+def _bounded_numeric_env(
+    name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        logger.warning("Ignoring invalid numeric setting %s", name)
+        return default
+    if not minimum <= value <= maximum:
+        logger.warning("Ignoring out-of-range numeric setting %s", name)
+        return default
+    return value
+
+
+LOGIN_RATE_LIMIT_ATTEMPTS = int(
+    _bounded_numeric_env("FENIX_LOGIN_RATE_LIMIT_ATTEMPTS", 5, 1, 100)
+)
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = _bounded_numeric_env(
+    "FENIX_LOGIN_RATE_LIMIT_WINDOW", 60, 1, 3600
+)
 _failed_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+_MAX_RATE_LIMIT_BUCKETS = 10_000
 
 
 def _client_ip(request: Request) -> str:
@@ -57,6 +85,17 @@ def _check_login_rate_limit(request: Request) -> None:
     """Raise 429 if the client IP exceeded the allowed FAILED login attempts."""
     client_ip = _client_ip(request)
     now = time.monotonic()
+    if client_ip not in _failed_login_attempts and len(_failed_login_attempts) >= _MAX_RATE_LIMIT_BUCKETS:
+        stale_before = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+        for key, values in list(_failed_login_attempts.items()):
+            if not values or values[-1] < stale_before:
+                _failed_login_attempts.pop(key, None)
+        if len(_failed_login_attempts) >= _MAX_RATE_LIMIT_BUCKETS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Login service is temporarily rate limited",
+                headers={"Retry-After": str(int(LOGIN_RATE_LIMIT_WINDOW_SECONDS))},
+            )
     attempts = _failed_login_attempts[client_ip]
     while attempts and (now - attempts[0]) > LOGIN_RATE_LIMIT_WINDOW_SECONDS:
         attempts.popleft()
@@ -67,8 +106,6 @@ def _check_login_rate_limit(request: Request) -> None:
             detail="Too many login attempts. Try again later.",
             headers={"Retry-After": str(int(LOGIN_RATE_LIMIT_WINDOW_SECONDS))},
         )
-
-
 def _record_failed_login(request: Request) -> None:
     _failed_login_attempts[_client_ip(request)].append(time.monotonic())
 
@@ -78,16 +115,20 @@ def _clear_failed_logins(request: Request) -> None:
 
 
 # --- Schemas ---
-class Token(BaseModel):
+class _StrictInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class Token(_StrictInput):
     access_token: str
     token_type: str
 
 
-class TokenData(BaseModel):
+class TokenData(_StrictInput):
     username: str | None = None
 
 
-class UserResponse(BaseModel):
+class UserResponse(_StrictInput):
     id: str
     email: str
     full_name: str | None = None
@@ -95,34 +136,42 @@ class UserResponse(BaseModel):
     is_active: bool
 
 
-class LoginRequest(BaseModel):
-    email: str
-    password: str
+class LoginRequest(_StrictInput):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if "@" not in normalized or any(char.isspace() for char in normalized):
+            raise ValueError("invalid email address")
+        return normalized
 
 
-class UserProfile(BaseModel):
+class UserProfile(_StrictInput):
     first_name: str | None = None
     last_name: str | None = None
     phone: str | None = None
     department: str | None = None
 
 
-class UserSettings(BaseModel):
+class UserSettings(_StrictInput):
     notifications_enabled: bool = True
     two_factor_enabled: bool = False
     theme: str = "auto"
 
 
-class UserAdminPayload(BaseModel):
-    email: str
-    username: str
-    role: str
-    status: str
+class UserAdminPayload(_StrictInput):
+    email: str = Field(min_length=3, max_length=254)
+    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    role: Literal["admin", "trader", "viewer"]
+    status: Literal["active", "inactive"]
     profile: UserProfile | None = None
     settings: UserSettings | None = None
 
 
-class RoleInfo(BaseModel):
+class RoleInfo(_StrictInput):
     id: str
     name: str
     description: str
@@ -155,37 +204,12 @@ ROLE_STORE: dict[str, RoleInfo] = {
     ),
 }
 
-USER_STORE: dict[str, dict[str, Any]] = {
-    "1": {
-        "id": "1",
-        "email": "admin@fenix.ai",
-        "username": "admin",
-        "role": "admin",
-        "status": "active",
-        "created_at": datetime.utcnow().isoformat(),
-        "last_login": None,
-        "permissions": ROLE_STORE["admin"].permissions,
-        "profile": {"first_name": "Admin", "last_name": "User"},
-        "settings": {"notifications_enabled": True, "two_factor_enabled": False, "theme": "auto"},
-    },
-    "2": {
-        "id": "2",
-        "email": "trader@fenix.ai",
-        "username": "trader",
-        "role": "trader",
-        "status": "active",
-        "created_at": datetime.utcnow().isoformat(),
-        "last_login": None,
-        "permissions": ROLE_STORE["trader"].permissions,
-        "profile": {"first_name": "Trader", "last_name": "User"},
-        "settings": {"notifications_enabled": True, "two_factor_enabled": False, "theme": "auto"},
-    },
-}
-
-
 # --- Helpers ---
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except (TypeError, ValueError):
+        return False
 
 
 def get_password_hash(password: str) -> str:
@@ -212,31 +236,68 @@ def get_password_hash(password: str) -> str:
             raise
 
 
+_DUMMY_PASSWORD_HASH = get_password_hash(secrets.token_urlsafe(32))
+
+
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
-    if not SECRET_KEY:
-        raise HTTPException(status_code=500, detail="JWT_SECRET is not configured")
+    secret_key = _require_valid_jwt_configuration()
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(minutes=15))
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": now,
+            "nbf": now,
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
+            "jti": uuid.uuid4().hex,
+        }
+    )
+    encoded_jwt = jwt.encode(to_encode, secret_key, algorithm=ALGORITHM)
     return encoded_jwt
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+def _require_valid_jwt_configuration() -> str:
     if not SECRET_KEY:
-        raise HTTPException(status_code=500, detail="JWT_SECRET is not configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is not configured",
+        )
+    if len(SECRET_KEY.encode("utf-8")) < 32:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication configuration is invalid",
+        )
+    return SECRET_KEY
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+    secret_key = _require_valid_jwt_configuration()
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if len(token) > 8192:
+        raise credentials_exception
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
+        payload = jwt.decode(
+            token,
+            secret_key,
+            algorithms=[ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "sub"]},
+        )
+        username = payload.get("sub")
+        token_id = payload.get("jti")
+        if (
+            not isinstance(username, str)
+            or not 1 <= len(username) <= 254
+            or not isinstance(token_id, str)
+            or not 1 <= len(token_id) <= 128
+        ):
             raise credentials_exception
         token_data = TokenData(username=username)
     except jwt.InvalidTokenError:
@@ -251,7 +312,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)):
     if not current_user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+        raise HTTPException(status_code=403, detail="Inactive user")
     return current_user
 
 
@@ -272,21 +333,26 @@ async def require_control_access(
 
     - With JWT_SECRET configured: requires a valid bearer token of an active
       user with role 'admin' or 'trader'.
-    - Without JWT_SECRET: only loopback clients are allowed (local dev), and a
-      warning is logged. Remote clients are always rejected.
+    - Without a strong JWT_SECRET: access is denied by default. Local
+      unauthenticated control requires an explicit development-only opt-in.
     """
     client_host = request.client.host if request.client else ""
-    if not SECRET_KEY:
-        if client_host in _LOOPBACK_HOSTS:
+    if not SECRET_KEY or len(SECRET_KEY.encode("utf-8")) < 32:
+        allow_unsafe_loopback = (
+            os.getenv("FENIX_ALLOW_UNAUTHENTICATED_LOOPBACK_CONTROL", "0")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if client_host in _LOOPBACK_HOSTS and allow_unsafe_loopback:
             logger.warning(
-                "Control endpoint %s accessed without auth (JWT_SECRET not set, loopback client). "
-                "Set JWT_SECRET to enforce authentication.",
+                "Development-only unauthenticated loopback control used for %s",
                 request.url.path,
             )
             return
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="JWT_SECRET is not configured; control endpoints are disabled for remote clients",
+            detail="Control endpoints require a strong JWT_SECRET",
         )
 
     auth_header = request.headers.get("Authorization", "")
@@ -313,90 +379,82 @@ async def list_roles(_: User = Depends(get_current_active_user)):
 
 
 @router.get("/users", response_model=list[dict[str, Any]])
-async def list_users(_: User = Depends(get_current_active_user)):
-    return list(USER_STORE.values())
+async def list_users(
+    _: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(User).order_by(User.email))
+    return [
+        {
+            "id": str(user.id),
+            "email": user.email,
+            "username": user.email.split("@", 1)[0],
+            "role": user.role,
+            "status": "active" if user.is_active else "inactive",
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "last_login": None,
+            "permissions": ROLE_STORE.get(str(user.role), ROLE_STORE["viewer"]).permissions,
+            "profile": {"first_name": user.full_name or "", "last_name": ""},
+            "settings": {
+                "notifications_enabled": True,
+                "two_factor_enabled": False,
+                "theme": "auto",
+            },
+        }
+        for user in result.scalars().all()
+    ]
 
 
 @router.post("/users", response_model=dict[str, Any])
 async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_admin_user)):
-    user_id = uuid.uuid4().hex
-    role_permissions = ROLE_STORE.get(payload.role, ROLE_STORE["viewer"]).permissions
-    user_data = {
-        "id": user_id,
-        "email": payload.email,
-        "username": payload.username,
-        "role": payload.role,
-        "status": payload.status,
-        "created_at": datetime.utcnow().isoformat(),
-        "last_login": None,
-        "permissions": role_permissions,
-        "profile": payload.profile.dict() if payload.profile else {},
-        "settings": payload.settings.dict()
-        if payload.settings
-        else {
-            "notifications_enabled": True,
-            "two_factor_enabled": False,
-            "theme": "auto",
-        },
-    }
-    USER_STORE[user_id] = user_data
-    return user_data
+    raise HTTPException(
+        status_code=501,
+        detail="User creation requires a secure invitation and initial-password workflow",
+    )
 
 
 @router.put("/users/{user_id}", response_model=dict[str, Any])
 async def update_user(
     user_id: str, payload: UserAdminPayload, _: User = Depends(get_current_admin_user)
 ):
-    if user_id not in USER_STORE:
-        raise HTTPException(status_code=404, detail="User not found")
-    role_permissions = ROLE_STORE.get(payload.role, ROLE_STORE["viewer"]).permissions
-    user_data = USER_STORE[user_id]
-    user_data.update(
-        {
-            "email": payload.email,
-            "username": payload.username,
-            "role": payload.role,
-            "status": payload.status,
-            "permissions": role_permissions,
-            "profile": payload.profile.dict() if payload.profile else user_data.get("profile", {}),
-            "settings": payload.settings.dict()
-            if payload.settings
-            else user_data.get("settings", {}),
-        }
+    raise HTTPException(
+        status_code=501,
+        detail="User mutation is disabled until database-backed audit logging is implemented",
     )
-    return user_data
 
 
 @router.delete("/users/{user_id}", response_model=dict)
 async def delete_user(user_id: str, _: User = Depends(get_current_admin_user)):
-    if user_id not in USER_STORE:
-        raise HTTPException(status_code=404, detail="User not found")
-    USER_STORE.pop(user_id, None)
-    return {"success": True}
+    raise HTTPException(
+        status_code=501,
+        detail="User deletion is disabled until last-admin and self-delete safeguards are implemented",
+    )
 
 
 @router.post("/users/{user_id}/reset-password", response_model=dict)
 async def reset_password(user_id: str, _: User = Depends(get_current_admin_user)):
-    if user_id not in USER_STORE:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"success": True, "message": "Password reset initiated"}
+    raise HTTPException(
+        status_code=501,
+        detail="Password reset is unavailable until a one-time, expiring reset flow is implemented",
+    )
 
 
-class TwoFactorPayload(BaseModel):
+class TwoFactorPayload(_StrictInput):
     enabled: bool
 
 
 @router.put("/users/{user_id}/two-factor", response_model=dict[str, Any])
 async def toggle_two_factor(
-    user_id: str, payload: TwoFactorPayload, _: User = Depends(get_current_active_user)
+    user_id: str,
+    payload: TwoFactorPayload,
+    current_user: User = Depends(get_current_active_user),
 ):
-    if user_id not in USER_STORE:
-        raise HTTPException(status_code=404, detail="User not found")
-    user_data = USER_STORE[user_id]
-    settings = user_data.get("settings", {})
-    settings["two_factor_enabled"] = bool(payload.enabled)
-    user_data["settings"] = settings
-    return user_data
+    if getattr(current_user, "role", None) != "admin" and str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="Cannot modify another user's settings")
+    raise HTTPException(
+        status_code=501,
+        detail="Two-factor authentication is not implemented and no setting was changed",
+    )
 
 
 # --- Routes ---
@@ -410,15 +468,14 @@ async def login_for_access_token(
 ):
     # Note: Frontend sends JSON body {email, password}, not Form data
     _check_login_rate_limit(request)
-    logger.info(
-        f"Login attempt for email={form_data.email} from={request.client.host if request.client else 'unknown'}"
-    )
+    logger.info("Login attempt from ip=%s", _client_ip(request))
     result = await db.execute(select(User).where(User.email == form_data.email))
     user = result.scalar_one_or_none()
-    logger.debug(f"User lookup: {user.email if user else 'not found'}")
+    password_hash = user.hashed_password if user is not None else _DUMMY_PASSWORD_HASH
+    password_valid = verify_password(form_data.password, password_hash)
 
-    if not user:
-        logger.warning(f"Authentication failed: user not found for email={form_data.email}")
+    if not user or not password_valid:
+        logger.warning("Authentication failed from ip=%s", _client_ip(request))
         _record_failed_login(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -426,10 +483,7 @@ async def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not verify_password(form_data.password, user.hashed_password):
-        logger.warning(
-            f"Authentication failed: password verification failed for email={form_data.email}"
-        )
+    if not user.is_active:
         _record_failed_login(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -476,29 +530,3 @@ async def read_users_me(current_user: User = Depends(get_current_active_user)):
             else ["read:trading"],
         },
     }
-
-
-# Standard OAuth2 route (good for swagger UI)
-@router.post("/token", response_model=Token)
-async def login_swagger(
-    request: Request,
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db),
-):
-    # This endpoint is kept for Swagger UI compatibility
-    _check_login_rate_limit(request)
-    result = await db.execute(select(User).where(User.email == form_data.username))
-    user = result.scalar_one_or_none()
-
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        _record_failed_login(request)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    _clear_failed_logins(request)
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
-    return {"access_token": access_token, "token_type": "bearer"}

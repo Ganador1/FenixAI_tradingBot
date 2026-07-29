@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import { getAuthToken } from './auth';
 
 /**
  * Socket.io compartido para toda la app.
@@ -16,6 +17,7 @@ let refCount = 0;
 const SOCKET_OPTS = {
   path: '/socket.io',
   transports: ['websocket', 'polling'],
+  autoConnect: false,
 };
 
 /**
@@ -25,7 +27,11 @@ const SOCKET_OPTS = {
  */
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(window.location.origin, SOCKET_OPTS);
+    socket = io(window.location.origin, {
+      ...SOCKET_OPTS,
+      auth: (callback) => callback({ token: getAuthToken() }),
+    });
+    socket.connect();
 
     // En desarrollo, exponer el socket ayuda a depurar eventos en tiempo real
     // desde la consola del navegador (window.__fenixSocket.on('trade:signal', …)).

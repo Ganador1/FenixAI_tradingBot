@@ -30,6 +30,7 @@ from src.core.orchestrator.validation import (
     validate_agent_response,
 )
 from src.prompts.agent_prompts import format_prompt
+from src.security.private_files import ensure_private_directory, open_private_text
 from src.system.tracing import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -460,12 +461,13 @@ def create_visual_agent_node(
                     debug_path = os.getenv(
                         "FENIX_DEBUG_VISUAL_RAW_PATH", "logs/debug_visual_raw.log"
                     )
-                    Path(debug_path).parent.mkdir(parents=True, exist_ok=True)
-                    with open(debug_path, "a", encoding="utf-8") as f:
-                        f.write(
+                    debug_file = Path(debug_path)
+                    ensure_private_directory(debug_file.parent)
+                    with open_private_text(debug_file, "a") as handle:
+                        handle.write(
                             f"\n--- {datetime.now()} ---\n{json.dumps(report, indent=2)}\n----------------\n"
                         )
-                except Exception:
+                except (OSError, TypeError, ValueError):
                     pass
 
             logger.info(f"🖼️ Visual Agent: Parsed JSON with action={report.get('action')}")

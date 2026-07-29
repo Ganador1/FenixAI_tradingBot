@@ -9,6 +9,7 @@ Requirements:
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from typing import Any
 
@@ -236,14 +237,27 @@ class LocalTimescaleDB:
         port=5432,
         database="crypto_sentiment",
         user="postgres",
-        password="yourpassword",
+        password: str | None = None,
     ):
-        self.conn_str = f"host={host} port={port} dbname={database} user={user} password={password}"
+        resolved_password = password or os.getenv("FENIX_SENTIMENT_DB_PASSWORD")
+        if not resolved_password:
+            raise ValueError(
+                "TimescaleDB requires password or FENIX_SENTIMENT_DB_PASSWORD"
+            )
+        self.connection_kwargs = {
+            "host": host,
+            "port": int(port),
+            "dbname": database,
+            "user": user,
+            "password": resolved_password,
+            "connect_timeout": 10,
+            "sslmode": os.getenv("FENIX_SENTIMENT_DB_SSLMODE", "require"),
+        }
         self.init_tables()
 
     def init_tables(self):
         """Create hypertables if they don't exist."""
-        with psycopg2.connect(self.conn_str) as conn:
+        with psycopg2.connect(**self.connection_kwargs) as conn:
             with conn.cursor() as cur:
                 # Sentiment data table
                 cur.execute("""
@@ -283,7 +297,7 @@ class LocalTimescaleDB:
 
     def insert_sentiment(self, data: dict):
         """Insert sentiment analysis result."""
-        with psycopg2.connect(self.conn_str) as conn:
+        with psycopg2.connect(**self.connection_kwargs) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -304,7 +318,7 @@ class LocalTimescaleDB:
 
     def insert_market_data(self, data: dict):
         """Insert market/on-chain data."""
-        with psycopg2.connect(self.conn_str) as conn:
+        with psycopg2.connect(**self.connection_kwargs) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """

@@ -1,34 +1,10 @@
 /**
- * local server entry file, for local development
+ * SECURITY: the historical Express API is intentionally disabled.
+ *
+ * FenixAI's supported server is src.api.server:app_socketio. Keeping this
+ * entrypoint non-runnable prevents old demo authentication and mock trading
+ * routes from being exposed accidentally.
  */
-import app from './app.js';
-
-/**
- * start server with port
- */
-const PORT = process.env.PORT || 3001;
-
-const server = app.listen(PORT, () => {
-  console.log(`Server ready on port ${PORT}`);
-});
-
-/**
- * close server
- */
-process.on('SIGTERM', () => {
-  console.log('SIGTERM signal received');
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  console.log('SIGINT signal received');
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
-});
-
-export default app;
+throw new Error(
+  'The legacy Express API has been retired. Start src.api.server:app_socketio instead.',
+);

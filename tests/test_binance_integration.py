@@ -17,13 +17,19 @@ import faulthandler
 import traceback
 
 import numpy as np
+import pytest
 import websockets
 
 faulthandler.enable()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from nanofenix.feature_engine import NanoFeatureEngine, LOBSnapshot
+feature_engine = pytest.importorskip(
+    "nanofenix.feature_engine",
+    reason="legacy NanoFenix v1 is intentionally excluded from the public release",
+)
+NanoFeatureEngine = feature_engine.NanoFeatureEngine
+LOBSnapshot = feature_engine.LOBSnapshot
 from nanofenix.return_predictor import ReturnPredictor
 from nanofenix.neural_predictor import NeuralPredictor
 

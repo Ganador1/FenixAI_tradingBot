@@ -1,10 +1,4 @@
 import React, { useEffect } from "react";
-import {
-  BrowserRouter as Router,
-  Routes,
-  Route,
-  Navigate,
-} from "react-router-dom";
 import { Toaster } from "sonner";
 
 // Components
@@ -23,14 +17,28 @@ import { ReasoningBank } from "@/pages/ReasoningBank";
 import { SystemMonitor } from "@/pages/SystemMonitor";
 import { UsersPage } from "@/pages/Users";
 import { SettingsPage } from "@/pages/Settings";
+import { Navigate, RouterProvider, useLocation } from "@/lib/router";
 
 // Store
 import { useAuthStore } from "@/stores/authStore";
 import { useSystemStore } from "@/stores/systemStore";
 import { useAgentStore } from "@/stores/agentStore";
 
-function App(): JSX.Element {
+const PROTECTED_PAGES: Record<string, JSX.Element> = {
+  '/dashboard': <Dashboard />,
+  '/market': <MarketData />,
+  '/trading': <Trading />,
+  '/agents': <Agents />,
+  '/companions': <Companions />,
+  '/reasoning': <ReasoningBank />,
+  '/system': <SystemMonitor />,
+  '/users': <UsersPage />,
+  '/settings': <SettingsPage />,
+};
+
+function AppRoutes(): JSX.Element {
   const { user } = useAuthStore();
+  const { pathname } = useLocation();
   const { initializeSocket: initializeSystemSocket, disconnectSocket: disconnectSystemSocket } = useSystemStore();
   const { initializeSocket: initializeAgentSocket, disconnectSocket: disconnectAgentSocket } = useAgentStore();
 
@@ -48,40 +56,26 @@ function App(): JSX.Element {
     };
   }, [user, initializeSystemSocket, initializeAgentSocket, disconnectSystemSocket, disconnectAgentSocket]);
 
+  if (pathname === '/login') {
+    return user ? <Navigate to="/dashboard" replace /> : <ModernLoginPage />;
+  }
+  const page = PROTECTED_PAGES[pathname];
+  if (!page) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return (
+    <ProtectedRoute>
+      <Layout>{page}</Layout>
+    </ProtectedRoute>
+  );
+}
+
+function App(): JSX.Element {
   return (
     <ErrorBoundary>
-      <Router>
-        <Routes>
-          {/* Public Routes */}
-          <Route path="/login" element={<ModernLoginPage />} />
-
-          {/* Protected Routes */}
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Layout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<Navigate to="/dashboard" replace />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="market" element={<MarketData />} />
-            <Route path="trading" element={<Trading />} />
-            <Route path="agents" element={<Agents />} />
-            <Route path="companions" element={<Companions />} />
-            <Route path="reasoning" element={<ReasoningBank />} />
-            <Route path="system" element={<SystemMonitor />} />
-            <Route path="users" element={<UsersPage />} />
-            <Route path="settings" element={<SettingsPage />} />
-          </Route>
-
-          {/* Catch-all Route */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
-        </Routes>
-      </Router>
-
-      {/* Global Toast Notifications */}
+      <RouterProvider>
+        <AppRoutes />
+      </RouterProvider>
       <Toaster position="top-right" richColors />
     </ErrorBoundary>
   );

@@ -3,20 +3,25 @@
 # Starts NanoFenix v3.5 as companion and Fenix live 15m with deterministic 30m bias veto.
 
 set -euo pipefail
+umask 077
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
+PYTHON="$PROJECT_ROOT/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Python executable not found: $PYTHON" >&2
+  exit 2
+fi
+
+if [[ -f ".env" && "${FENIX_SECURE_DOTENV_LOADED:-0}" != "1" ]]; then
+  exec "$PYTHON" scripts/secure_dotenv_exec.py --env "$PROJECT_ROOT/.env" -- \
+    bash "$0" "$@"
+fi
 
 if ! command -v screen >/dev/null 2>&1; then
   echo "Missing required command: screen" >&2
   exit 1
-fi
-
-if [[ -f ".env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source ".env"
-  set +a
 fi
 
 : "${OLLAMA_CLOUD_API_KEY_1:?Missing OLLAMA_CLOUD_API_KEY_1 in .env}"
@@ -25,14 +30,24 @@ fi
 
 SYMBOL="${1:-SOLUSDT}"
 RUN_MINUTES="${2:-360}"
+if [[ ! "$SYMBOL" =~ ^[A-Z0-9]{5,20}$ ]]; then
+  echo "Symbol must be an uppercase Binance symbol" >&2
+  exit 2
+fi
+if [[ ! "$RUN_MINUTES" =~ ^[1-9][0-9]{0,4}$ || "$RUN_MINUTES" -gt 10080 ]]; then
+  echo "Run duration must be between 1 and 10080 minutes" >&2
+  exit 2
+fi
 STAMP="$(date +%Y%m%d_%H%M%S)"
 LAUNCH_EPOCH="$(date -u +%s)"
 SYMBOL_LC="$(printf '%s' "$SYMBOL" | tr '[:upper:]' '[:lower:]')"
-PYTHON="$PROJECT_ROOT/.venv/bin/python"
-
 COMPANION_SIGNAL_PATH="logs/nanofenixv3_companion_${SYMBOL_LC}_live_mtf_safe.json"
-COMPANION_RUNTIME_PATH="nanofenixv3/runtime_${SYMBOL_LC}_live_mtf_safe.pkl"
+COMPANION_RUNTIME_PATH="nanofenixv3/runtime_${SYMBOL_LC}_live_mtf_safe.json"
 TEAM_MODELS="${FENIX_TEAM_MODELS:-technical=gemma4:31b-cloud,qabba=ministral-3:14b-cloud}"
+if [[ "${#TEAM_MODELS}" -gt 4096 || "$TEAM_MODELS" == *$'\n'* || "$TEAM_MODELS" == *$'\r'* ]]; then
+  echo "FENIX_TEAM_MODELS is too long or contains control characters" >&2
+  exit 2
+fi
 
 export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"

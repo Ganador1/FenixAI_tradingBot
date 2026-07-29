@@ -26,6 +26,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from src.security.outbound_urls import (
+    validated_discord_webhook,
+    validated_telegram_chat,
+    validated_telegram_token,
+)
+
 logger = logging.getLogger(__name__)
 
 # Event severity levels for routing and filtering.
@@ -66,6 +72,22 @@ class SafetyAlertNotifier:
 
     def __init__(self, config: SafetyAlertConfig | None = None) -> None:
         self.config = config or self._load_config_from_env()
+        self.config.telegram_bot_token = validated_telegram_token(
+            self.config.telegram_bot_token
+        )
+        self.config.telegram_chat_id = validated_telegram_chat(
+            self.config.telegram_chat_id
+        )
+        self.config.discord_webhook_url = validated_discord_webhook(
+            self.config.discord_webhook_url
+        )
+        self.config.min_severity = self.config.min_severity.strip().upper()
+        if self.config.min_severity not in _SEVERITY_ORDER:
+            self.config.min_severity = "WARNING"
+        self.config.cooldown_seconds = max(30, min(86_400, self.config.cooldown_seconds))
+        self.config.max_alerts_per_minute = max(
+            1, min(60, self.config.max_alerts_per_minute)
+        )
         self._cooldowns: dict[str, _CooldownEntry] = {}
         self._recent_alerts: list[float] = []
         self._lock = asyncio.Lock()
@@ -81,6 +103,14 @@ class SafetyAlertNotifier:
 
     @classmethod
     def _load_config_from_env(cls) -> SafetyAlertConfig:
+        try:
+            cooldown = int(os.getenv("FENIX_SAFETY_ALERT_COOLDOWN_SEC", "300"))
+        except ValueError:
+            cooldown = 300
+        try:
+            rate_limit = int(os.getenv("FENIX_SAFETY_ALERT_MAX_PER_MIN", "10"))
+        except ValueError:
+            rate_limit = 10
         return SafetyAlertConfig(
             telegram_bot_token=cls._clean_credential(
                 os.getenv("TELEGRAM_BOT_TOKEN"), "TELEGRAM_BOT_TOKEN"
@@ -92,8 +122,8 @@ class SafetyAlertNotifier:
                 os.getenv("DISCORD_WEBHOOK_URL"), "DISCORD_WEBHOOK_URL"
             ),
             min_severity=os.getenv("FENIX_SAFETY_ALERT_MIN_SEVERITY", "WARNING"),
-            cooldown_seconds=max(30, int(os.getenv("FENIX_SAFETY_ALERT_COOLDOWN_SEC", "300"))),
-            max_alerts_per_minute=max(1, int(os.getenv("FENIX_SAFETY_ALERT_MAX_PER_MIN", "10"))),
+            cooldown_seconds=cooldown,
+            max_alerts_per_minute=rate_limit,
         )
 
     @property
@@ -142,7 +172,19 @@ class SafetyAlertNotifier:
             entry.count += 1
 
         severity = self._severity_level(event_type)
-        context_str = "\n".join(f"  • {k}: {v}" for k, v in (context or {}).items()) or "  (none)"
+        safe_context: list[str] = []
+        for key, value in list((context or {}).items())[:20]:
+            key_text = str(key)[:80]
+            if any(
+                marker in key_text.lower()
+                for marker in ("key", "secret", "password", "token", "credential", "auth")
+            ):
+                value_text = "[REDACTED]"
+            else:
+                value_text = str(value).replace("\x00", "")[:500]
+            safe_context.append(f"  • {key_text}: {value_text}")
+        context_str = "\n".join(safe_context) or "  (none)"
+        message = str(message).replace("\x00", "")[:2_000]
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         success = False
@@ -151,15 +193,15 @@ class SafetyAlertNotifier:
             try:
                 await self._send_telegram(event_type, severity, message, context_str, timestamp)
                 success = True
-            except Exception as exc:
-                logger.error("Failed to send Telegram safety alert: %s", exc)
+            except Exception:
+                logger.error("Failed to send Telegram safety alert")
 
         if self.config.discord_webhook_url:
             try:
                 await self._send_discord(event_type, severity, message, context_str, timestamp)
                 success = True
-            except Exception as exc:
-                logger.error("Failed to send Discord safety alert: %s", exc)
+            except Exception:
+                logger.error("Failed to send Discord safety alert")
 
         return success
 
@@ -189,12 +231,15 @@ class SafetyAlertNotifier:
             "parse_mode": "Markdown",
             "disable_notification": severity != "CRITICAL",
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as resp:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            async with session.post(url, json=payload, allow_redirects=False) as resp:
                 if resp.status == 200:
                     logger.info("Telegram safety alert sent: %s", event_type)
                 elif 400 <= resp.status < 500 and resp.status != 429:
-                    body = await resp.text()
+                    body = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error(
                         "Telegram API error %d (invalid credentials?); "
                         "disabling Telegram for this session: %s",
@@ -202,7 +247,9 @@ class SafetyAlertNotifier:
                     )
                     self.config.telegram_bot_token = None
                 else:
-                    body = await resp.text()
+                    body = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error("Telegram API error: %d - %s", resp.status, body)
 
     async def _send_discord(
@@ -231,16 +278,20 @@ class SafetyAlertNotifier:
             "embeds": [embed],
             "content": "@everyone" if severity == "CRITICAL" else None,
         }
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             async with session.post(
                 self.config.discord_webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
+                allow_redirects=False,
             ) as resp:
                 if resp.status in (200, 204):
                     logger.info("Discord safety alert sent: %s", event_type)
                 elif 400 <= resp.status < 500 and resp.status != 429:
-                    body = await resp.text()
+                    body = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error(
                         "Discord webhook error %d (invalid URL?); "
                         "disabling Discord for this session: %s",
@@ -248,7 +299,9 @@ class SafetyAlertNotifier:
                     )
                     self.config.discord_webhook_url = None
                 else:
-                    body = await resp.text()
+                    body = (await resp.content.read(4096)).decode(
+                        "utf-8", errors="replace"
+                    )
                     logger.error("Discord webhook error: %d - %s", resp.status, body)
 
 

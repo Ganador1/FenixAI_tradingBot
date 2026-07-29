@@ -234,6 +234,7 @@ class TestEndToEndAPIFlow:
     def api_client(self):
         """Cliente de prueba para API E2E."""
         import asyncio
+        from types import SimpleNamespace
 
         from fastapi.testclient import TestClient
 
@@ -250,12 +251,36 @@ class TestEndToEndAPIFlow:
 
         with patch('src.api.server.TradingEngine'):
             with patch('src.api.server.engine', None):
-                # Sin JWT_SECRET los endpoints de control permiten clientes
-                # loopback (modo dev). Otros tests de la suite pueden dejar
-                # JWT_SECRET configurado, así que lo anulamos explícitamente.
-                with patch('src.api.auth.SECRET_KEY', None):
-                    from src.api.server import app
-                    yield TestClient(app)
+                from src.api import server
+
+                async def authenticated_user():
+                    return SimpleNamespace(
+                        id="e2e-user",
+                        username="e2e",
+                        role="admin",
+                        is_active=True,
+                    )
+
+                async def authorized_control():
+                    return None
+
+                server.app.dependency_overrides[
+                    server.get_current_active_user
+                ] = authenticated_user
+                server.app.dependency_overrides[
+                    server.require_control_access
+                ] = authorized_control
+                try:
+                    yield TestClient(server.app)
+                finally:
+                    server.app.dependency_overrides.pop(
+                        server.get_current_active_user,
+                        None,
+                    )
+                    server.app.dependency_overrides.pop(
+                        server.require_control_access,
+                        None,
+                    )
 
     def test_complete_api_flow(self, api_client):
         """Test del flujo completo de API."""

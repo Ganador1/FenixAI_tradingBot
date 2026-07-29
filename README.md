@@ -418,6 +418,7 @@ source .venv/bin/activate  # Linux/Mac
 # Install dependencies
 pip install -e ".[dev,llm,vision,monitoring]"
 python -m playwright install chromium
+plotly_get_chrome -y
 
 # Configure environment
 cp .env.example .env
@@ -446,7 +447,8 @@ If you want to enable demo accounts for local development, set `CREATE_DEMO_USER
 
 ```bash
 cp .env.example .env
-# Set JWT_SECRET; replace Redis/Grafana fallback passwords before non-local use.
+chmod 600 .env
+# Set independent 32+ character JWT, metrics, Redis, and Grafana secrets.
 
 # API + Redis
 docker compose up -d --build

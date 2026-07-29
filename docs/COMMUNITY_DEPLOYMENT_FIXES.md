@@ -12,10 +12,11 @@ are part of the `vision` extra:
 ```bash
 pip install -e ".[dev,llm,vision,monitoring]"
 python -m playwright install chromium
+plotly_get_chrome -y
 ```
 
-The second command installs the browser binary used by Playwright. Kaleido 1.x
-also requires Chrome or Chromium to be available on the host.
+The second command installs the browser binary used by Playwright. The third
+installs the Chrome binary that Kaleido 1.x uses for Plotly image export.
 
 ## API Ports
 

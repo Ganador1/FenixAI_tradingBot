@@ -46,8 +46,12 @@ req = urllib.request.Request(
 )
 
 try:
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    # This diagnostic is pinned to the loopback Ollama URL above.
+    with urllib.request.urlopen(req, timeout=180) as resp:  # nosec B310
+        raw = resp.read(4_000_001)
+        if len(raw) > 4_000_000:
+            raise ValueError("Ollama response exceeds 4 MB")
+        data = json.loads(raw.decode("utf-8"))
         content = data.get("message", {}).get("content", "")
         print(f"\nResponse ({len(content)} chars):")
         print(content[:1000])

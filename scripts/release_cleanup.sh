@@ -97,7 +97,7 @@ if command -v rg >/dev/null 2>&1; then
     --glob '!cache/**' \
     --glob '!backups/**' \
     --glob '!*.egg-info/**' \
-    'BINANCE_API_KEY|BINANCE_API_SECRET|OPENAI_API_KEY|HUGGINGFACE_API_KEY|GROQ_API_KEY|_API_KEY|_SECRET|sk-|-----BEGIN PRIVATE KEY-----|BEGIN RSA PRIVATE KEY' \
+    'BINANCE_API_KEY|BINANCE_API_SECRET|OPENAI_API_KEY|HUGGINGFACE_API_KEY|GROQ_API_KEY|_API_KEY|_SECRET|sk-|-----BEGIN (RSA )?PRIVATE KEY-----' \
     . || true
 else
   grep -RInE \

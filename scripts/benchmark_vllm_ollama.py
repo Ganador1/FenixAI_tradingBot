@@ -28,6 +28,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,30 +90,70 @@ def _snapshot_resources(pid: int | None = None) -> ResourceSnapshot:
 
 JsonGetter = Callable[[str, float], dict[str, Any]]
 JsonPoster = Callable[[str, dict[str, Any], float], dict[str, Any]]
+_MAX_HTTP_RESPONSE_BYTES = 8_000_000
 
 
 def _join_url(base_url: str, suffix: str) -> str:
     return f"{base_url.rstrip('/')}/{suffix.lstrip('/')}"
 
 
+def _validated_http_url(url: str) -> str:
+    parsed = urlsplit(str(url).strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("benchmark endpoint must be an HTTP(S) URL without credentials")
+    return parsed.geturl()
+
+
+def _bounded_timeout(timeout_s: float) -> float:
+    value = float(timeout_s)
+    if not 0.1 <= value <= 3_600:
+        raise ValueError("benchmark timeout must be between 0.1 and 3600 seconds")
+    return value
+
+
+def _read_bounded_json(response: Any) -> dict[str, Any]:
+    payload = response.read(_MAX_HTTP_RESPONSE_BYTES + 1)
+    if len(payload) > _MAX_HTTP_RESPONSE_BYTES:
+        raise ValueError("benchmark endpoint response exceeds 8 MB")
+    parsed = json.loads(payload.decode("utf-8") or "{}")
+    if not isinstance(parsed, dict):
+        raise ValueError("benchmark endpoint response must be a JSON object")
+    return parsed
+
+
 def http_get_json(url: str, timeout_s: float) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        payload = response.read().decode("utf-8")
-    return json.loads(payload or "{}")
+    request = urllib.request.Request(
+        _validated_http_url(url),
+        headers={"Accept": "application/json"},
+    )
+    # The URL scheme and embedded credentials were validated above.
+    with urllib.request.urlopen(  # nosec B310
+        request,
+        timeout=_bounded_timeout(timeout_s),
+    ) as response:
+        return _read_bounded_json(response)
 
 
 def http_post_json(url: str, payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        url,
+        _validated_http_url(url),
         data=body,
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        raw = response.read().decode("utf-8")
-    return json.loads(raw or "{}")
+    # The URL scheme and embedded credentials were validated above.
+    with urllib.request.urlopen(  # nosec B310
+        request,
+        timeout=_bounded_timeout(timeout_s),
+    ) as response:
+        return _read_bounded_json(response)
 
 
 def build_ollama_payload(
