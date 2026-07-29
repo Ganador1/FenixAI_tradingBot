@@ -13,7 +13,6 @@ MAPPINGS=(
   "PROYECTO_FINAL.md|docs/archives/reports/PROYECTO_FINAL.md"
   "INICIO_RAPIDO_v2.md|docs/archives/reports/INICIO_RAPIDO_v2.md"
   "CHECKLIST_MEJORAS.md|docs/archives/reports/CHECKLIST_MEJORAS.md"
-  "DEMO_CREDENTIALS.md|docs/security/DEMO_CREDENTIALS.md"
 )
 
 echo "Mode: $MODE"

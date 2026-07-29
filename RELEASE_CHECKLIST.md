@@ -6,10 +6,8 @@ Status: completed. The release is published.
 
 - [x] README presents v2.5 as an official release, not as a proven profitable system.
 - [x] `docs/CHANGELOG.md` has an updated v2.5.0 section.
-- [x] `docs/releases/v2.5.md` summarizes the official release.
-- [ ] `docs/releases/v2.5-development-history.md` explains the v2.0 -> v2.5 work clearly and does not overstate profitability.
-- [ ] `docs/releases/v2.5-new-systems.md` explains NanoFenix, MiniFenix, Fenix Experimental, new agent paths, model-role teams, and live runners clearly.
-- [ ] `docs/releases/v2.5-script-evolution.md` explains the v25/v31 launcher lineage and separates supported entry points from internal canaries and historical experiments.
+- [ ] Public documentation excludes private experiments, model assignments,
+      operational postmortems, account data, and unresolved security findings.
 - [ ] `scripts/README.md` identifies supported launchers and marks historical/fix scripts as non-public entry points.
 - [ ] NanoFenix public docs are in English.
 - [ ] MiniFenix public docs are in English.

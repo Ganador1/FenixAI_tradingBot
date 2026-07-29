@@ -4,8 +4,8 @@ Status: release-candidate script map for v2.5.
 
 This directory contains both current tooling and many historical experiment scripts. Not every script in this directory is part of the public v2.5 release surface.
 
-For the narrative explanation of how the multi-month v2.5 script families evolved, see
-[`docs/releases/v2.5-script-evolution.md`](../docs/releases/v2.5-script-evolution.md).
+Historical experiment results and operator-specific runner configurations are
+intentionally not included in the public repository.
 
 ## Recommended v2.5 Entry Points
 

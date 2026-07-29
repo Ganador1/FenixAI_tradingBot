@@ -41,7 +41,6 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, dict[str, Any]] = {
         "require_special_chars": False,
         "max_login_attempts": 5,
         "lockout_duration": 30,
-        "two_factor_enabled": False,
     },
     "notifications": {
         "email_enabled": False,
@@ -144,7 +143,6 @@ class SecuritySettings(_StrictSection):
     require_special_chars: bool
     max_login_attempts: int = Field(ge=1, le=20)
     lockout_duration: int = Field(ge=1, le=1440)
-    two_factor_enabled: bool
 
 
 class NotificationSettings(_StrictSection):

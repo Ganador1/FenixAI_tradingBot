@@ -27,7 +27,6 @@ interface SystemSettings {
     require_special_chars: boolean;
     max_login_attempts: number;
     lockout_duration: number;
-    two_factor_enabled: boolean;
   };
   notifications: {
     email_enabled: boolean;
@@ -477,13 +476,6 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
                 
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium">Two-Factor Authentication</label>
-                  <Switch
-                    checked={settings.security.two_factor_enabled}
-                    onChange={(checked) => updateSetting('security', 'two_factor_enabled', checked)}
-                  />
-                </div>
               </div>
             </CardContent>
           </Card>
