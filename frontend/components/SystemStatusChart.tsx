@@ -1,18 +1,52 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
 import { useSystemStore } from '@/stores/systemStore';
+import { authHeaders } from '@/lib/auth';
+
+interface MetricsHistoryPoint {
+  timestamp: number;
+  cpu: { usage: number };
+  memory: { percentage: number };
+  disk: { percentage: number };
+  network: { bytes_in: number; bytes_out: number };
+}
 
 export function SystemStatusChart() {
   const { metrics } = useSystemStore();
-  // Create a lightweight timeseries from the last metrics snapshot for chart
-  const times = ['T-5', 'T-4', 'T-3', 'T-2', 'T-1', 'Now'];
-  const baseline = metrics || { cpu: 50, memory: 60, disk: 40, network: 20 };
-  const systemSeries = times.map((t, i) => ({
-    time: t,
-    cpu: Math.max(0, Math.round(baseline.cpu + (i - 3) * 2)),
-    memory: Math.max(0, Math.round(baseline.memory + (i - 3) * 1.5)),
-    disk: Math.max(0, Math.round(baseline.disk + (i - 3) * 1)),
-    network: Math.max(0, Math.round((baseline.network || 0) + (i - 3) * 1)),
+  const [history, setHistory] = useState<MetricsHistoryPoint[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const loadHistory = async () => {
+      try {
+        const response = await fetch('/api/system/metrics/history?timeframe=1h', {
+          headers: authHeaders(),
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (active) setHistory(Array.isArray(payload.metrics) ? payload.metrics : []);
+      } catch {
+        // Keep the last real samples while the API is temporarily unavailable.
+      }
+    };
+    void loadHistory();
+    const interval = window.setInterval(loadHistory, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const systemSeries = history.map((point) => ({
+    time: new Date(point.timestamp * 1000).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }),
+    cpu: point.cpu.usage,
+    memory: point.memory.percentage,
+    disk: point.disk.percentage,
+    network: (point.network.bytes_in + point.network.bytes_out) / (1024 * 1024),
   }));
 
   return (
@@ -37,8 +71,9 @@ export function SystemStatusChart() {
       </div>
 
       <div className="h-64">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={systemSeries}>
+        {systemSeries.length > 0 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={systemSeries}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
             <XAxis dataKey="time" stroke="#666" fontSize={12} />
             <YAxis stroke="#666" fontSize={12} />
@@ -52,7 +87,6 @@ export function SystemStatusChart() {
             <Area
               type="monotone"
               dataKey="cpu"
-              stackId="1"
               stroke="#3b82f6"
               fill="#3b82f6"
               fillOpacity={0.3}
@@ -60,7 +94,6 @@ export function SystemStatusChart() {
             <Area
               type="monotone"
               dataKey="memory"
-              stackId="1"
               stroke="#10b981"
               fill="#10b981"
               fillOpacity={0.3}
@@ -68,7 +101,6 @@ export function SystemStatusChart() {
             <Area
               type="monotone"
               dataKey="disk"
-              stackId="1"
               stroke="#8b5cf6"
               fill="#8b5cf6"
               fillOpacity={0.3}
@@ -76,13 +108,17 @@ export function SystemStatusChart() {
             <Area
               type="monotone"
               dataKey="network"
-              stackId="1"
               stroke="#f59e0b"
               fill="#f59e0b"
               fillOpacity={0.3}
             />
-          </AreaChart>
-        </ResponsiveContainer>
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-full flex items-center justify-center text-sm text-gray-500">
+            Metric history will appear after the first real samples are collected.
+          </div>
+        )}
       </div>
 
       <div className="flex justify-center space-x-6 text-sm">

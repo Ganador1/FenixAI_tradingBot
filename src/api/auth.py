@@ -15,7 +15,8 @@ from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from redis import asyncio as redis_async
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config.database import get_db
@@ -70,12 +71,8 @@ def _bounded_numeric_env(
     return value
 
 
-LOGIN_RATE_LIMIT_ATTEMPTS = int(
-    _bounded_numeric_env("FENIX_LOGIN_RATE_LIMIT_ATTEMPTS", 5, 1, 100)
-)
-LOGIN_RATE_LIMIT_WINDOW_SECONDS = _bounded_numeric_env(
-    "FENIX_LOGIN_RATE_LIMIT_WINDOW", 60, 1, 3600
-)
+LOGIN_RATE_LIMIT_ATTEMPTS = int(_bounded_numeric_env("FENIX_LOGIN_RATE_LIMIT_ATTEMPTS", 5, 1, 100))
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = _bounded_numeric_env("FENIX_LOGIN_RATE_LIMIT_WINDOW", 60, 1, 3600)
 _failed_login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _MAX_RATE_LIMIT_BUCKETS = 10_000
 _login_rate_redis: redis_async.Redis | None = None
@@ -130,7 +127,10 @@ def _check_local_login_rate_limit(request: Request) -> None:
     """Raise 429 if the client IP exceeded the allowed FAILED login attempts."""
     client_ip = _client_ip(request)
     now = time.monotonic()
-    if client_ip not in _failed_login_attempts and len(_failed_login_attempts) >= _MAX_RATE_LIMIT_BUCKETS:
+    if (
+        client_ip not in _failed_login_attempts
+        and len(_failed_login_attempts) >= _MAX_RATE_LIMIT_BUCKETS
+    ):
         stale_before = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
         for key, values in list(_failed_login_attempts.items()):
             if not values or values[-1] < stale_before:
@@ -267,11 +267,32 @@ class UserSettings(_StrictInput):
 
 class UserAdminPayload(_StrictInput):
     email: str = Field(min_length=3, max_length=254)
-    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    username: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
     role: Literal["admin", "trader", "viewer"]
     status: Literal["active", "inactive"]
     profile: UserProfile | None = None
     settings: UserSettings | None = None
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if "@" not in normalized or any(char.isspace() for char in normalized):
+            raise ValueError("invalid email address")
+        return normalized
+
+
+class UserCreatePayload(UserAdminPayload):
+    password: str = Field(min_length=12, max_length=1024)
+
+
+class PasswordResetPayload(_StrictInput):
+    new_password: str = Field(min_length=12, max_length=1024)
 
 
 class RoleInfo(_StrictInput):
@@ -282,7 +303,7 @@ class RoleInfo(_StrictInput):
     is_system: bool
 
 
-# --- In-memory admin data (demo for UI) ---
+# Static role definitions; user records themselves are database-backed.
 ROLE_STORE: dict[str, RoleInfo] = {
     "admin": RoleInfo(
         id="admin",
@@ -306,6 +327,7 @@ ROLE_STORE: dict[str, RoleInfo] = {
         is_system=True,
     ),
 }
+
 
 # --- Helpers ---
 def verify_password(plain_password, hashed_password):
@@ -441,12 +463,9 @@ async def require_control_access(
     """
     client_host = request.client.host if request.client else ""
     if not SECRET_KEY or len(SECRET_KEY.encode("utf-8")) < 32:
-        allow_unsafe_loopback = (
-            os.getenv("FENIX_ALLOW_UNAUTHENTICATED_LOOPBACK_CONTROL", "0")
-            .strip()
-            .lower()
-            in {"1", "true", "yes", "on"}
-        )
+        allow_unsafe_loopback = os.getenv(
+            "FENIX_ALLOW_UNAUTHENTICATED_LOOPBACK_CONTROL", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         if client_host in _LOOPBACK_HOSTS and allow_unsafe_loopback:
             logger.warning(
                 "Development-only unauthenticated loopback control used for %s",
@@ -473,7 +492,55 @@ async def require_control_access(
         raise HTTPException(status_code=403, detail="Role 'admin' or 'trader' required")
 
 
-# --- Admin endpoints for Users page (demo) ---
+# --- Database-backed admin endpoints for the Users page ---
+
+
+def _public_user(user: User) -> dict[str, Any]:
+    raw_role = str(user.role or "viewer")
+    role = raw_role if raw_role in ROLE_STORE else "viewer"
+    full_name = str(user.full_name or "").strip()
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "username": user.email.split("@", 1)[0],
+        "role": role,
+        "status": "active" if user.is_active else "inactive",
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_login": None,
+        "permissions": ROLE_STORE.get(role, ROLE_STORE["viewer"]).permissions,
+        "profile": {"first_name": full_name, "last_name": ""},
+        "settings": {
+            "notifications_enabled": True,
+            "theme": "auto",
+        },
+    }
+
+
+def _payload_full_name(payload: UserAdminPayload) -> str:
+    profile = payload.profile
+    if profile is None:
+        return ""
+    return " ".join(
+        part.strip() for part in (profile.first_name or "", profile.last_name or "") if part.strip()
+    )[:255]
+
+
+async def _active_admin_count(db: AsyncSession) -> int:
+    result = await db.execute(
+        select(func.count(User.id)).where(User.role == "admin", User.is_active.is_(True))
+    )
+    return int(result.scalar_one())
+
+
+async def _load_managed_user(db: AsyncSession, user_id: str) -> User:
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def _would_remove_active_admin(user: User, *, role: str, active: bool) -> bool:
+    return bool(user.role == "admin" and user.is_active and (role != "admin" or not active))
 
 
 @router.get("/roles", response_model=list[RoleInfo])
@@ -487,58 +554,96 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).order_by(User.email))
-    return [
-        {
-            "id": str(user.id),
-            "email": user.email,
-            "username": user.email.split("@", 1)[0],
-            "role": user.role,
-            "status": "active" if user.is_active else "inactive",
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-            "last_login": None,
-            "permissions": ROLE_STORE.get(str(user.role), ROLE_STORE["viewer"]).permissions,
-            "profile": {"first_name": user.full_name or "", "last_name": ""},
-            "settings": {
-                "notifications_enabled": True,
-                "theme": "auto",
-            },
-        }
-        for user in result.scalars().all()
-    ]
+    return [_public_user(user) for user in result.scalars().all()]
 
 
 @router.post("/users", response_model=dict[str, Any])
-async def create_user(payload: UserAdminPayload, _: User = Depends(get_current_admin_user)):
-    raise HTTPException(
-        status_code=501,
-        detail="User creation requires a secure invitation and initial-password workflow",
+async def create_user(
+    payload: UserCreatePayload,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = User(
+        id=str(uuid.uuid4()),
+        email=payload.email,
+        hashed_password=get_password_hash(payload.password),
+        full_name=_payload_full_name(payload),
+        role=payload.role,
+        is_active=payload.status == "active",
     )
+    db.add(user)
+    try:
+        await db.commit()
+        await db.refresh(user)
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A user with this email already exists"
+        ) from exc
+    logger.info("Admin user_created actor=%s target=%s", current_admin.id, user.id)
+    return _public_user(user)
 
 
 @router.put("/users/{user_id}", response_model=dict[str, Any])
 async def update_user(
-    user_id: str, payload: UserAdminPayload, _: User = Depends(get_current_admin_user)
+    user_id: str,
+    payload: UserAdminPayload,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    raise HTTPException(
-        status_code=501,
-        detail="User mutation is disabled until database-backed audit logging is implemented",
-    )
+    user = await _load_managed_user(db, user_id)
+    active = payload.status == "active"
+    if str(user.id) == str(current_admin.id) and not active:
+        raise HTTPException(status_code=409, detail="You cannot deactivate your own account")
+    if _would_remove_active_admin(user, role=payload.role, active=active):
+        if await _active_admin_count(db) <= 1:
+            raise HTTPException(status_code=409, detail="At least one active admin is required")
+
+    user.email = payload.email
+    user.full_name = _payload_full_name(payload)
+    user.role = payload.role
+    user.is_active = active
+    try:
+        await db.commit()
+        await db.refresh(user)
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A user with this email already exists"
+        ) from exc
+    logger.info("Admin user_updated actor=%s target=%s", current_admin.id, user.id)
+    return _public_user(user)
 
 
 @router.delete("/users/{user_id}", response_model=dict)
-async def delete_user(user_id: str, _: User = Depends(get_current_admin_user)):
-    raise HTTPException(
-        status_code=501,
-        detail="User deletion is disabled until last-admin and self-delete safeguards are implemented",
-    )
+async def delete_user(
+    user_id: str,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await _load_managed_user(db, user_id)
+    if str(user.id) == str(current_admin.id):
+        raise HTTPException(status_code=409, detail="You cannot delete your own account")
+    if user.role == "admin" and user.is_active and await _active_admin_count(db) <= 1:
+        raise HTTPException(status_code=409, detail="At least one active admin is required")
+    await db.delete(user)
+    await db.commit()
+    logger.info("Admin user_deleted actor=%s target=%s", current_admin.id, user_id)
+    return {"success": True, "id": user_id}
 
 
 @router.post("/users/{user_id}/reset-password", response_model=dict)
-async def reset_password(user_id: str, _: User = Depends(get_current_admin_user)):
-    raise HTTPException(
-        status_code=501,
-        detail="Password reset is unavailable until a one-time, expiring reset flow is implemented",
-    )
+async def reset_password(
+    user_id: str,
+    payload: PasswordResetPayload,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await _load_managed_user(db, user_id)
+    user.hashed_password = get_password_hash(payload.new_password)
+    await db.commit()
+    logger.info("Admin password_reset actor=%s target=%s", current_admin.id, user.id)
+    return {"success": True, "id": str(user.id)}
 
 
 # --- Routes ---
@@ -608,8 +713,10 @@ async def read_users_me(current_user: User = Depends(get_current_active_user)):
                 "is_active": current_user.is_active,
             },
             # Mock permissions based on role
-            "permissions": ["read:trading", "write:trading"]
-            if current_user.role == "admin"
-            else ["read:trading"],
+            "permissions": (
+                ["read:trading", "write:trading"]
+                if current_user.role == "admin"
+                else ["read:trading"]
+            ),
         },
     }

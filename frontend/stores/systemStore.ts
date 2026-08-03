@@ -50,6 +50,7 @@ export interface SystemState {
   isLoading: boolean;
   error: string | null;
   socket: Socket | null;
+  socketConnected: boolean;
   initializeSocket: () => void;
   disconnectSocket: () => void;
   fetchSystemStatus: () => Promise<void>;
@@ -66,10 +67,17 @@ export interface SystemState {
 // a nivel de módulo para poder retirarlos exactamente al desconectar.
 let socketHandlers: {
   onConnect: () => void;
+  onDisconnect: () => void;
+  onConnectError: () => void;
   onMetrics: (data: { summary: SystemMetrics } | SystemMetrics) => void;
   onAlert: (alert: SystemAlert) => void;
   onConnection: (payload: ConnectionStatus[] | { connections: ConnectionStatus[] }) => void;
 } | null = null;
+
+const authenticatedHeaders = (): HeadersInit => {
+  const token = useAuthStore.getState().token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
 
 export const useSystemStore = create<SystemState>()((set, get) => ({
   metrics: null,
@@ -80,6 +88,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
   isLoading: false,
   error: null,
   socket: null,
+  socketConnected: false,
 
   initializeSocket: () => {
     const { socket } = get();
@@ -92,8 +101,11 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
 
     const onConnect = () => {
       console.log('Connected to server');
+      set({ socketConnected: true });
       newSocket.emit('subscribe:system');
     };
+    const onDisconnect = () => set({ socketConnected: false });
+    const onConnectError = () => set({ socketConnected: false });
     const onMetrics = (data: { summary: SystemMetrics } | SystemMetrics) => {
       const summary = (data as { summary: SystemMetrics }).summary || (data as SystemMetrics);
       set({ metrics: summary });
@@ -111,12 +123,21 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     // Si ya está conectado (otro consumidor lo abrió primero) suscribimos ya.
     if (newSocket.connected) onConnect();
     newSocket.on('connect', onConnect);
+    newSocket.on('disconnect', onDisconnect);
+    newSocket.on('connect_error', onConnectError);
     newSocket.on('system:metrics', onMetrics);
     newSocket.on('system:alert', onAlert);
     newSocket.on('system:connection', onConnection);
 
-    socketHandlers = { onConnect, onMetrics, onAlert, onConnection };
-    set({ socket: newSocket });
+    socketHandlers = {
+      onConnect,
+      onDisconnect,
+      onConnectError,
+      onMetrics,
+      onAlert,
+      onConnection,
+    };
+    set({ socket: newSocket, socketConnected: newSocket.connected });
   },
 
   disconnectSocket: () => {
@@ -125,12 +146,14 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
       // Solo retira los handlers de este store; la conexión se cierra cuando
       // el último consumidor la libera (reference counting en lib/socket.ts).
       socket.off('connect', socketHandlers.onConnect);
+      socket.off('disconnect', socketHandlers.onDisconnect);
+      socket.off('connect_error', socketHandlers.onConnectError);
       socket.off('system:metrics', socketHandlers.onMetrics);
       socket.off('system:alert', socketHandlers.onAlert);
       socket.off('system:connection', socketHandlers.onConnection);
       socketHandlers = null;
       releaseSocket();
-      set({ socket: null });
+      set({ socket: null, socketConnected: false });
     }
   },
 
@@ -138,7 +161,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     set({ isLoading: true, error: null });
     
     try {
-      const response = await fetch('/api/system/status');
+      const response = await fetch('/api/system/status', { headers: authenticatedHeaders() });
       const data = await response.json();
 
       if (!response.ok) {
@@ -161,7 +184,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     set({ isLoading: true, error: null });
 
     try {
-      const response = await fetch('/api/engine/config');
+      const response = await fetch('/api/engine/config', { headers: authenticatedHeaders() });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch engine config');
@@ -205,7 +228,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     set({ isLoading: true, error: null });
 
     try {
-      const response = await fetch('/api/engine/risk-flags');
+      const response = await fetch('/api/engine/risk-flags', { headers: authenticatedHeaders() });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch risk flags');
@@ -249,7 +272,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     set({ isLoading: true, error: null });
     
     try {
-      const response = await fetch('/api/system/alerts');
+      const response = await fetch('/api/system/alerts', { headers: authenticatedHeaders() });
       const data = await response.json();
 
       if (!response.ok) {
@@ -272,7 +295,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
     set({ isLoading: true, error: null });
     
     try {
-      const response = await fetch('/api/system/connections');
+      const response = await fetch('/api/system/connections', { headers: authenticatedHeaders() });
       const data = await response.json();
 
       if (!response.ok) {

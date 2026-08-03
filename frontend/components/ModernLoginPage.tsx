@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from '@/lib/router';
-import { Card, CardContent, CardHeader, CardFooter } from '@/components/ui/Card';
+import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { FormInput } from '@/components/ui/FormElements';
 import { validateForm, validators } from '@/lib/validation';
@@ -11,7 +11,6 @@ import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
 interface LoginFormData {
   email: string;
   password: string;
-  rememberMe: boolean;
 }
 
 /**
@@ -21,7 +20,6 @@ export function ModernLoginPage() {
   const [formData, setFormData] = useState<LoginFormData>({
     email: '',
     password: '',
-    rememberMe: false,
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -30,10 +28,10 @@ export function ModernLoginPage() {
   const { login, isLoading } = useAuthStore();
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
+    const { name, value } = e.target;
     setFormData((prev) => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : value,
+      [name]: value,
     }));
     // Clear error when user starts typing
     if (errors[name]) {
@@ -128,18 +126,6 @@ export function ModernLoginPage() {
               </button>
             </div>
 
-            {/* Remember Me */}
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                name="rememberMe"
-                checked={formData.rememberMe}
-                onChange={handleChange}
-                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-600">Remember me</span>
-            </label>
-
             {/* Submit Button */}
             <Button
               type="submit"
@@ -152,43 +138,7 @@ export function ModernLoginPage() {
             </Button>
           </form>
 
-          {/* Divider */}
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-white text-gray-500">Or continue with</span>
-            </div>
-          </div>
-
-          {/* Social Login */}
-          <div className="grid grid-cols-2 gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              className="border-gray-200 hover:bg-gray-50"
-            >
-              <span className="text-lg">🔵</span> Google
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="border-gray-200 hover:bg-gray-50"
-            >
-              <span className="text-lg">🔷</span> GitHub
-            </Button>
-          </div>
         </CardContent>
-
-        <CardFooter align="center">
-          <p className="text-sm text-gray-600">
-            Don't have an account?{' '}
-            <a href="/register" className="text-blue-600 hover:text-blue-700 font-semibold">
-              Sign up
-            </a>
-          </p>
-        </CardFooter>
       </Card>
 
       {/* Footer Text */}

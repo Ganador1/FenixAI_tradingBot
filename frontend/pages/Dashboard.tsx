@@ -20,6 +20,8 @@ import { AgentPerformanceChart } from '@/components/AgentPerformanceChart';
 import { MarketOverview } from '@/components/MarketOverview';
 import { RecentTrades } from '@/components/RecentTrades';
 import { RecentAlerts } from '@/components/RecentAlerts';
+import { useNavigate } from '@/lib/router';
+import { authHeaders } from '@/lib/auth';
 
 interface PortfolioData {
   totalValue: number;
@@ -35,7 +37,15 @@ interface MarketPrice {
 }
 
 export function Dashboard() {
-  const { metrics, alerts, engineConfig, fetchSystemStatus, fetchEngineConfig } = useSystemStore();
+  const navigate = useNavigate();
+  const {
+    metrics,
+    alerts,
+    engineConfig,
+    fetchSystemStatus,
+    fetchEngineConfig,
+    fetchAlerts,
+  } = useSystemStore();
   const { agents, scorecards, fetchAgents, fetchScorecards } = useAgentStore();
 
   // Real data states
@@ -56,6 +66,7 @@ export function Dashboard() {
     fetchScorecards();
     fetchSystemStatus();
     fetchEngineConfig();
+    fetchAlerts();
 
     // Anime.js entry animation
     animate('.animate-card', {
@@ -82,9 +93,9 @@ export function Dashboard() {
 
       // Fetch positions AND real balance from Binance
       const [positionsRes, marketRes, balanceRes] = await Promise.all([
-        fetch('/api/trading/positions'),
-        fetch('/api/trading/market'),
-        fetch('/api/trading/balance')
+        fetch('/api/trading/positions', { headers: authHeaders() }),
+        fetch('/api/trading/market', { headers: authHeaders() }),
+        fetch('/api/trading/balance', { headers: authHeaders() })
       ]);
 
       // Get real account balance from Binance
@@ -139,6 +150,11 @@ export function Dashboard() {
 
   // Get recent alerts
   const recentAlerts = alerts.slice(0, 5);
+  const baseAsset = (marketPrice?.symbol || engineConfig?.symbol || '')
+    .replace(/(USDT|USDC|BUSD|USD)$/i, '')
+    .toUpperCase();
+  const knownAssetIcons: Record<string, string> = { BTC: '₿', ETH: 'Ξ', SOL: '◎' };
+  const assetIcon = knownAssetIcons[baseAsset] || baseAsset.slice(0, 1) || '•';
 
   return (
     <div className="space-y-8 p-1">
@@ -205,7 +221,7 @@ export function Dashboard() {
           <div className="flex items-center justify-between relative z-10">
             <div className="flex items-center space-x-4">
               <div className="p-3 bg-orange-100 rounded-xl">
-                <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold">&#8383;</div>
+                <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold">{assetIcon}</div>
               </div>
               <div>
                 <p className="text-gray-500 text-sm font-medium tracking-wider">{marketPrice.symbol}</p>
@@ -302,21 +318,33 @@ export function Dashboard() {
           <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm animate-card">
             <h3 className="text-lg font-semibold mb-4 text-gray-900">Quick Actions</h3>
             <div className="space-y-3">
-              <button className="w-full text-left p-4 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-all group">
+              <button
+                type="button"
+                onClick={() => navigate('/trading')}
+                className="w-full text-left p-4 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-all group"
+              >
                 <div className="font-semibold text-blue-700 group-hover:text-blue-800 flex items-center">
                   <DollarSign className="w-4 h-4 mr-2" /> New Order
                 </div>
                 <div className="text-xs text-blue-500 mt-1">Execute manual trade</div>
               </button>
 
-              <button className="w-full text-left p-4 bg-emerald-50 border border-emerald-200 rounded-xl hover:bg-emerald-100 transition-all group">
+              <button
+                type="button"
+                onClick={() => navigate('/agents')}
+                className="w-full text-left p-4 bg-emerald-50 border border-emerald-200 rounded-xl hover:bg-emerald-100 transition-all group"
+              >
                 <div className="font-semibold text-emerald-700 group-hover:text-emerald-800 flex items-center">
                   <Brain className="w-4 h-4 mr-2" /> View Agents
                 </div>
                 <div className="text-xs text-emerald-500 mt-1">Check AI reasoning</div>
               </button>
 
-              <button className="w-full text-left p-4 bg-purple-50 border border-purple-200 rounded-xl hover:bg-purple-100 transition-all group">
+              <button
+                type="button"
+                onClick={() => navigate('/system')}
+                className="w-full text-left p-4 bg-purple-50 border border-purple-200 rounded-xl hover:bg-purple-100 transition-all group"
+              >
                 <div className="font-semibold text-purple-700 group-hover:text-purple-800 flex items-center">
                   <Shield className="w-4 h-4 mr-2" /> System Health
                 </div>

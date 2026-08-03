@@ -14,16 +14,14 @@ interface User {
   id: string;
   email: string;
   username: string;
-  role: 'admin' | 'trader' | 'analyst' | 'viewer' | 'ai_agent';
-  status: 'active' | 'inactive' | 'suspended';
+  role: 'admin' | 'trader' | 'viewer';
+  status: 'active' | 'inactive';
   created_at: string;
   last_login?: string;
   permissions: string[];
   profile?: {
     first_name?: string;
     last_name?: string;
-    phone?: string;
-    department?: string;
   };
   settings?: {
     notifications_enabled: boolean;
@@ -53,18 +51,18 @@ export const UsersPage: React.FC = () => {
   const [showUserModal, setShowUserModal] = useState(false);
   // const [showRoleModal, setShowRoleModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [resettingUser, setResettingUser] = useState<User | null>(null);
+  const [newPassword, setNewPassword] = useState('');
   // const [editingRole, setEditingRole] = useState<Role | null>(null);
 
   // Form states
   const [userForm, setUserForm] = useState({
     email: '',
-    username: '',
     role: 'viewer' as User['role'],
     status: 'active' as User['status'],
     first_name: '',
     last_name: '',
-    phone: '',
-    department: ''
+    password: ''
   });
 
   /*
@@ -107,9 +105,7 @@ export const UsersPage: React.FC = () => {
     switch (role) {
       case 'admin': return 'error';
       case 'trader': return 'success';
-      case 'analyst': return 'warning';
       case 'viewer': return 'default';
-      case 'ai_agent': return 'purple';
       default: return 'default';
     }
   };
@@ -118,7 +114,6 @@ export const UsersPage: React.FC = () => {
     switch (status) {
       case 'active': return 'success';
       case 'inactive': return 'default';
-      case 'suspended': return 'error';
       default: return 'default';
     }
   };
@@ -140,13 +135,11 @@ export const UsersPage: React.FC = () => {
     setEditingUser(null);
     setUserForm({
       email: '',
-      username: '',
       role: 'viewer',
       status: 'active',
       first_name: '',
       last_name: '',
-      phone: '',
-      department: ''
+      password: ''
     });
     setShowUserModal(true);
   };
@@ -155,13 +148,11 @@ export const UsersPage: React.FC = () => {
     setEditingUser(user);
     setUserForm({
       email: user.email,
-      username: user.username,
       role: user.role,
       status: user.status,
       first_name: user.profile?.first_name || '',
       last_name: user.profile?.last_name || '',
-      phone: user.profile?.phone || '',
-      department: user.profile?.department || ''
+      password: ''
     });
     setShowUserModal(true);
   };
@@ -203,18 +194,20 @@ export const UsersPage: React.FC = () => {
           ...authHeaders()
         },
         body: JSON.stringify({
-          ...userForm,
+          email: userForm.email,
+          role: userForm.role,
+          status: userForm.status,
+          ...(!editingUser ? { password: userForm.password } : {}),
           profile: {
             first_name: userForm.first_name,
             last_name: userForm.last_name,
-            phone: userForm.phone,
-            department: userForm.department
           }
         })
       });
 
       if (!response.ok) {
-        throw new Error('Failed to save user');
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Failed to save user');
       }
 
       await fetchUsersData();
@@ -234,7 +227,8 @@ export const UsersPage: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete user');
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Failed to delete user');
       }
 
       await fetchUsersData();
@@ -243,20 +237,22 @@ export const UsersPage: React.FC = () => {
     }
   };
 
-  const handleResetPassword = async (userId: string) => {
-    if (!confirm('Are you sure you want to reset this user\'s password?')) return;
-    
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resettingUser) return;
     try {
-      const response = await fetch(`/api/auth/users/${userId}/reset-password`, {
+      const response = await fetch(`/api/auth/users/${resettingUser.id}/reset-password`, {
         method: 'POST',
-        headers: authHeaders()
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ new_password: newPassword }),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to reset password');
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Failed to reset password');
       }
-
-      alert('Password reset email sent to user');
+      setResettingUser(null);
+      setNewPassword('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset password');
     }
@@ -361,15 +357,15 @@ export const UsersPage: React.FC = () => {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">AI Agents</CardTitle>
+            <CardTitle className="text-sm font-medium">Viewers</CardTitle>
             <UsersIcon className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {users.filter(u => u.role === 'ai_agent').length}
+              {users.filter(u => u.role === 'viewer').length}
             </div>
             <p className="text-xs text-muted-foreground">
-              Automated agents
+              Read-only accounts
             </p>
           </CardContent>
         </Card>
@@ -400,9 +396,7 @@ export const UsersPage: React.FC = () => {
                 <option value="all">All Roles</option>
                 <option value="admin">Admin</option>
                 <option value="trader">Trader</option>
-                <option value="analyst">Analyst</option>
                 <option value="viewer">Viewer</option>
-                <option value="ai_agent">AI Agent</option>
               </Select>
             </div>
             <div>
@@ -414,7 +408,6 @@ export const UsersPage: React.FC = () => {
                 <option value="all">All Status</option>
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
-                <option value="suspended">Suspended</option>
               </Select>
             </div>
           </div>
@@ -512,7 +505,10 @@ export const UsersPage: React.FC = () => {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => handleResetPassword(user.id)}
+                          onClick={() => {
+                            setResettingUser(user);
+                            setNewPassword('');
+                          }}
                           className="p-1"
                         >
                           <Key className="h-4 w-4" />
@@ -547,25 +543,30 @@ export const UsersPage: React.FC = () => {
         title={editingUser ? 'Edit User' : 'Create User'}
       >
         <form onSubmit={handleSubmitUser} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Email</label>
-              <Input
-                type="email"
-                value={userForm.email}
-                onChange={(e) => setUserForm(prev => ({ ...prev, email: e.target.value }))}
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Username</label>
-              <Input
-                value={userForm.username}
-                onChange={(e) => setUserForm(prev => ({ ...prev, username: e.target.value }))}
-                required
-              />
-            </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Email</label>
+            <Input
+              type="email"
+              value={userForm.email}
+              onChange={(e) => setUserForm(prev => ({ ...prev, email: e.target.value }))}
+              required
+            />
           </div>
+
+          {!editingUser && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Initial Password</label>
+              <Input
+                type="password"
+                minLength={12}
+                autoComplete="new-password"
+                value={userForm.password}
+                onChange={(e) => setUserForm(prev => ({ ...prev, password: e.target.value }))}
+                required
+              />
+              <p className="mt-1 text-xs text-gray-500">At least 12 characters. Share it through a secure channel.</p>
+            </div>
+          )}
           
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -593,9 +594,7 @@ export const UsersPage: React.FC = () => {
               >
                 <option value="admin">Admin</option>
                 <option value="trader">Trader</option>
-                <option value="analyst">Analyst</option>
                 <option value="viewer">Viewer</option>
-                <option value="ai_agent">AI Agent</option>
               </Select>
             </div>
             <div>
@@ -606,26 +605,8 @@ export const UsersPage: React.FC = () => {
               >
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
-                <option value="suspended">Suspended</option>
               </Select>
             </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">Phone</label>
-            <Input
-              type="tel"
-              value={userForm.phone}
-              onChange={(e) => setUserForm(prev => ({ ...prev, phone: e.target.value }))}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">Department</label>
-            <Input
-              value={userForm.department}
-              onChange={(e) => setUserForm(prev => ({ ...prev, department: e.target.value }))}
-            />
           </div>
 
           <div className="flex justify-end space-x-2 pt-4">
@@ -639,6 +620,36 @@ export const UsersPage: React.FC = () => {
             <Button type="submit">
               {editingUser ? 'Update User' : 'Create User'}
             </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={resettingUser !== null}
+        onClose={() => {
+          setResettingUser(null);
+          setNewPassword('');
+        }}
+        title="Set New Password"
+        size="sm"
+      >
+        <form onSubmit={handleResetPassword} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Set a new password for {resettingUser?.email}. No password is sent by email.
+          </p>
+          <Input
+            type="password"
+            minLength={12}
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+            required
+          />
+          <div className="flex justify-end space-x-2">
+            <Button type="button" variant="outline" onClick={() => setResettingUser(null)}>
+              Cancel
+            </Button>
+            <Button type="submit">Update Password</Button>
           </div>
         </form>
       </Modal>

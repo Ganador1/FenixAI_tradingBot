@@ -34,6 +34,8 @@ interface ReasoningAnalytics {
   outcome_distribution: Array<{ outcome: string; count: number }>;
 }
 
+const REASONING_PAGE_SIZE = 20;
+
 export const ReasoningBank: React.FC = () => {
   // const { user } = useAuthStore();
   const { reasoningLogs, fetchReasoningLogs } = useAgentStore();
@@ -49,6 +51,7 @@ export const ReasoningBank: React.FC = () => {
   const [filteredLogs, setFilteredLogs] = useState<ReasoningEntry[]>([]);
   const [analytics, setAnalytics] = useState<ReasoningAnalytics | null>(null);
   const [consensus, setConsensus] = useState<AgentConsensus[]>([]);
+  const [visibleEntries, setVisibleEntries] = useState(REASONING_PAGE_SIZE);
 
   useEffect(() => {
     fetchReasoningBankData();
@@ -144,6 +147,10 @@ export const ReasoningBank: React.FC = () => {
   useEffect(() => {
     filterReasoningLogs();
   }, [filterReasoningLogs, reasoningLogs, searchQuery, selectedAgent, selectedOutcome, selectedConfidence]);
+
+  useEffect(() => {
+    setVisibleEntries(REASONING_PAGE_SIZE);
+  }, [searchQuery, selectedAgent, selectedOutcome, selectedConfidence, selectedTimeframe]);
 
   const getOutcomeColor = (outcome: ReasoningEntry['outcome']) => {
     if (!outcome) return 'default';
@@ -507,7 +514,7 @@ export const ReasoningBank: React.FC = () => {
           </div>
           <div className="mt-4 flex items-center justify-between">
             <p className="text-sm text-gray-500">
-              Showing {filteredLogs.length} of {reasoningLogs.length} entries
+              Showing {Math.min(visibleEntries, filteredLogs.length)} of {filteredLogs.length} matching entries
             </p>
             <Button
               variant="outline"
@@ -533,16 +540,20 @@ export const ReasoningBank: React.FC = () => {
         <CardContent>
           <div className="space-y-4">
             {filteredLogs.length > 0 ? (
-              filteredLogs.slice(0, 20).map(renderReasoningEntry)
+              filteredLogs.slice(0, visibleEntries).map(renderReasoningEntry)
             ) : (
               <div className="text-center py-8 text-gray-500">
                 No reasoning entries found matching your filters
               </div>
             )}
           </div>
-          {filteredLogs.length > 20 && (
+          {filteredLogs.length > visibleEntries && (
             <div className="mt-6 text-center">
-              <Button variant="outline" size="sm">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setVisibleEntries((count) => count + REASONING_PAGE_SIZE)}
+              >
                 Load More Entries
               </Button>
             </div>

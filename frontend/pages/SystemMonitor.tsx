@@ -49,7 +49,7 @@ interface SystemMetrics {
     uptime: number;
     pid: number;
     version: string;
-    node_version: string;
+    python_version: string;
   };
 }
 
@@ -630,7 +630,7 @@ export const SystemMonitor: React.FC = () => {
               </div>
               <div className="flex justify-between">
                 <span className="text-sm font-medium text-gray-600">Python Version:</span>
-                <span className="text-sm">{latestMetrics?.process?.node_version || 'N/A'}</span>
+                <span className="text-sm">{latestMetrics?.process?.python_version || 'N/A'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm font-medium text-gray-600">CPU Cores:</span>

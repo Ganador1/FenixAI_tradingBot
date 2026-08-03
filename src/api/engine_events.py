@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger("FenixEngineEvents")
@@ -64,6 +64,80 @@ async def _persist_agent_output(payload: dict[str, Any], agent_name: str) -> Non
         logger.debug("Could not persist agent output to DB: %s", db_err)
 
 
+async def _persist_system_alert(payload: dict[str, Any]) -> None:
+    """Persist a bounded dashboard alert without blocking engine execution."""
+    try:
+        from sqlalchemy import delete, desc, select
+
+        from src.config.database import SessionLocal
+        from src.models.db_models import SystemAlert
+
+        async with SessionLocal() as db_session:
+            try:
+                created_at = (
+                    datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00"))
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+            except (AttributeError, TypeError, ValueError):
+                created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            db_session.add(
+                SystemAlert(
+                    id=payload["id"],
+                    type=payload["type"],
+                    title=payload["title"],
+                    message=payload["message"],
+                    component=payload["component"],
+                    severity=payload["severity"],
+                    created_at=created_at,
+                    resolved=bool(payload.get("resolved", False)),
+                )
+            )
+            await db_session.commit()
+            stale_ids = select(SystemAlert.id).order_by(desc(SystemAlert.created_at)).offset(1_000)
+            await db_session.execute(delete(SystemAlert).where(SystemAlert.id.in_(stale_ids)))
+            await db_session.commit()
+    except Exception as db_err:
+        logger.debug("Could not persist system alert to DB: %s", db_err)
+
+
+def _system_alert_for_event(event_type: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    timestamp = str(data.get("timestamp") or datetime.now(timezone.utc).isoformat())
+    symbol = str(data.get("symbol") or "position")
+    if event_type == "position:closed":
+        reason = str(data.get("exit_reason") or data.get("reason") or "position_closed").lower()
+        if "stop_loss" in reason:
+            title, alert_type, severity = "Stop loss hit", "warning", "high"
+        elif "take_profit" in reason:
+            title, alert_type, severity = "Take profit hit", "info", "medium"
+        else:
+            title, alert_type, severity = "Position closed", "info", "low"
+        message = f"{symbol} closed ({reason.replace('_', ' ')})."
+    elif event_type == "trade:error":
+        title, alert_type, severity = "Trade execution error", "error", "critical"
+        message = str(data.get("message") or "The order could not be executed.")[:500]
+    elif event_type == "risk:blocked":
+        title, alert_type, severity = "Trade blocked by risk controls", "warning", "high"
+        reason = str(data.get("reason") or "risk policy")
+        message = f"{symbol}: {reason.replace('_', ' ')}."[:500]
+    elif event_type.startswith("kline_watchdog") and "recovered" not in event_type:
+        title, alert_type, severity = "Market data watchdog warning", "warning", "high"
+        message = str(data.get("reason") or "Market data freshness check failed.")[:500]
+    else:
+        return None
+
+    return {
+        "id": str(uuid.uuid4()),
+        "type": alert_type,
+        "title": title,
+        "message": message,
+        "component": "trading" if not event_type.startswith("kline_watchdog") else "market_data",
+        "severity": severity,
+        "created_at": timestamp,
+        "resolved": False,
+    }
+
+
 def create_engine_event_handler(
     emit: EmitFn,
     *,
@@ -84,6 +158,12 @@ def create_engine_event_handler(
     async def handle_engine_event(event_type: str, data: dict[str, Any]) -> None:
         try:
             data = data or {}
+            system_alert = _system_alert_for_event(event_type, data)
+            if system_alert is not None:
+                await emit("system:alert", system_alert)
+                if persist:
+                    await _persist_system_alert(system_alert)
+
             if event_type == "agent_output":
                 agent_name = data.get("agent_name", "unknown")
                 inner = data.get("data", {}) or {}
@@ -96,7 +176,9 @@ def create_engine_event_handler(
                     or inner.get("analysis", "")
                     or "No reasoning",
                     "decision": inner.get("signal") or inner.get("action") or "HOLD",
-                    "confidence": _coerce_confidence(inner.get("confidence") or inner.get("confidence_in_decision")),
+                    "confidence": _coerce_confidence(
+                        inner.get("confidence") or inner.get("confidence_in_decision")
+                    ),
                     "input_summary": "Live Analysis",
                 }
                 # Include social and Fear&Greed data for sentiment agent
@@ -118,18 +200,20 @@ def create_engine_event_handler(
                 reasoning = data.get("reasoning", "")
                 # One feed line that summarises the full cycle
                 summary = (
-                    f"📋 {dec} ({conf_label}) | {reasoning} | "
-                    f"holds={holds} | ⏱ {elapsed:.1f}s"
+                    f"📋 {dec} ({conf_label}) | {reasoning} | " f"holds={holds} | ⏱ {elapsed:.1f}s"
                 )
-                await emit("agentOutput", {
-                    "id": str(uuid.uuid4()),
-                    "agent_name": "── Cycle Summary ──",
-                    "timestamp": data.get("timestamp"),
-                    "reasoning": summary,
-                    "decision": dec,
-                    "confidence": conf,
-                    "input_summary": "cycle",
-                })
+                await emit(
+                    "agentOutput",
+                    {
+                        "id": str(uuid.uuid4()),
+                        "agent_name": "── Cycle Summary ──",
+                        "timestamp": data.get("timestamp"),
+                        "reasoning": summary,
+                        "decision": dec,
+                        "confidence": conf,
+                        "input_summary": "cycle",
+                    },
+                )
                 # Separate event so the frontend can show a countdown timer
                 await emit("cycle:summary", data)
             elif event_type == "final_decision":
