@@ -5,18 +5,22 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy import select
 
 
 @pytest.mark.asyncio
 async def test_user_admin_mutations_persist_in_database():
     from src.api.auth import (
-        PasswordResetPayload,
+        AdminReauthentication,
+        PasswordResetCompletion,
+        PasswordResetRequest,
         UserAdminPayload,
         UserCreatePayload,
+        complete_password_reset,
         create_user,
         delete_user,
+        get_password_hash,
         reset_password,
         update_user,
         verify_password,
@@ -26,10 +30,12 @@ async def test_user_admin_mutations_persist_in_database():
 
     await init_db()
     suffix = uuid.uuid4().hex
+    admin_password = "admin-password-123"
+    request = Request({"type": "http", "client": ("127.0.0.1", 12345)})
     admin = User(
         id=f"admin-{suffix}",
         email=f"admin-{suffix}@example.test",
-        hashed_password="unused-in-this-test",
+        hashed_password=get_password_hash(admin_password),
         full_name="Test Admin",
         role="admin",
         is_active=True,
@@ -41,15 +47,24 @@ async def test_user_admin_mutations_persist_in_database():
         created = await create_user(
             UserCreatePayload(
                 email=f"trader-{suffix}@example.test",
-                password="initial-password-123",
+                admin_password=admin_password,
                 role="trader",
                 status="active",
                 profile={"first_name": "Community", "last_name": "Trader"},
             ),
+            request=request,
             current_admin=admin,
             db=session,
         )
         user_id = created["id"]
+        await complete_password_reset(
+            PasswordResetCompletion(
+                token=created["setup_token"],
+                new_password="initial-password-123",
+            ),
+            request=request,
+            db=session,
+        )
 
     async with SessionLocal() as session:
         persisted = await session.get(User, user_id)
@@ -61,22 +76,43 @@ async def test_user_admin_mutations_persist_in_database():
             user_id,
             UserAdminPayload(
                 email=f"viewer-{suffix}@example.test",
+                admin_password=admin_password,
                 role="viewer",
                 status="inactive",
                 profile={"first_name": "Persistent", "last_name": "Viewer"},
             ),
+            request=request,
             current_admin=admin,
             db=session,
         )
         assert updated["status"] == "inactive"
         assert updated["role"] == "viewer"
 
-        await reset_password(
+        reset = await reset_password(
             user_id,
-            PasswordResetPayload(new_password="replacement-password-456"),
+            PasswordResetRequest(admin_password=admin_password),
+            request=request,
             current_admin=admin,
             db=session,
         )
+
+        await complete_password_reset(
+            PasswordResetCompletion(
+                token=reset["reset_token"],
+                new_password="replacement-password-456",
+            ),
+            request=request,
+            db=session,
+        )
+        with pytest.raises(HTTPException, match="Invalid or expired reset token"):
+            await complete_password_reset(
+                PasswordResetCompletion(
+                    token=reset["reset_token"],
+                    new_password="must-not-be-applied-789",
+                ),
+                request=request,
+                db=session,
+            )
 
     async with SessionLocal() as session:
         persisted = await session.get(User, user_id)
@@ -84,7 +120,13 @@ async def test_user_admin_mutations_persist_in_database():
         assert persisted.email == f"viewer-{suffix}@example.test"
         assert persisted.full_name == "Persistent Viewer"
         assert verify_password("replacement-password-456", persisted.hashed_password)
-        await delete_user(user_id, current_admin=admin, db=session)
+        await delete_user(
+            user_id,
+            AdminReauthentication(admin_password=admin_password),
+            request=request,
+            current_admin=admin,
+            db=session,
+        )
 
     async with SessionLocal() as session:
         result = await session.execute(select(User).where(User.id == user_id))
@@ -92,17 +134,25 @@ async def test_user_admin_mutations_persist_in_database():
 
 
 @pytest.mark.asyncio
-async def test_user_admin_cannot_delete_own_account():
-    from src.api.auth import delete_user
+async def test_user_admin_cannot_delete_own_account(monkeypatch):
+    from src.api import auth as auth_module
+    from src.api.auth import (
+        AdminReauthentication,
+        UserAdminPayload,
+        delete_user,
+        get_password_hash,
+        update_user,
+    )
     from src.config.database import SessionLocal, init_db
     from src.models.user import User
 
     await init_db()
     suffix = uuid.uuid4().hex
+    admin_password = "admin-password-123"
     admin = User(
         id=f"self-admin-{suffix}",
         email=f"self-admin-{suffix}@example.test",
-        hashed_password="unused-in-this-test",
+        hashed_password=get_password_hash(admin_password),
         role="admin",
         is_active=True,
     )
@@ -110,8 +160,33 @@ async def test_user_admin_cannot_delete_own_account():
         session.add(admin)
         await session.commit()
         with pytest.raises(HTTPException, match="delete your own account") as exc_info:
-            await delete_user(str(admin.id), current_admin=admin, db=session)
+            await delete_user(
+                str(admin.id),
+                AdminReauthentication(admin_password=admin_password),
+                request=Request({"type": "http", "client": ("127.0.0.1", 12345)}),
+                current_admin=admin,
+                db=session,
+            )
         assert exc_info.value.status_code == 409
+        monkeypatch.setattr(
+            auth_module,
+            "_lock_active_admin_ids",
+            AsyncMock(return_value={str(admin.id)}),
+        )
+        with pytest.raises(HTTPException, match="At least one active admin") as demote_error:
+            await update_user(
+                str(admin.id),
+                UserAdminPayload(
+                    email=admin.email,
+                    admin_password=admin_password,
+                    role="viewer",
+                    status="active",
+                ),
+                request=Request({"type": "http", "client": ("127.0.0.1", 12345)}),
+                current_admin=admin,
+                db=session,
+            )
+        assert demote_error.value.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -138,6 +213,36 @@ async def test_position_close_creates_and_persists_dashboard_alert(monkeypatch):
     assert "ETHUSDT" in alert["message"]
     persist.assert_awaited_once_with(alert)
     assert any(call.args[0] == "position:update" for call in emit.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_repetitive_error_alerts_are_rate_limited_before_emit_and_persistence(monkeypatch):
+    from src.api import engine_events
+
+    emit = AsyncMock()
+    persist = AsyncMock()
+    monkeypatch.setattr(engine_events, "_persist_system_alert", persist)
+    handler = engine_events.create_engine_event_handler(emit, persist=True)
+
+    await handler("trade:error", {"message": "exchange temporarily unavailable"})
+    await handler("trade:error", {"message": "exchange temporarily unavailable"})
+
+    alert_emits = [call for call in emit.await_args_list if call.args[0] == "system:alert"]
+    assert len(alert_emits) == 1
+    persist.assert_awaited_once()
+
+
+def test_alert_payloads_are_bounded_before_reaching_clients():
+    from src.api.engine_events import _system_alert_for_event
+
+    alert = _system_alert_for_event(
+        "position:closed",
+        {"symbol": "S" * 1_000, "exit_reason": "R" * 2_000},
+    )
+
+    assert alert is not None
+    assert len(alert["message"]) <= 500
+    assert "S" * 33 not in alert["message"]
 
 
 @pytest.mark.asyncio

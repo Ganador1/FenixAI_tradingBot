@@ -15,6 +15,7 @@ source of truth used by both sides.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -25,6 +26,16 @@ logger = logging.getLogger("FenixEngineEvents")
 EmitFn = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 _CONF_LABEL_MAP = {"HIGH": 0.8, "MEDIUM": 0.55, "LOW": 0.35}
+_ALERT_COOLDOWN_SECONDS = {
+    "trade:error": 60.0,
+    "risk:blocked": 60.0,
+    "kline_watchdog": 300.0,
+}
+
+
+def _bounded_text(value: Any, default: str, limit: int) -> str:
+    text = str(value if value is not None else default).strip()
+    return (text or default)[:limit]
 
 
 def _coerce_confidence(value: Any) -> float:
@@ -83,29 +94,31 @@ async def _persist_system_alert(payload: dict[str, Any]) -> None:
                 created_at = datetime.now(timezone.utc).replace(tzinfo=None)
             db_session.add(
                 SystemAlert(
-                    id=payload["id"],
-                    type=payload["type"],
-                    title=payload["title"],
-                    message=payload["message"],
-                    component=payload["component"],
-                    severity=payload["severity"],
+                    id=_bounded_text(payload.get("id"), str(uuid.uuid4()), 128),
+                    type=_bounded_text(payload.get("type"), "warning", 32),
+                    title=_bounded_text(payload.get("title"), "System alert", 160),
+                    message=_bounded_text(payload.get("message"), "No details available.", 500),
+                    component=_bounded_text(payload.get("component"), "system", 64),
+                    severity=_bounded_text(payload.get("severity"), "medium", 16),
                     created_at=created_at,
                     resolved=bool(payload.get("resolved", False)),
                 )
             )
-            await db_session.commit()
             stale_ids = select(SystemAlert.id).order_by(desc(SystemAlert.created_at)).offset(1_000)
             await db_session.execute(delete(SystemAlert).where(SystemAlert.id.in_(stale_ids)))
+            # Insert and retention are one atomic transaction and one fsync boundary.
             await db_session.commit()
     except Exception as db_err:
         logger.debug("Could not persist system alert to DB: %s", db_err)
 
 
 def _system_alert_for_event(event_type: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    timestamp = str(data.get("timestamp") or datetime.now(timezone.utc).isoformat())
-    symbol = str(data.get("symbol") or "position")
+    timestamp = _bounded_text(data.get("timestamp"), datetime.now(timezone.utc).isoformat(), 64)
+    symbol = _bounded_text(data.get("symbol"), "position", 32)
     if event_type == "position:closed":
-        reason = str(data.get("exit_reason") or data.get("reason") or "position_closed").lower()
+        reason = _bounded_text(
+            data.get("exit_reason") or data.get("reason"), "position_closed", 80
+        ).lower()
         if "stop_loss" in reason:
             title, alert_type, severity = "Stop loss hit", "warning", "high"
         elif "take_profit" in reason:
@@ -129,8 +142,8 @@ def _system_alert_for_event(event_type: str, data: dict[str, Any]) -> dict[str, 
     return {
         "id": str(uuid.uuid4()),
         "type": alert_type,
-        "title": title,
-        "message": message,
+        "title": _bounded_text(title, "System alert", 160),
+        "message": _bounded_text(message, "No details available.", 500),
         "component": "trading" if not event_type.startswith("kline_watchdog") else "market_data",
         "severity": severity,
         "created_at": timestamp,
@@ -154,15 +167,26 @@ def create_engine_event_handler(
     Returns:
         Async callback compatible with ``TradingEngine.on_agent_event``.
     """
+    # Keys are limited to the fixed alert categories above, so this cannot grow
+    # with attacker-controlled symbols or messages.
+    alert_last_emitted_at: dict[str, float] = {}
 
     async def handle_engine_event(event_type: str, data: dict[str, Any]) -> None:
         try:
             data = data or {}
             system_alert = _system_alert_for_event(event_type, data)
             if system_alert is not None:
-                await emit("system:alert", system_alert)
-                if persist:
-                    await _persist_system_alert(system_alert)
+                cooldown_key = (
+                    "kline_watchdog" if event_type.startswith("kline_watchdog") else event_type
+                )
+                cooldown = _ALERT_COOLDOWN_SECONDS.get(cooldown_key, 0.0)
+                now = time.monotonic()
+                last_emitted = alert_last_emitted_at.get(cooldown_key, float("-inf"))
+                if now - last_emitted >= cooldown:
+                    alert_last_emitted_at[cooldown_key] = now
+                    await emit("system:alert", system_alert)
+                    if persist:
+                        await _persist_system_alert(system_alert)
 
             if event_type == "agent_output":
                 agent_name = data.get("agent_name", "unknown")

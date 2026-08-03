@@ -17,6 +17,7 @@ import { ReasoningBank } from "@/pages/ReasoningBank";
 import { SystemMonitor } from "@/pages/SystemMonitor";
 import { UsersPage } from "@/pages/Users";
 import { SettingsPage } from "@/pages/Settings";
+import { PasswordResetPage } from "@/pages/PasswordReset";
 import { Navigate, RouterProvider, useLocation } from "@/lib/router";
 
 // Store
@@ -58,6 +59,9 @@ function AppRoutes(): JSX.Element {
 
   if (pathname === '/login') {
     return user ? <Navigate to="/dashboard" replace /> : <ModernLoginPage />;
+  }
+  if (pathname === '/reset-password') {
+    return <PasswordResetPage />;
   }
   const page = PROTECTED_PAGES[pathname];
   if (!page) {

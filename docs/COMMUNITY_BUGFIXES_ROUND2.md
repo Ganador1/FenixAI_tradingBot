@@ -19,9 +19,16 @@ fresh entry continues to use `position_opened`.
 ## User administration
 
 User creation, editing, deletion, and password reset now operate on the SQLAlchemy
-`User` table. Passwords are accepted only through dedicated password fields and
-are stored as hashes. The API prevents an administrator from deleting or
-deactivating their own account and prevents removal of the final active admin.
+`User` table. Account-management mutations require administrator
+reauthentication. New accounts and password recovery use 15-minute, single-use
+tokens stored only as hashes; each user chooses their own password on the public
+`/reset-password` page. Password changes immediately invalidate previously
+issued access tokens.
+
+The API prevents an administrator from deleting or deactivating their own
+account and prevents removal of the final active admin. Deployments using
+Alembic must apply the included migration before serving account-management
+requests.
 
 The dashboard form now exposes only roles and statuses supported by the backend.
 Accounts created through the UI persist across application restarts.
@@ -36,7 +43,9 @@ from a single snapshot.
 The engine event bridge now creates dashboard alerts for position closures,
 stop-loss and take-profit exits, execution failures, risk-control blocks, and
 market-data watchdog warnings. Alerts are broadcast over Socket.IO and persisted
-for retrieval after a page reload.
+for retrieval after a page reload. Repetitive error categories use bounded
+cooldowns, payload lengths are constrained, and insert/retention work is committed
+in one database transaction.
 
 ## Frontend behavior
 

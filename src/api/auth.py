@@ -7,7 +7,7 @@ import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -15,12 +15,12 @@ from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from redis import asyncio as redis_async
-from sqlalchemy import func, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config.database import get_db
-from src.models.user import User
+from src.models.user import PasswordResetToken, User
 
 from src.security.dotenv_security import secure_load_dotenv
 
@@ -265,7 +265,11 @@ class UserSettings(_StrictInput):
     theme: str = "auto"
 
 
-class UserAdminPayload(_StrictInput):
+class AdminReauthentication(_StrictInput):
+    admin_password: str = Field(min_length=1, max_length=1024)
+
+
+class UserAdminPayload(AdminReauthentication):
     email: str = Field(min_length=3, max_length=254)
     username: str | None = Field(
         default=None,
@@ -288,10 +292,15 @@ class UserAdminPayload(_StrictInput):
 
 
 class UserCreatePayload(UserAdminPayload):
-    password: str = Field(min_length=12, max_length=1024)
+    pass
 
 
-class PasswordResetPayload(_StrictInput):
+class PasswordResetRequest(AdminReauthentication):
+    pass
+
+
+class PasswordResetCompletion(_StrictInput):
+    token: str = Field(min_length=32, max_length=256)
     new_password: str = Field(min_length=12, max_length=1024)
 
 
@@ -397,6 +406,17 @@ def _require_valid_jwt_configuration() -> str:
     return SECRET_KEY
 
 
+def _authentication_state(user: User) -> str:
+    """Bind a JWT to mutable server-side authentication state.
+
+    Password changes alter this keyed fingerprint, which immediately revokes
+    every access token issued with the previous password hash.
+    """
+    secret_key = _require_valid_jwt_configuration()
+    material = f"{user.id}:{user.hashed_password}".encode()
+    return hmac.new(secret_key.encode("utf-8"), material, hashlib.sha256).hexdigest()
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
     secret_key = _require_valid_jwt_configuration()
     credentials_exception = HTTPException(
@@ -413,15 +433,18 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
             algorithms=[ALGORITHM],
             audience=JWT_AUDIENCE,
             issuer=JWT_ISSUER,
-            options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "sub"]},
+            options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "sub", "auth_state"]},
         )
         username = payload.get("sub")
         token_id = payload.get("jti")
+        token_auth_state = payload.get("auth_state")
         if (
             not isinstance(username, str)
             or not 1 <= len(username) <= 254
             or not isinstance(token_id, str)
             or not 1 <= len(token_id) <= 128
+            or not isinstance(token_auth_state, str)
+            or len(token_auth_state) != 64
         ):
             raise credentials_exception
         token_data = TokenData(username=username)
@@ -430,7 +453,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
 
     result = await db.execute(select(User).where(User.email == token_data.username))
     user = result.scalar_one_or_none()
-    if user is None:
+    if user is None or not hmac.compare_digest(token_auth_state, _authentication_state(user)):
         raise credentials_exception
     return user
 
@@ -525,11 +548,15 @@ def _payload_full_name(payload: UserAdminPayload) -> str:
     )[:255]
 
 
-async def _active_admin_count(db: AsyncSession) -> int:
+async def _lock_active_admin_ids(db: AsyncSession) -> set[str]:
+    """Serialize last-admin checks on databases that support row locking."""
     result = await db.execute(
-        select(func.count(User.id)).where(User.role == "admin", User.is_active.is_(True))
+        select(User.id)
+        .where(User.role == "admin", User.is_active.is_(True))
+        .order_by(User.id)
+        .with_for_update()
     )
-    return int(result.scalar_one())
+    return {str(user_id) for user_id in result.scalars().all()}
 
 
 async def _load_managed_user(db: AsyncSession, user_id: str) -> User:
@@ -539,8 +566,45 @@ async def _load_managed_user(db: AsyncSession, user_id: str) -> User:
     return user
 
 
+async def _require_admin_reauthentication(
+    admin_password: str,
+    current_admin: User,
+    request: Request,
+) -> None:
+    """Require the administrator's password for account-takeover-sensitive actions."""
+    await _check_login_rate_limit(request, current_admin.email)
+    if verify_password(admin_password, current_admin.hashed_password):
+        return
+    logger.warning(
+        "Admin reauthentication failed actor=%s ip=%s",
+        current_admin.id,
+        _client_ip(request),
+    )
+    await _record_shared_failed_login(request, current_admin.email)
+    raise HTTPException(status_code=403, detail="Administrator reauthentication failed")
+
+
 def _would_remove_active_admin(user: User, *, role: str, active: bool) -> bool:
     return bool(user.role == "admin" and user.is_active and (role != "admin" or not active))
+
+
+def _new_password_reset_record(
+    *,
+    user_id: str,
+    admin_id: str,
+    purpose: Literal["setup", "reset"],
+    now: datetime,
+) -> tuple[str, PasswordResetToken]:
+    raw_token = secrets.token_urlsafe(48)
+    return raw_token, PasswordResetToken(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        token_hash=hashlib.sha256(raw_token.encode("utf-8")).hexdigest(),
+        purpose=purpose,
+        created_by_admin_id=admin_id,
+        created_at=now,
+        expires_at=now + timedelta(minutes=15),
+    )
 
 
 @router.get("/roles", response_model=list[RoleInfo])
@@ -560,19 +624,32 @@ async def list_users(
 @router.post("/users", response_model=dict[str, Any])
 async def create_user(
     payload: UserCreatePayload,
+    request: Request,
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await _require_admin_reauthentication(payload.admin_password, current_admin, request)
     user = User(
         id=str(uuid.uuid4()),
         email=payload.email,
-        hashed_password=get_password_hash(payload.password),
+        # The administrator never chooses or learns the account's final password.
+        hashed_password=get_password_hash(secrets.token_urlsafe(48)),
         full_name=_payload_full_name(payload),
         role=payload.role,
         is_active=payload.status == "active",
     )
     db.add(user)
     try:
+        # Flush the parent first so the reset-token foreign key is valid on SQLite.
+        await db.flush()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        setup_token, setup_record = _new_password_reset_record(
+            user_id=str(user.id),
+            admin_id=str(current_admin.id),
+            purpose="setup",
+            now=now,
+        )
+        db.add(setup_record)
         await db.commit()
         await db.refresh(user)
     except IntegrityError as exc:
@@ -581,22 +658,28 @@ async def create_user(
             status_code=409, detail="A user with this email already exists"
         ) from exc
     logger.info("Admin user_created actor=%s target=%s", current_admin.id, user.id)
-    return _public_user(user)
+    return {
+        **_public_user(user),
+        "setup_token": setup_token,
+        "expires_at": setup_record.expires_at.replace(tzinfo=timezone.utc).isoformat(),
+    }
 
 
 @router.put("/users/{user_id}", response_model=dict[str, Any])
 async def update_user(
     user_id: str,
     payload: UserAdminPayload,
+    request: Request,
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await _require_admin_reauthentication(payload.admin_password, current_admin, request)
     user = await _load_managed_user(db, user_id)
     active = payload.status == "active"
     if str(user.id) == str(current_admin.id) and not active:
         raise HTTPException(status_code=409, detail="You cannot deactivate your own account")
     if _would_remove_active_admin(user, role=payload.role, active=active):
-        if await _active_admin_count(db) <= 1:
+        if len(await _lock_active_admin_ids(db)) <= 1:
             raise HTTPException(status_code=409, detail="At least one active admin is required")
 
     user.email = payload.email
@@ -618,14 +701,19 @@ async def update_user(
 @router.delete("/users/{user_id}", response_model=dict)
 async def delete_user(
     user_id: str,
+    payload: AdminReauthentication,
+    request: Request,
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await _require_admin_reauthentication(payload.admin_password, current_admin, request)
     user = await _load_managed_user(db, user_id)
     if str(user.id) == str(current_admin.id):
         raise HTTPException(status_code=409, detail="You cannot delete your own account")
-    if user.role == "admin" and user.is_active and await _active_admin_count(db) <= 1:
-        raise HTTPException(status_code=409, detail="At least one active admin is required")
+    if user.role == "admin" and user.is_active:
+        if len(await _lock_active_admin_ids(db)) <= 1:
+            raise HTTPException(status_code=409, detail="At least one active admin is required")
+    await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
     await db.delete(user)
     await db.commit()
     logger.info("Admin user_deleted actor=%s target=%s", current_admin.id, user_id)
@@ -635,15 +723,76 @@ async def delete_user(
 @router.post("/users/{user_id}/reset-password", response_model=dict)
 async def reset_password(
     user_id: str,
-    payload: PasswordResetPayload,
+    payload: PasswordResetRequest,
+    request: Request,
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await _require_admin_reauthentication(payload.admin_password, current_admin, request)
     user = await _load_managed_user(db, user_id)
-    user.hashed_password = get_password_hash(payload.new_password)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
+    raw_token, reset_record = _new_password_reset_record(
+        user_id=str(user.id),
+        admin_id=str(current_admin.id),
+        purpose="reset",
+        now=now,
+    )
+    db.add(reset_record)
     await db.commit()
-    logger.info("Admin password_reset actor=%s target=%s", current_admin.id, user.id)
-    return {"success": True, "id": str(user.id)}
+    logger.info("Admin password_reset_issued actor=%s target=%s", current_admin.id, user.id)
+    return {
+        "success": True,
+        "id": str(user.id),
+        "reset_token": raw_token,
+        "expires_at": reset_record.expires_at.replace(tzinfo=timezone.utc).isoformat(),
+    }
+
+
+@router.post("/password-reset/complete", response_model=dict)
+async def complete_password_reset(
+    payload: PasswordResetCompletion,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Consume a reset token exactly once without exposing it in a URL."""
+    await _check_login_rate_limit(request, "password-reset")
+
+    async def reject_reset() -> NoReturn:
+        await _record_shared_failed_login(request, "password-reset")
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
+    result = await db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    )
+    reset_record = result.scalar_one_or_none()
+    if reset_record is None or reset_record.used_at is not None or reset_record.expires_at <= now:
+        await reject_reset()
+
+    user = await db.get(User, reset_record.user_id)
+    if user is None:
+        await reject_reset()
+
+    replacement_hash = get_password_hash(payload.new_password)
+    consume_result = await db.execute(
+        update(PasswordResetToken)
+        .where(
+            PasswordResetToken.id == reset_record.id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now,
+        )
+        .values(used_at=now)
+    )
+    if consume_result.rowcount != 1:
+        await db.rollback()
+        await reject_reset()
+
+    user.hashed_password = replacement_hash
+    await db.commit()
+    logger.info("Password reset completed target=%s", user.id)
+    return {"success": True}
 
 
 # --- Routes ---
@@ -682,7 +831,12 @@ async def login_for_access_token(
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email, "role": user.role, "userId": user.id},
+        data={
+            "sub": user.email,
+            "role": user.role,
+            "userId": user.id,
+            "auth_state": _authentication_state(user),
+        },
         expires_delta=access_token_expires,
     )
 

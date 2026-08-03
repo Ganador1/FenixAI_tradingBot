@@ -52,7 +52,14 @@ export const UsersPage: React.FC = () => {
   // const [showRoleModal, setShowRoleModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [resettingUser, setResettingUser] = useState<User | null>(null);
-  const [newPassword, setNewPassword] = useState('');
+  const [deletingUser, setDeletingUser] = useState<User | null>(null);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [issuedToken, setIssuedToken] = useState<{
+    token: string;
+    email: string;
+    purpose: 'setup' | 'reset';
+    expiresAt: string;
+  } | null>(null);
   // const [editingRole, setEditingRole] = useState<Role | null>(null);
 
   // Form states
@@ -62,7 +69,7 @@ export const UsersPage: React.FC = () => {
     status: 'active' as User['status'],
     first_name: '',
     last_name: '',
-    password: ''
+    admin_password: ''
   });
 
   /*
@@ -139,7 +146,7 @@ export const UsersPage: React.FC = () => {
       status: 'active',
       first_name: '',
       last_name: '',
-      password: ''
+      admin_password: ''
     });
     setShowUserModal(true);
   };
@@ -152,7 +159,7 @@ export const UsersPage: React.FC = () => {
       status: user.status,
       first_name: user.profile?.first_name || '',
       last_name: user.profile?.last_name || '',
-      password: ''
+      admin_password: ''
     });
     setShowUserModal(true);
   };
@@ -197,7 +204,7 @@ export const UsersPage: React.FC = () => {
           email: userForm.email,
           role: userForm.role,
           status: userForm.status,
-          ...(!editingUser ? { password: userForm.password } : {}),
+          admin_password: userForm.admin_password,
           profile: {
             first_name: userForm.first_name,
             last_name: userForm.last_name,
@@ -205,25 +212,35 @@ export const UsersPage: React.FC = () => {
         })
       });
 
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || 'Failed to save user');
       }
 
       await fetchUsersData();
       setShowUserModal(false);
+      setUserForm(prev => ({ ...prev, admin_password: '' }));
+      if (!editingUser && payload.setup_token) {
+        setIssuedToken({
+          token: payload.setup_token,
+          email: payload.email,
+          purpose: 'setup',
+          expiresAt: payload.expires_at,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save user');
     }
   };
 
-  const handleDeleteUser = async (userId: string) => {
-    if (!confirm('Are you sure you want to delete this user?')) return;
-    
+  const handleDeleteUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deletingUser) return;
     try {
-      const response = await fetch(`/api/auth/users/${userId}`, {
+      const response = await fetch(`/api/auth/users/${deletingUser.id}`, {
         method: 'DELETE',
-        headers: authHeaders()
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ admin_password: adminPassword }),
       });
 
       if (!response.ok) {
@@ -232,6 +249,8 @@ export const UsersPage: React.FC = () => {
       }
 
       await fetchUsersData();
+      setDeletingUser(null);
+      setAdminPassword('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete user');
     }
@@ -244,15 +263,21 @@ export const UsersPage: React.FC = () => {
       const response = await fetch(`/api/auth/users/${resettingUser.id}/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ new_password: newPassword }),
+        body: JSON.stringify({ admin_password: adminPassword }),
       });
 
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || 'Failed to reset password');
       }
+      setIssuedToken({
+        token: payload.reset_token,
+        email: resettingUser.email,
+        purpose: 'reset',
+        expiresAt: payload.expires_at,
+      });
       setResettingUser(null);
-      setNewPassword('');
+      setAdminPassword('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset password');
     }
@@ -507,7 +532,7 @@ export const UsersPage: React.FC = () => {
                           size="sm"
                           onClick={() => {
                             setResettingUser(user);
-                            setNewPassword('');
+                            setAdminPassword('');
                           }}
                           className="p-1"
                         >
@@ -516,7 +541,10 @@ export const UsersPage: React.FC = () => {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => handleDeleteUser(user.id)}
+                          onClick={() => {
+                            setDeletingUser(user);
+                            setAdminPassword('');
+                          }}
                           className="p-1 text-red-600 hover:text-red-700"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -539,7 +567,10 @@ export const UsersPage: React.FC = () => {
       {/* User Modal */}
       <Modal
         isOpen={showUserModal}
-        onClose={() => setShowUserModal(false)}
+        onClose={() => {
+          setShowUserModal(false);
+          setUserForm(prev => ({ ...prev, admin_password: '' }));
+        }}
         title={editingUser ? 'Edit User' : 'Create User'}
       >
         <form onSubmit={handleSubmitUser} className="space-y-4">
@@ -553,21 +584,6 @@ export const UsersPage: React.FC = () => {
             />
           </div>
 
-          {!editingUser && (
-            <div>
-              <label className="block text-sm font-medium mb-1">Initial Password</label>
-              <Input
-                type="password"
-                minLength={12}
-                autoComplete="new-password"
-                value={userForm.password}
-                onChange={(e) => setUserForm(prev => ({ ...prev, password: e.target.value }))}
-                required
-              />
-              <p className="mt-1 text-xs text-gray-500">At least 12 characters. Share it through a secure channel.</p>
-            </div>
-          )}
-          
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">First Name</label>
@@ -583,6 +599,20 @@ export const UsersPage: React.FC = () => {
                 onChange={(e) => setUserForm(prev => ({ ...prev, last_name: e.target.value }))}
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Confirm Your Admin Password</label>
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={userForm.admin_password}
+              onChange={(e) => setUserForm(prev => ({ ...prev, admin_password: e.target.value }))}
+              required
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Required again for every account-management change.
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -613,7 +643,10 @@ export const UsersPage: React.FC = () => {
             <Button
               type="button"
               variant="outline"
-              onClick={() => setShowUserModal(false)}
+              onClick={() => {
+                setShowUserModal(false);
+                setUserForm(prev => ({ ...prev, admin_password: '' }));
+              }}
             >
               Cancel
             </Button>
@@ -628,30 +661,105 @@ export const UsersPage: React.FC = () => {
         isOpen={resettingUser !== null}
         onClose={() => {
           setResettingUser(null);
-          setNewPassword('');
+          setAdminPassword('');
         }}
-        title="Set New Password"
+        title="Issue Password Reset Token"
         size="sm"
       >
         <form onSubmit={handleResetPassword} className="space-y-4">
           <p className="text-sm text-gray-600">
-            Set a new password for {resettingUser?.email}. No password is sent by email.
+            Confirm your administrator password. The user will choose their own password
+            with a short-lived, single-use token.
           </p>
           <Input
             type="password"
-            minLength={12}
-            autoComplete="new-password"
-            value={newPassword}
-            onChange={(event) => setNewPassword(event.target.value)}
+            autoComplete="current-password"
+            value={adminPassword}
+            onChange={(event) => setAdminPassword(event.target.value)}
             required
           />
           <div className="flex justify-end space-x-2">
-            <Button type="button" variant="outline" onClick={() => setResettingUser(null)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setResettingUser(null);
+                setAdminPassword('');
+              }}
+            >
               Cancel
             </Button>
-            <Button type="submit">Update Password</Button>
+            <Button type="submit">Issue Reset Token</Button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={deletingUser !== null}
+        onClose={() => {
+          setDeletingUser(null);
+          setAdminPassword('');
+        }}
+        title="Delete User"
+        size="sm"
+      >
+        <form onSubmit={handleDeleteUser} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Permanently delete {deletingUser?.email}? Confirm your administrator password.
+          </p>
+          <Input
+            type="password"
+            autoComplete="current-password"
+            value={adminPassword}
+            onChange={(event) => setAdminPassword(event.target.value)}
+            required
+          />
+          <div className="flex justify-end space-x-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setDeletingUser(null);
+                setAdminPassword('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" variant="danger">Delete User</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={issuedToken !== null}
+        onClose={() => setIssuedToken(null)}
+        title={issuedToken?.purpose === 'setup' ? 'Account Setup Token' : 'Password Reset Token'}
+        size="sm"
+      >
+        <div className="space-y-4">
+          <Alert variant="warning">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Shown only once</AlertTitle>
+            <AlertDescription>
+              Send this token to {issuedToken?.email} through a secure channel. It expires at{' '}
+              {issuedToken ? new Date(issuedToken.expiresAt).toLocaleTimeString() : ''}.
+            </AlertDescription>
+          </Alert>
+          <Input readOnly value={issuedToken?.token ?? ''} aria-label="One-time token" />
+          <p className="text-xs text-gray-500">
+            The user must open /reset-password and paste this token. It is never stored in plaintext.
+          </p>
+          <div className="flex justify-end space-x-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => issuedToken && navigator.clipboard.writeText(issuedToken.token)}
+            >
+              Copy Token
+            </Button>
+            <Button type="button" onClick={() => setIssuedToken(null)}>Done</Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
