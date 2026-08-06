@@ -2,6 +2,7 @@ import React from 'react';
 import { AlertTriangle, CheckCircle, Info, XCircle } from 'lucide-react';
 import { SystemAlert } from '@/stores/systemStore';
 import { formatDate } from '@/lib/utils';
+import { Link } from '@/lib/router';
 
 interface RecentAlertsProps {
   alerts: SystemAlert[];
@@ -86,9 +87,12 @@ export function RecentAlerts({ alerts }: RecentAlertsProps) {
       
       {alerts.length > 0 && (
         <div className="text-center pt-2">
-          <button className="text-sm text-blue-600 hover:text-blue-800 font-medium">
+          <Link
+            to="/system"
+            className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+          >
             View all alerts
-          </button>
+          </Link>
         </div>
       )}
     </div>

@@ -304,6 +304,7 @@ def test_frontend_community_bugfixes_are_wired_to_real_behavior():
     reasoning = (root / "pages" / "ReasoningBank.tsx").read_text()
     sidebar = (root / "components" / "Sidebar.tsx").read_text()
     chart = (root / "components" / "SystemStatusChart.tsx").read_text()
+    recent_alerts = (root / "components" / "RecentAlerts.tsx").read_text()
     login = (root / "components" / "ModernLoginPage.tsx").read_text()
 
     assert "navigate('/trading')" in dashboard
@@ -313,6 +314,7 @@ def test_frontend_community_bugfixes_are_wired_to_real_behavior():
     assert "visibleEntries" in reasoning and "setVisibleEntries" in reasoning
     assert "socketConnected ? 'Connected' : 'Offline'" in sidebar
     assert "/api/system/metrics/history?timeframe=1h" in chart
+    assert 'to="/system"' in recent_alerts
     assert "Remember me" not in login
     assert "Continue with Google" not in login
     assert "Sign up" not in login
