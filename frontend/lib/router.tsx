@@ -9,6 +9,7 @@ import React, {
 
 const ALLOWED_PATHS = new Set([
   '/login',
+  '/reset-password',
   '/dashboard',
   '/market',
   '/trading',

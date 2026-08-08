@@ -555,9 +555,7 @@ class TradingEngine:
         self._engine_cleanup_on_stop = _env_flag("FENIX_CLEANUP_ON_STOP", False)
         # Live entries fail closed when the risk agent response is malformed.
         # Paper mode keeps the permissive default for experimentation.
-        self._engine_enforce_llm_risk = _env_flag(
-            "FENIX_ENFORCE_LLM_RISK", not self.paper_trading
-        )
+        self._engine_enforce_llm_risk = _env_flag("FENIX_ENFORCE_LLM_RISK", not self.paper_trading)
         self._stale_pending_order_max_age_hours = _env_float(
             "FENIX_STALE_PENDING_ORDER_MAX_AGE_HOURS",
             24.0,
@@ -1143,9 +1141,7 @@ class TradingEngine:
         explicit = _safe_float(os.getenv("FENIX_ANALYSIS_STAGGER_OFFSET_SEC"))
         if explicit is not None:
             return max(0.0, explicit)
-        stagger_max = _env_float(
-            "FENIX_ANALYSIS_STAGGER_SEC", 0.0 if self.paper_trading else 10.0
-        )
+        stagger_max = _env_float("FENIX_ANALYSIS_STAGGER_SEC", 0.0 if self.paper_trading else 10.0)
         if stagger_max <= 0:
             return 0.0
         digest = int(hashlib.sha256(str(self.symbol).upper().encode()).hexdigest(), 16)
@@ -1595,9 +1591,7 @@ class TradingEngine:
                     )
                     if macro_alerts:
                         news_data = list(macro_alerts) + list(news_data)
-                        logger.info(
-                            "🌍 Injected %d macro alerts into news feed", len(macro_alerts)
-                        )
+                        logger.info("🌍 Injected %d macro alerts into news feed", len(macro_alerts))
                 except Exception:
                     logger.debug("Macro news fetch failed", exc_info=True)
                 # Send news update event to frontend
@@ -3311,6 +3305,7 @@ class TradingEngine:
         the final decision, with a minimum confidence, and the final decision to
         be HIGH-conviction. Maps QABBA's BUY_QABBA/SELL_QABBA to BUY/SELL.
         """
+
         def _norm(sig: str) -> str:
             sig = str(sig or "").upper()
             if sig.startswith("BUY"):
@@ -3356,9 +3351,7 @@ class TradingEngine:
             return None
 
         age = _safe_float(signal.get("_signal_age_sec"))
-        if age is not None and age > float(
-            getattr(self, "_trend_gate_max_signal_age_sec", 90.0)
-        ):
+        if age is not None and age > float(getattr(self, "_trend_gate_max_signal_age_sec", 90.0)):
             return None
 
         regime = str(signal.get("regime") or "").upper()
@@ -3369,9 +3362,7 @@ class TradingEngine:
         # Cache the companion's EMA slope for the price-confirmation fallback.
         self._last_companion_ema_trend_bps = _safe_float(signal.get("ema_trend_bps"))
 
-        faded = (decision == "SELL" and trend == "BULL") or (
-            decision == "BUY" and trend == "BEAR"
-        )
+        faded = (decision == "SELL" and trend == "BULL") or (decision == "BUY" and trend == "BEAR")
         if not faded:
             return None
 
@@ -3387,9 +3378,7 @@ class TradingEngine:
 
         return f"trend_gate:{decision} fades {regime}/{trend} (price-confirmed)"
 
-    def _tech_trend_blocks_entry(
-        self, decision: str, indicators: dict[str, Any]
-    ) -> str | None:
+    def _tech_trend_blocks_entry(self, decision: str, indicators: dict[str, Any]) -> str | None:
         """Technical trend filter using EMA/SuperTrend from the engine's indicators.
 
         Blocks SELL when EMAs are bullish (EMA20 > EMA50) and SuperTrend is bullish,
@@ -3405,9 +3394,7 @@ class TradingEngine:
         ema20 = _safe_float(indicators.get("ema_20")) or 0.0
         ema50 = _safe_float(indicators.get("ema_50")) or 0.0
         supertrend_dir = str(
-            indicators.get("supertrend_direction")
-            or indicators.get("supertrend_signal")
-            or ""
+            indicators.get("supertrend_direction") or indicators.get("supertrend_signal") or ""
         ).upper()
 
         # Need at least EMAs to make a determination
@@ -3658,9 +3645,7 @@ class TradingEngine:
         bars = int(getattr(self, "_post_stopout_block_bars", 0) or 0)
         if bars <= 0 or realized_pnl >= 0.0:
             return
-        side = str(
-            close_result.get("side") or getattr(tracked_position, "side", "") or ""
-        ).upper()
+        side = str(close_result.get("side") or getattr(tracked_position, "side", "") or "").upper()
         if side in {"LONG", "BUY"}:
             blocked = "SELL"
         elif side in {"SHORT", "SELL"}:
@@ -4102,6 +4087,7 @@ class TradingEngine:
                 )
                 try:
                     from src.risk.safety_alerts import alert_safety_event
+
                     await alert_safety_event(
                         "RECONCILIATION_FAILURE",
                         f"Position reconciliation watchdog failed for {self.symbol}",
@@ -4122,9 +4108,7 @@ class TradingEngine:
 
     async def _start_user_data_stream(self) -> None:
         key_name = "BINANCE_TESTNET_API_KEY" if self.use_testnet else "BINANCE_API_KEY"
-        secret_name = (
-            "BINANCE_TESTNET_API_SECRET" if self.use_testnet else "BINANCE_API_SECRET"
-        )
+        secret_name = "BINANCE_TESTNET_API_SECRET" if self.use_testnet else "BINANCE_API_SECRET"
         api_key = os.getenv(key_name, "").strip()
         api_secret = os.getenv(secret_name, "").strip()
         if not api_key or not api_secret:
@@ -4142,9 +4126,7 @@ class TradingEngine:
             reconnect_delay_sec=_env_float("FENIX_USER_DATA_RECONNECT_DELAY_SEC", 2.0),
         )
         try:
-            await stream.start(
-                timeout_sec=_env_float("FENIX_USER_DATA_CONNECT_TIMEOUT_SEC", 15.0)
-            )
+            await stream.start(timeout_sec=_env_float("FENIX_USER_DATA_CONNECT_TIMEOUT_SEC", 15.0))
         except Exception:
             logger.warning(
                 "Private user-data stream failed to start; polling remains active",
@@ -4223,9 +4205,7 @@ class TradingEngine:
         snapshot: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], float, bool]:
         first = (
-            snapshot
-            if snapshot is not None
-            else self._get_verified_exchange_position_snapshot()
+            snapshot if snapshot is not None else self._get_verified_exchange_position_snapshot()
         )
         if not isinstance(first, dict):
             raise RuntimeError("Exchange position snapshot is unavailable")
@@ -4388,11 +4368,14 @@ class TradingEngine:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         def _read_fills() -> list[dict[str, Any]]:
-            trades = self.executor.get_recent_trades(
-                start_time=now_ms - 120_000,
-                end_time=now_ms + 30_000,
-                limit=50,
-            ) or []
+            trades = (
+                self.executor.get_recent_trades(
+                    start_time=now_ms - 120_000,
+                    end_time=now_ms + 30_000,
+                    limit=50,
+                )
+                or []
+            )
             return [
                 trade
                 for trade in trades
@@ -4969,9 +4952,7 @@ class TradingEngine:
         # but when it abstains (allow_execute=false), SELLs in BULL slip through.
         # This uses the engine's own indicators (EMA20/50, SuperTrend) as a
         # second line of defense. Disable with FENIX_TECH_TREND_FILTER=0.
-        if decision in {"BUY", "SELL"} and _env_flag(
-            "FENIX_TECH_TREND_FILTER", True
-        ):
+        if decision in {"BUY", "SELL"} and _env_flag("FENIX_TECH_TREND_FILTER", True):
             tech_trend_block = self._tech_trend_blocks_entry(decision, indicators)
             if tech_trend_block:
                 await _hold(tech_trend_block, filter_name="TECH_TREND")
@@ -6246,8 +6227,7 @@ class TradingEngine:
             and not pyramid_add_allowed
         ):
             logger.info(
-                "Trade skipped: NanoFenix policy disallows same-side add for %s "
-                "(pyramid: %s)",
+                "Trade skipped: NanoFenix policy disallows same-side add for %s " "(pyramid: %s)",
                 self.symbol,
                 pyramid_add_reason,
             )
@@ -6270,9 +6250,7 @@ class TradingEngine:
                 consensus_add_reason,
             )
         if same_side_position and pyramid_add_allowed:
-            logger.info(
-                "🔺 Pyramid add enabled for %s: %s", self.symbol, pyramid_add_reason
-            )
+            logger.info("🔺 Pyramid add enabled for %s: %s", self.symbol, pyramid_add_reason)
             if (callback := self.on_agent_event) is not None:
                 await callback(
                     "position:pyramid_add",
@@ -6513,17 +6491,41 @@ class TradingEngine:
         # existing protective orders stay active for the original quantity and
         # are replaced right after the fill with combined-position protection
         # (stop at blended breakeven).
-        is_pyramid_add = bool(same_side_position and pyramid_add_allowed)
-        result = await self.executor.execute_market_order(
-            side=decision,
-            quantity=quantity,
-            stop_loss=None if is_pyramid_add else stop_loss,
-            take_profit=None if is_pyramid_add else take_profit,
-        )
+        # Any accepted same-side fill is a position add, whether it came from
+        # the strict pyramid gate, the consensus override, or the explicit
+        # legacy add flag. Treating only the first case as an add caused the
+        # other two paths to be announced and persisted as fresh positions.
+        is_position_add = bool(same_side_position)
+        try:
+            result = await self.executor.execute_market_order(
+                side=decision,
+                quantity=quantity,
+                stop_loss=None if is_position_add else stop_loss,
+                take_profit=None if is_position_add else take_profit,
+            )
+        except Exception as exc:
+            logger.exception("Market order execution raised for %s", self.symbol)
+            if (callback := self.on_agent_event) is not None:
+                await callback(
+                    "trade:error",
+                    {
+                        "symbol": self.symbol,
+                        "side": decision,
+                        "status": "execution_exception",
+                        "message": f"Order execution failed ({type(exc).__name__}).",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            return
 
         if result.success:
+            execution_label = "Position add executed" if is_position_add else "Trade opened"
             logger.info(
-                f"✅ Trade executed: {decision} {result.executed_qty} @ {result.entry_price}"
+                "✅ %s: %s %s @ %s",
+                execution_label,
+                decision,
+                result.executed_qty,
+                result.entry_price,
             )
             tracked_position = None
             if getattr(self, "trade_manager", None) is not None and hasattr(
@@ -6538,8 +6540,8 @@ class TradingEngine:
                         ),
                         quantity=float(result.executed_qty) if result.executed_qty else quantity,
                         signal_timestamp=datetime.now(timezone.utc).isoformat(),
-                        stop_loss=None if is_pyramid_add else stop_loss,
-                        take_profit=None if is_pyramid_add else take_profit,
+                        stop_loss=None if is_position_add else stop_loss,
+                        take_profit=None if is_position_add else take_profit,
                         trade_id=str(result.order_id) if result.order_id else None,
                         reasoning_digest=decision_data.get("_reasoning_digest")
                         or decision_data.get("reasoning_prompt_digest"),
@@ -6551,11 +6553,37 @@ class TradingEngine:
                 except Exception as e:
                     logger.debug("Could not open tracked position: %s", e)
 
-            if is_pyramid_add and tracked_position is not None:
-                await self._apply_pyramid_protection(tracked_position)
+            if is_position_add and tracked_position is not None:
+                try:
+                    await self._apply_pyramid_protection(tracked_position)
+                except Exception:
+                    logger.exception(
+                        "Position add filled but protection refresh failed for %s", self.symbol
+                    )
+                    if (callback := self.on_agent_event) is not None:
+                        await callback(
+                            "trade:error",
+                            {
+                                "symbol": self.symbol,
+                                "side": decision,
+                                "status": "position_protection_refresh_failed",
+                                "message": "Position was added but protection could not be refreshed.",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
 
             executed_qty = float(result.executed_qty) if result.executed_qty else quantity
             executed_price = float(result.entry_price) if result.entry_price else entry_price
+            persisted_qty = (
+                float(tracked_position.quantity)
+                if is_position_add and tracked_position is not None
+                else executed_qty
+            )
+            persisted_entry = (
+                float(tracked_position.entry_price)
+                if is_position_add and tracked_position is not None
+                else executed_price
+            )
             try:
                 await persist_order_fill(
                     symbol=self.symbol,
@@ -6568,8 +6596,8 @@ class TradingEngine:
                 await persist_open_position(
                     symbol=self.symbol,
                     side="LONG" if decision == "BUY" else "SHORT",
-                    quantity=executed_qty,
-                    entry_price=executed_price,
+                    quantity=persisted_qty,
+                    entry_price=persisted_entry,
                     current_price=executed_price,
                     position_id=(
                         f"position:{result.order_id}"
@@ -6591,8 +6619,10 @@ class TradingEngine:
             digest = decision_data.get("_reasoning_digest") or decision_data.get(
                 "reasoning_prompt_digest"
             )
-            if digest and result.order_id and hasattr(
-                self.reasoning_bank, "attach_trade_reference"
+            if (
+                digest
+                and result.order_id
+                and hasattr(self.reasoning_bank, "attach_trade_reference")
             ):
                 try:
                     self.reasoning_bank.attach_trade_reference(
@@ -6602,14 +6632,16 @@ class TradingEngine:
                     logger.debug("Could not link ReasoningBank entry to trade", exc_info=True)
             await self._append_live_ledger_record(
                 {
-                    "record_type": "position_opened",
+                    "record_type": "position_added" if is_position_add else "position_opened",
                     "trade_id": str(result.order_id) if result.order_id else None,
                     "side": decision,
                     "quantity": executed_qty,
                     "entry_price": executed_price,
+                    "total_quantity": persisted_qty,
+                    "average_entry_price": persisted_entry,
                     "entry_time": datetime.now(timezone.utc).isoformat(),
-                    "stop_loss": None if is_pyramid_add else stop_loss,
-                    "take_profit": None if is_pyramid_add else take_profit,
+                    "stop_loss": None if is_position_add else stop_loss,
+                    "take_profit": None if is_position_add else take_profit,
                     "protection_position_id": getattr(result, "position_id", None),
                     "sl_order_id": getattr(result, "sl_order_id", None),
                     "tp_order_id": getattr(result, "tp_order_id", None),
@@ -6627,15 +6659,23 @@ class TradingEngine:
                         "price": result.entry_price,
                         "qty": result.executed_qty,
                         "order_id": str(result.order_id) if result.order_id else None,
+                        "position_add": is_position_add,
+                        "pyramid_add": is_position_add,
+                        "total_qty": persisted_qty,
+                        "average_entry_price": persisted_entry,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 )
                 await callback(
-                    "position:opened",
+                    "position:pyramid_added" if is_position_add else "position:opened",
                     {
+                        "symbol": self.symbol,
                         "side": decision,
                         "price": result.entry_price,
                         "qty": result.executed_qty,
+                        "total_qty": persisted_qty,
+                        "average_entry_price": persisted_entry,
+                        "entry_count": getattr(tracked_position, "entry_count", 1),
                         "order_id": str(result.order_id) if result.order_id else None,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
@@ -6690,6 +6730,17 @@ class TradingEngine:
                     logger.warning(f"Could not record trade in RiskManager: {e}")
         else:
             logger.error(f"❌ Trade failed: {result.status} - {result.message}")
+            if (callback := self.on_agent_event) is not None:
+                await callback(
+                    "trade:error",
+                    {
+                        "symbol": self.symbol,
+                        "side": decision,
+                        "status": str(result.status),
+                        "message": f"Order execution failed (status {result.status})."[:500],
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
 
             logger.info(
                 "Failed execution was not recorded as a RuntimeRiskManager loss "

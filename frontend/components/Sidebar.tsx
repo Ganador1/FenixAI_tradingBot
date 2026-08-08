@@ -12,9 +12,11 @@ import {
   Shield,
   Sparkles,
   Wifi,
+  WifiOff,
   Cpu
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useSystemStore } from '@/stores/systemStore';
 
 const sidebarItems = [
   {
@@ -76,6 +78,7 @@ const sidebarItems = [
 
 export function Sidebar() {
   const location = useLocation();
+  const socketConnected = useSystemStore((state) => state.socketConnected);
 
   return (
     <aside className="relative hidden lg:flex w-72 flex-col border-r border-gray-200 bg-white shadow-sm">
@@ -89,8 +92,16 @@ export function Sidebar() {
             <span className="text-lg font-semibold text-gray-900">Trading Control</span>
           </div>
         </div>
-        <div className="flex items-center text-xs text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
-          <Wifi className="w-3 h-3 mr-1" /> Live
+        <div className={cn(
+          "flex items-center text-xs px-3 py-1 rounded-full border",
+          socketConnected
+            ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+            : "text-gray-600 bg-gray-50 border-gray-200"
+        )}>
+          {socketConnected
+            ? <Wifi className="w-3 h-3 mr-1" />
+            : <WifiOff className="w-3 h-3 mr-1" />}
+          {socketConnected ? 'Connected' : 'Offline'}
         </div>
       </div>
 

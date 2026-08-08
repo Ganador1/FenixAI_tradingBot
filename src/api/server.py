@@ -58,7 +58,7 @@ from src.security.smtp_client import SMTPDestinationError, test_smtp_connection
 from src.config.config_loader import APP_CONFIG
 from src.config.database import SessionLocal, get_db, init_db
 from src.memory.reasoning_bank import get_reasoning_bank
-from src.models.db_models import AgentOutput, Order, Position, Trade
+from src.models.db_models import AgentOutput, Order, Position, SystemAlert, Trade
 from src.models.user import User
 from src.trading.binance_client import BinanceClient
 from src.trading.engine import TradingEngine
@@ -304,7 +304,15 @@ def _track_task(task: asyncio.Task) -> asyncio.Task:
 
     task.add_done_callback(_done)
     return task
-_METRICS_HISTORY: deque[dict] = deque(maxlen=240)
+
+
+_METRICS_HISTORY_SAMPLE_SECONDS = _bounded_int_env(
+    "FENIX_METRICS_HISTORY_SAMPLE_SECONDS", 15, 1, 300
+)
+_METRICS_HISTORY: deque[dict] = deque(
+    maxlen=_bounded_int_env("FENIX_METRICS_HISTORY_MAX_POINTS", 5_760, 60, 20_000)
+)
+_LAST_METRICS_HISTORY_TS = 0.0
 _PROCESS_START = time.time()
 
 
@@ -350,11 +358,7 @@ _BINANCE_INTERVALS = {
 
 def _market_symbol(value: str) -> str:
     normalized = value.strip().upper()
-    if (
-        not 5 <= len(normalized) <= 20
-        or not normalized.isascii()
-        or not normalized.isalnum()
-    ):
+    if not 5 <= len(normalized) <= 20 or not normalized.isascii() or not normalized.isalnum():
         raise HTTPException(status_code=422, detail="Invalid market symbol")
     return normalized
 
@@ -789,7 +793,8 @@ async def _broadcast_nano_signals():
 
 
 def build_system_metrics() -> dict:
-    """Recolecta métricas del sistema y mantiene historial."""
+    """Collect real process metrics and retain sampled history."""
+    global _LAST_METRICS_HISTORY_TS
     cpu_usage = psutil.cpu_percent(interval=None)
     load_avg = psutil.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
     mem = psutil.virtual_memory()
@@ -830,7 +835,9 @@ def build_system_metrics() -> dict:
         },
     }
 
-    _METRICS_HISTORY.append(metrics)
+    if metrics["timestamp"] - _LAST_METRICS_HISTORY_TS >= _METRICS_HISTORY_SAMPLE_SECONDS:
+        _METRICS_HISTORY.append(metrics)
+        _LAST_METRICS_HISTORY_TS = metrics["timestamp"]
     return metrics
 
 
@@ -903,9 +910,7 @@ async def _with_binance_client(testnet: bool, fn):
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
     if api_key and api_secret:
-        client = BinanceClient(
-            api_key=api_key, api_secret=api_secret, testnet=testnet
-        )
+        client = BinanceClient(api_key=api_key, api_secret=api_secret, testnet=testnet)
     else:
         client = BinanceClient(testnet=testnet)
     connected = await client.connect()
@@ -1188,8 +1193,21 @@ async def reset_system_settings(section: str):
 
 
 @app.get("/api/system/alerts", dependencies=[Depends(get_current_active_user)])
-async def get_alerts():
-    alerts: list[dict] = []
+async def get_alerts(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(SystemAlert).order_by(desc(SystemAlert.created_at)).limit(100))
+    alerts = [
+        {
+            "id": alert.id,
+            "type": alert.type,
+            "title": alert.title,
+            "message": alert.message,
+            "component": alert.component,
+            "severity": alert.severity,
+            "created_at": alert.created_at.isoformat(),
+            "resolved": bool(alert.resolved),
+        }
+        for alert in result.scalars().all()
+    ]
     return {"alerts": alerts, "data": alerts}
 
 
@@ -1232,14 +1250,11 @@ async def get_connections():
 
 @app.get("/api/system/metrics/history", dependencies=[Depends(get_current_active_user)])
 async def get_metrics_history(timeframe: str = Query("1h")):
-    window_map = {
-        "15m": 15,
-        "1h": 60,
-        "4h": 240,
-        "1d": len(_METRICS_HISTORY),
-    }
-    window = window_map.get(timeframe, len(_METRICS_HISTORY))
-    history = list(_METRICS_HISTORY)[-window:]
+    seconds_by_timeframe = {"15m": 900, "1h": 3_600, "4h": 14_400, "1d": 86_400}
+    if timeframe not in seconds_by_timeframe:
+        raise HTTPException(status_code=422, detail="Unsupported metrics timeframe")
+    cutoff = time.time() - seconds_by_timeframe[timeframe]
+    history = [item for item in _METRICS_HISTORY if float(item.get("timestamp", 0)) >= cutoff]
     return {"metrics": history}
 
 
@@ -1487,12 +1502,14 @@ async def get_account_balance(db: AsyncSession = Depends(get_db)):
             if balance != 0:
                 cross_unpnl = float(item.get("crossWalletUnPnl", 0))
                 available = float(item.get("availableBalance", 0))
-                balances.append({
-                    "asset": asset,
-                    "balance": balance,
-                    "available": available,
-                    "unrealized_pnl": cross_unpnl,
-                })
+                balances.append(
+                    {
+                        "asset": asset,
+                        "balance": balance,
+                        "available": available,
+                        "unrealized_pnl": cross_unpnl,
+                    }
+                )
                 # Approximate USDT equivalent (USDT and USDC are ~1:1)
                 if asset in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD"):
                     total_usdt += balance
@@ -1522,19 +1539,21 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
             entry = float(p.get("entryPrice", 0))
             pnl = float(p.get("unRealizedProfit", 0))
             side = "LONG" if qty > 0 else "SHORT"
-            result.append({
-                "id": f"binance:{symbol}",
-                "symbol": symbol,
-                "side": side,
-                "quantity": abs(qty),
-                "entry_price": entry,
-                "current_price": float(p.get("markPrice", 0)),
-                "unrealized_pnl": pnl,
-                "realized_pnl": 0.0,
-                "opened_at": datetime.utcnow().isoformat(),
-                "leverage": int(p.get("leverage", 1)),
-                "margin_type": p.get("marginType", ""),
-            })
+            result.append(
+                {
+                    "id": f"binance:{symbol}",
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": abs(qty),
+                    "entry_price": entry,
+                    "current_price": float(p.get("markPrice", 0)),
+                    "unrealized_pnl": pnl,
+                    "realized_pnl": 0.0,
+                    "opened_at": datetime.utcnow().isoformat(),
+                    "leverage": int(p.get("leverage", 1)),
+                    "margin_type": p.get("marginType", ""),
+                }
+            )
         return {"positions": result}
 
     # Try Binance first
@@ -1568,20 +1587,20 @@ async def get_trade_history(
             return []
         trades = []
         for t in data:
-            trades.append({
-                "id": f"binance:{t.get('id', '')}",
-                "symbol": t.get("symbol", ""),
-                "side": t.get("side", ""),
-                "quantity": float(t.get("qty", 0)),
-                "price": float(t.get("price", 0)),
-                "realized_pnl": float(t.get("realizedPnl", 0)),
-                "executed_at": datetime.utcfromtimestamp(
-                    t.get("time", 0) / 1000
-                ).isoformat(),
-                "commission": float(t.get("commission", 0)),
-                "commission_asset": t.get("commissionAsset", ""),
-                "maker": t.get("maker", False),
-            })
+            trades.append(
+                {
+                    "id": f"binance:{t.get('id', '')}",
+                    "symbol": t.get("symbol", ""),
+                    "side": t.get("side", ""),
+                    "quantity": float(t.get("qty", 0)),
+                    "price": float(t.get("price", 0)),
+                    "realized_pnl": float(t.get("realizedPnl", 0)),
+                    "executed_at": datetime.utcfromtimestamp(t.get("time", 0) / 1000).isoformat(),
+                    "commission": float(t.get("commission", 0)),
+                    "commission_asset": t.get("commissionAsset", ""),
+                    "maker": t.get("maker", False),
+                }
+            )
         return trades
 
     binance_trades = await _with_binance_client(testnet, _inner)
@@ -2001,10 +2020,9 @@ async def connect(sid, environ, auth=None):
     client = scope.get("client") or ("", 0)
     client_host = client[0] if isinstance(client, (tuple, list)) and client else ""
 
-    allow_unsafe_loopback = (
-        os.getenv("FENIX_ALLOW_UNAUTHENTICATED_LOOPBACK_CONTROL", "0").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
+    allow_unsafe_loopback = os.getenv(
+        "FENIX_ALLOW_UNAUTHENTICATED_LOOPBACK_CONTROL", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     if (not SECRET_KEY or len(SECRET_KEY.encode("utf-8")) < 32) and (
         allow_unsafe_loopback and client_host in _LOOPBACK_HOSTS
     ):

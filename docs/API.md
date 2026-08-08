@@ -396,11 +396,20 @@ socket.emit("unsubscribe", {
 
 ## Authentication
 
-Currently, the API runs locally without authentication. For production deployments:
+Protected endpoints require the access token returned by `POST /api/auth/login`:
 
 ```http
 Authorization: Bearer <your-jwt-token>
 ```
+
+Access tokens are bound to server-side authentication state. A password change
+invalidates all access tokens issued with the previous password.
+
+User-management mutations are admin-only and require the administrator's current
+password in the JSON `admin_password` field. Account creation and password-reset
+requests return a short-lived token once; the account owner submits that token
+with a new password to `POST /api/auth/password-reset/complete`. Reset tokens
+must be sent in the JSON body, never in a URL.
 
 ---
 

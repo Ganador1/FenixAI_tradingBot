@@ -61,3 +61,16 @@ class AgentOutput(Base):
     decision = Column(String)
     confidence = Column(Float)
     input_summary = Column(Text, nullable=True)
+
+
+class SystemAlert(Base):
+    __tablename__ = "system_alerts"
+
+    id = Column(String, primary_key=True, index=True)
+    type = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    component = Column(String, nullable=False, index=True)
+    severity = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    resolved = Column(Boolean, default=False, nullable=False)

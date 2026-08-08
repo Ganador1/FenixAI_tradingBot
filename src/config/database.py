@@ -92,6 +92,7 @@ if _is_postgres:
         finally:
             cursor.close()
 
+
 SessionLocal = sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -112,5 +113,10 @@ async def get_db():
 
 
 async def init_db():
+    # Import model modules before create_all so CLI-only processes register the
+    # same metadata as the API process.
+    from src.models import db_models as _db_models  # noqa: F401
+    from src.models import user as _user  # noqa: F401
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
